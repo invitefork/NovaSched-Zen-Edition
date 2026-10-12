@@ -1,8 +1,8 @@
 {
   "name": "NovaSched Zen Edition",
   "author": "ZenJooo",
-  "version": "v2.2.7",
-  "versionCode": 327,
+  "version": "v2.2.8",
+  "versionCode": 328,
   "features": {
     "strict": true,
     "pedestal": true,

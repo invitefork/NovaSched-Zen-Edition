@@ -1,4 +1,4 @@
-/* NovaSched WebUI v2.2.7 · ZenJooo. Authenticated local controls and confirmed runtime state.
+/* NovaSched WebUI v2.2.8 · ZenJooo. Authenticated local controls and confirmed runtime state.
  * 视图结构对齐 SleepDown-Schedule 实机 UI：日期块顶栏、助手卡、分区线 + 课程卡列表、胶囊 dock、个性化面板。 */
 (() => {
   "use strict";
@@ -687,12 +687,12 @@
     $("#add-rule").disabled = !editable() || !!s.pending;
 
     /* 关于 */
-    present("#about-version", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.7");
-    present("#about-version-foot", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.7");
+    present("#about-version", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.8");
+    present("#about-version-foot", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.8");
     present("#about-soc", s.online && s.soc ? s.soc : "待识别");
     present("#about-profile", s.online && s.configProfile ? s.configProfile : "待识别");
     present("#about-fas", s.fasAvailable ? "已就绪 · 档位联动" : "未检测到（可选）");
-    present("#footer-version", (s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.7") + " · ZenJooo");
+    present("#footer-version", (s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.8") + " · ZenJooo");
   }
   function renderRules() {
     const root = $("#rule-list");
