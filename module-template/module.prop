@@ -1,6 +1,6 @@
 id=NovaSched_Zen_Edition
 name=NovaSched Zen Edition
-version=v2.2.1
-versionCode=321
+version=v2.2.2
+versionCode=322
 author=ZenJooo
 description=骁龙、天玑与玄戒多平台调度。按实际 CPU 策略和频率范围适配，提供省电、均衡、性能、极速四档，支持应用规则、Scene N1 联动与 FAS 跟随、原厂节点恢复。作者 ZenJooo，覆盖安装后重启生效。

@@ -239,7 +239,7 @@
   [data-theme="dark"] .section { background: transparent; }
   [data-theme="dark"] .section:nth-of-type(even of .section) { background: #0d1118; }
 
-  .stat-grid { width: min(1120px, 100%); margin: auto; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px; }
+  .stat-grid { width: min(1120px, 100%); margin: auto; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; }
   .stat-card { min-width: 0; }
   .stat-media {
     position: relative; height: 240px; padding: 24px; overflow: hidden;
@@ -255,13 +255,16 @@
   .stat-card:nth-child(1) .stat-media { background: linear-gradient(145deg, #dceeff, #eff8ff); }
   .stat-card:nth-child(2) .stat-media { background: linear-gradient(145deg, #f3f0ff, #e8e6f7); }
   .stat-card:nth-child(3) .stat-media { background: linear-gradient(145deg, #eaf6ff, #d8e9fa); }
+  .stat-card:nth-child(4) .stat-media { background: linear-gradient(145deg, #dff7ef, #ecfbf5); }
   .stat-card:nth-child(1) .stat-media::before { background-image: radial-gradient(circle at 30% 30%, #8ec9ff, transparent 60%); }
   .stat-card:nth-child(2) .stat-media::before { background-image: radial-gradient(circle at 70% 30%, #c0b3ff, transparent 60%); }
   .stat-card:nth-child(3) .stat-media::before { background-image: radial-gradient(circle at 40% 70%, #7fd4b6, transparent 60%); }
+  .stat-card:nth-child(4) .stat-media::before { background-image: radial-gradient(circle at 60% 40%, #5ec9a2, transparent 60%); }
   [data-theme="dark"] .stat-media { --card-line: #ffffff24; }
   [data-theme="dark"] .stat-card:nth-child(1) .stat-media { background: linear-gradient(145deg, #12233a, #0f1a2c); }
   [data-theme="dark"] .stat-card:nth-child(2) .stat-media { background: linear-gradient(145deg, #221f3a, #171527); }
   [data-theme="dark"] .stat-card:nth-child(3) .stat-media { background: linear-gradient(145deg, #10281f, #0d1c16); }
+  [data-theme="dark"] .stat-card:nth-child(4) .stat-media { background: linear-gradient(145deg, #102a22, #0c1a15); }
   .stat-big { position: relative; z-index: 1; font-size: clamp(26px, 2.4vw, 36px); font-weight: 750; letter-spacing: -.035em; line-height: 1.1; }
   .stat-cap { position: relative; z-index: 1; color: var(--muted); font-size: 12px; font-weight: 640; }
   .stat-card .card-copy { padding: 20px 4px 0; }

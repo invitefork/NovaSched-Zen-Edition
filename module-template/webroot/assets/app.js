@@ -1,4 +1,4 @@
-/* NovaSched Zen Edition WebUI v2.2.1.
+/* NovaSched Zen Edition WebUI v2.2.2.
  * 视觉设计照搬 SleepDown 课程表官网的液态玻璃语言（见 app.css）。
  * 连接协议沿用守护进程的既有契约：认证 WebSocket（/modes /app-modes /logs）
  * 与宿主 root 备用通道；渲染永远反映实际读回，不把“已发送”当“已生效”。
@@ -35,7 +35,7 @@
   const s = {
     page: "home", online: false, connecting: true, phase: "", error: "", connectionError: "", version: "",
     mode: "", effective: "", pkg: "", controller: "", external: false, linked: false,
-    heartbeat: null, soc: "", socId: "", configProfile: "", fasAvailable: false,
+    heartbeat: null, soc: "", socId: "", configProfile: "", fasAvailable: false, sceneInstalled: false,
     automatic: false, automaticActive: false, appKind: "", classificationSource: "",
     rules: [], rulesLoaded: false, overrides: {},
     pending: null, sockets: {}, suspended: false, retry: 0, epoch: 0, probes: new Set(),
@@ -452,6 +452,7 @@
     s.online = s.heartbeat < 30000; s.connecting = false;
     s.soc = data.socName || ""; s.socId = data.socId || ""; s.configProfile = data.configProfile || "";
     s.fasAvailable = data.fasAvailable === "true";
+    s.sceneInstalled = data.sceneInstalled === "true";
     s.automatic = data.automaticEnabled === "true";
     s.automaticActive = data.automaticActive === "true";
     s.appKind = ["game", "daily", "unknown"].includes(data.appKind) ? data.appKind : "";
@@ -591,7 +592,7 @@
       : s.automatic ? "自动调度 · 已开启（点按关闭）" : "自动调度 · 已关闭（点按开启）";
 
     const heartbeat = s.online && Number.isFinite(s.heartbeat) ? `${(Math.round(s.heartbeat / 100) / 10).toFixed(1)}s` : "—";
-    present("#hero-compat", `NovaSched ${s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.1"} · 守护心跳 ${heartbeat} · ${sourceLabel()}`);
+    present("#hero-compat", `NovaSched ${s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.2"} · 守护心跳 ${heartbeat} · ${sourceLabel()}`);
 
     /* Shot 卡 1：当前档位 */
     present("#shot-mode-name", s.online ? (s.external ? "外部控制" : MODES[s.effective]?.name || "待确认") : "待确认");
@@ -626,6 +627,26 @@
       : s.automatic ? "自动模式跟随前台：游戏极速，其余省电。"
       : s.linked ? "档位与应用规则与 Scene 双向同步。" : "本地默认档位与应用规则共同生效。");
 
+    /* Scene 联动四态：联动中 / 外部接管 / 已安装待接管 / 未安装由 WebUI 接管 */
+    let sceneState, sceneNote;
+    if (!s.online) {
+      sceneState = "等待连接"; sceneNote = "连接守护进程后显示 Scene 的接管状态。";
+    } else if (s.external) {
+      sceneState = "外部调度器接管";
+      sceneNote = "Scene 当前选用其它调度器，本模块暂停写入保持只读；在 Scene 停用它后自动恢复。";
+    } else if (s.linked) {
+      sceneState = "Scene 联动中";
+      sceneNote = "NovaSched 是 Scene 的调度回调：在 Scene 里切换档位由本模块执行下发，应用规则双向同步。";
+    } else if (s.sceneInstalled) {
+      sceneState = "Scene 已安装 · 待接管";
+      sceneNote = "在 Scene 的「性能调节 → 配置源」里选择 NovaSched Zen Edition，即可把调度交给本模块。";
+    } else {
+      sceneState = "WebUI 接管";
+      sceneNote = "未检测到 Scene（N1 及以上，识别 com.omarea 全系包名）。本页档位与自动调度直接生效。";
+    }
+    present("#stat-scene", sceneState);
+    present("#stat-scene-note", sceneNote);
+
     /* 档位区 */
     $$("#mode-grid .mode-card").forEach(button => {
       const mode = button.dataset.mode;
@@ -645,11 +666,11 @@
     $("#add-rule").disabled = !editable() || !!s.pending;
 
     /* 关于 */
-    present("#about-version", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.1");
+    present("#about-version", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.2");
     present("#about-soc", s.online && s.soc ? s.soc : "待识别");
     present("#about-profile", s.online && s.configProfile ? s.configProfile : "待识别");
     present("#about-fas", s.fasAvailable ? "已就绪 · 档位联动" : "未检测到（可选）");
-    present("#footer-version", (s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.1") + " · ZenJooo");
+    present("#footer-version", (s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.2") + " · ZenJooo");
   }
   function renderRules() {
     const root = $("#rule-list");

@@ -187,6 +187,9 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
     if fas_available {
         logger.info("已检测到 Scene FAS（fas-rs），档位切换将同步写入 /dev/fas_rs/mode");
     }
+    // 接管模型：检测到 Scene（含 N1 改名包）即注册为它的调度回调，Scene 里切
+    // 档位由本模块执行；未安装 Scene 时由 WebUI 直接接管。
+    runtime.set_scene_installed(scene.availability == crate::scene::SceneAvailability::Available);
     runtime.set_automatic_active(
         automatic.enabled() && !scene.controls_locked() && last_apply_error.is_empty(),
     );
@@ -339,6 +342,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
                 scene = scene::detect();
             }
             scene_changed |= previous_scene != scene;
+            runtime.set_scene_installed(scene.availability == crate::scene::SceneAvailability::Available);
             if previous_scene.linked() && !scene.linked() {
                 // Pedestal is transient. It must not survive an uninstall,
                 // or a replacement provider in this boot.

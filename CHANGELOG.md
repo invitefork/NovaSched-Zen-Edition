@@ -1,5 +1,13 @@
 # 更新记录
 
+## v2.2.2 · 版本代码 322
+
+- Scene N1 接管模型强化——检测到 Scene 就由 Scene 接管调度，未安装则由 WebUI 接管：
+  - 安装探测改为扫描 `com.omarea` 命名空间（`pm list packages com.omarea` + 家族前缀判定），Scene N1 更换应用包名后依然能识别；Scene 配置文件（`powercfg.xml`）同样按包族目录扫描，规则与档位同步不再依赖固定包名。
+  - WebUI 新增「Scene 联动」状态卡，如实显示四种状态：Scene 联动中（NovaSched 是 Scene 的调度回调）/ 外部调度器接管（Scene 选用了其它调度器，本模块只读）/ Scene 已安装待接管（引导到 Scene「性能调节 → 配置源」选择 NovaSched）/ 未安装由 WebUI 接管。
+  - 守护进程在启动时与 Scene 安装状态变化时自动注册调度回调（备份并接管 `/data/powercfg.sh|json`），卸载或被替换时按既有流程恢复。
+- 其余与 v2.2.1 相同：SleepDown 设计语言的液态玻璃 WebUI、四档频率表、boost 拉满、FAS 跟随、零温控写入。
+
 ## v2.2.1 · 版本代码 321
 
 - WebUI 完整重做为成品：设计语言完完全全照搬 [SleepDown 课程表官网](https://www.sleepdownschedule.cn/)——`#007aff` 单强调色、玻璃胶囊导航（含滑动指示器）、径向光斑 Hero、34–38px 圆角玻璃卡片与三层光边、reveal 滚动入场动画、宽松纵向节奏，浅色/深色/跟随系统三套外观。

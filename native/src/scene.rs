@@ -11,6 +11,12 @@ use crate::util::{self, Result};
 
 pub const OWN_PROVIDER_MODULE: &str = "NovaSched_Zen_Edition";
 pub const SCENE_PACKAGE: &str = "com.omarea.vtools";
+/// Scene N1 era builds may ship under a renamed application id. Scene has
+/// always published inside the com.omarea namespace, so presence is probed
+/// with a namespace filter and accepted for known family prefixes instead
+/// of one exact package that a new major version can abandon.
+pub const SCENE_PACKAGE_FAMILY: &str = "com.omarea.scene";
+pub const SCENE_NAMESPACE_FILTER: &str = "com.omarea";
 pub const PRESENCE_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -82,12 +88,12 @@ fn probe_presence(
                 "packages",
                 "--user",
                 &user,
-                SCENE_PACKAGE,
+                SCENE_NAMESPACE_FILTER,
             ],
         ),
         (
             "/system/bin/pm",
-            vec!["list", "packages", "--user", &user, SCENE_PACKAGE],
+            vec!["list", "packages", "--user", &user, SCENE_NAMESPACE_FILTER],
         ),
     ] {
         match query(program, &args) {
@@ -96,7 +102,7 @@ fn probe_presence(
                     return ScenePresence {
                         availability: SceneAvailability::Available,
                         evidence: format!(
-                            "{program} 确认当前用户 {user} 已安装 Scene（包含停用应用）"
+                            "{program} 在当前用户 {user} 的 com.omarea 命名空间中确认已安装 Scene（包含停用应用）"
                         ),
                     }
                 }
@@ -104,7 +110,7 @@ fn probe_presence(
                     return ScenePresence {
                         availability: SceneAvailability::Absent,
                         evidence: format!(
-                            "当前用户 {user} 未安装 Scene；忽略全局包记录、旧回调和数据目录"
+                            "当前用户 {user} 未安装 Scene（com.omarea 命名空间无 Scene 系包名）；忽略全局包记录、旧回调和数据目录"
                         ),
                     }
                 }
@@ -124,6 +130,13 @@ fn probe_presence(
     }
 }
 
+fn is_scene_package(name: &str) -> bool {
+    name == SCENE_PACKAGE || name.starts_with(SCENE_PACKAGE_FAMILY)
+}
+
+/// The query filters on the com.omarea namespace, so the reply may contain
+/// other packages from the same developer. Any Scene-family package proves
+/// presence; an empty or foreign reply proves absence.
 fn parse_package_query(text: &str) -> SceneAvailability {
     if !text
         .lines()
@@ -133,16 +146,12 @@ fn parse_package_query(text: &str) -> SceneAvailability {
     }
     if text
         .lines()
-        .any(|line| line.trim() == format!("package:{SCENE_PACKAGE}"))
+        .filter_map(|line| line.trim().strip_prefix("package:"))
+        .any(is_scene_package)
     {
         SceneAvailability::Available
-    } else if text
-        .lines()
-        .all(|line| line.trim().is_empty() || line.trim().starts_with("package:"))
-    {
-        SceneAvailability::Absent
     } else {
-        SceneAvailability::Unknown
+        SceneAvailability::Absent
     }
 }
 
@@ -157,6 +166,44 @@ fn vtools_xml(user: u32) -> [PathBuf; 2] {
             "/data/{root}/{user}/com.omarea.vtools/shared_prefs/powercfg.xml"
         ))
     })
+}
+
+static XML_CANDIDATES: OnceLock<Mutex<Option<(Instant, Vec<PathBuf>)>>> = OnceLock::new();
+
+/// Scene writes its per-app mode map to `shared_prefs/powercfg.xml` inside
+/// its own data directory. N1 era builds may use a renamed package, so
+/// every com.omarea package directory is scanned (cached for 10s — this
+/// runs on every watched-path refresh).
+fn vtools_xml_candidates(user: u32) -> Vec<PathBuf> {
+    let cache = XML_CANDIDATES.get_or_init(|| Mutex::new(None));
+    if let Ok(cached) = cache.lock() {
+        if let Some((at, paths)) = cached.as_ref() {
+            if at.elapsed() < PRESENCE_INTERVAL {
+                return paths.clone();
+            }
+        }
+    }
+    let mut paths = vtools_xml(user).to_vec();
+    for root in ["user", "user_de"] {
+        let base = PathBuf::from(format!("/data/{root}/{user}"));
+        let Ok(entries) = fs::read_dir(&base) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == SCENE_PACKAGE || name.starts_with(SCENE_PACKAGE_FAMILY) {
+                let path = base.join(name.as_ref()).join("shared_prefs").join("powercfg.xml");
+                if !paths.contains(&path) {
+                    paths.push(path);
+                }
+            }
+        }
+    }
+    if let Ok(mut cached) = cache.lock() {
+        *cached = Some((Instant::now(), paths.clone()));
+    }
+    paths
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -215,7 +262,7 @@ pub fn watched_paths() -> Vec<PathBuf> {
     .map(PathBuf::from)
     .collect();
     if let Ok(user) = util::current_android_user() {
-        paths.extend(vtools_xml(user));
+        paths.extend(vtools_xml_candidates(user));
         paths.push(PathBuf::from(format!(
             "/data/system/users/{user}/package-restrictions.xml"
         )));
@@ -513,7 +560,7 @@ fn detect_provider_at(paths: &ProviderPaths) -> ProviderKind {
 }
 
 fn scene_config_path() -> Option<PathBuf> {
-    vtools_xml(util::current_android_user().ok()?)
+    vtools_xml_candidates(util::current_android_user().ok()?)
         .into_iter()
         .find(|path| path.exists())
 }
@@ -984,12 +1031,23 @@ mod tests {
     }
 
     #[test]
-    fn scene_presence_requires_exact_installed_package() {
+    fn scene_presence_accepts_the_omarea_family_but_not_lookalikes() {
         assert_eq!(
             parse_package_query("package:com.omarea.vtools\n"),
             SceneAvailability::Available
         );
+        // N1 era builds may ship under a renamed id inside the family.
+        assert_eq!(
+            parse_package_query("package:com.omarea.scene\npackage:com.omarea.scene9.free"),
+            SceneAvailability::Available
+        );
         assert_eq!(parse_package_query(""), SceneAvailability::Absent);
+        // Same-developer packages that are not Scene do not prove presence,
+        // and a longer lookalike of the classic id is not Scene either.
+        assert_eq!(
+            parse_package_query("package:com.omarea.other.tool"),
+            SceneAvailability::Absent
+        );
         assert_eq!(
             parse_package_query("package:com.omarea.vtools.fake"),
             SceneAvailability::Absent

@@ -39,7 +39,7 @@
         <button class="button text-button" id="hero-reconnect" type="button">重新连接</button>
         <button class="button text-button" id="hero-diagnose" type="button">诊断命令</button>
       </div>
-      <p class="compatibility" id="hero-compat">NovaSched v2.2.1 · 需要宿主 root／Shell 权限</p>
+      <p class="compatibility" id="hero-compat">NovaSched v2.2.2 · 需要宿主 root／Shell 权限</p>
     </div>
     <div class="hero-stage">
       <div class="shot-stack" id="shot-stack">
@@ -112,6 +112,13 @@
         <div class="card-copy">
           <h3>谁来调度</h3>
           <p id="stat-ctrl-note">NovaSched、Scene 联动或外部调度器接管，这里永远如实显示。</p>
+        </div>
+      </article>
+      <article class="stat-card reveal">
+        <div class="stat-media"><span class="stat-cap">Scene N1</span><span class="stat-big" id="stat-scene">—</span></div>
+        <div class="card-copy">
+          <h3>Scene 联动</h3>
+          <p id="stat-scene-note">检测到 Scene 即由它接管调度；未安装时由本页接管。</p>
         </div>
       </article>
     </div>
@@ -203,7 +210,7 @@
   <footer>
     <div class="footer-top">
       <span class="nav-brand"><span class="brand-mark">N</span><span class="brand-text">NovaSched Zen Edition</span></span>
-      <span id="footer-version">v2.2.1 · ZenJooo</span>
+      <span id="footer-version">v2.2.2 · ZenJooo</span>
     </div>
     <div class="footer-grid">
       <div><b>调度</b><a href="#modes">四档说明</a><a href="#rules">应用规则</a><a href="#logs">运行日志</a></div>

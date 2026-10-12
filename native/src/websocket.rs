@@ -47,6 +47,7 @@ struct RuntimeData {
     classification_source: String,
     automatic_active: bool,
     fas_available: bool,
+    scene_installed: bool,
 }
 
 impl RuntimeState {
@@ -126,6 +127,14 @@ impl RuntimeState {
     pub fn set_fas_available(&self, available: bool) {
         if let Ok(mut data) = self.inner.lock() {
             data.fas_available = available;
+        }
+    }
+
+    /// Whether the Scene toolbox (any com.omarea Scene-family package) is
+    /// installed for the current user, independent of who owns scheduling.
+    pub fn set_scene_installed(&self, installed: bool) {
+        if let Ok(mut data) = self.inner.lock() {
+            data.scene_installed = installed;
         }
     }
 }
@@ -511,7 +520,7 @@ fn payload(state: &WebState, app_endpoint: bool) -> String {
     };
     if !app_endpoint {
         return format!(
-            "mode:{},effective:{},package:{},controller:{},sceneActive:{},sceneLinked:{},phase:{},heartbeatMs:{},port:{},powerSaveProfile:{},socName:{},socId:{},configProfile:{},automaticEnabled:{},appKind:{},classificationSource:{},automaticActive:{},fasAvailable:{}",
+            "mode:{},effective:{},package:{},controller:{},sceneActive:{},sceneLinked:{},phase:{},heartbeatMs:{},port:{},powerSaveProfile:{},socName:{},socId:{},configProfile:{},automaticEnabled:{},appKind:{},classificationSource:{},automaticActive:{},fasAvailable:{},sceneInstalled:{}",
             default,
             runtime.effective_mode,
             runtime.package,
@@ -523,7 +532,7 @@ fn payload(state: &WebState, app_endpoint: bool) -> String {
             runtime.power_profile,
             runtime.soc, runtime.soc_id, runtime.config_profile,
             state.automatic.enabled(), runtime.app_kind, runtime.classification_source, runtime.automatic_active,
-            runtime.fas_available,
+            runtime.fas_available, runtime.scene_installed,
         );
     }
     let mut rules = String::new();
