@@ -1,12 +1,12 @@
 # NovaSched Zen Edition
 
-作者：**ZenJooo**。当前版本：**v2.2.8 / 328**。
+作者：**ZenJooo**。当前版本：**v2.2.9 / 329**。
 
 根据处理器和内核能力调整 CPU 策略，提供省电、均衡、性能、极速四档。支持应用规则、Scene 联动和原厂节点恢复。WebUI 的布局与液态玻璃材质按 [SleepDown-Schedule](https://github.com/xiaomanjun233/SleepDown-Schedule) 实机 UI 复刻（日期块顶栏、助手卡、分区课程卡、胶囊 dock、个性化面板与壁纸玻璃），渲染核心为移植自 LiquidGlassView（基于 QmDeve/AndroidLiquidGlassView，MIT）的 WebGL 折射着色器。所有运行资源均随模块提供，无需联网加载。
 
 ## 安装与更新
 
-在 root 管理器中安装 `NovaSched-v2.2.8-release.zip`，覆盖更新后重启手机。已有有效配置、应用规则和自动调度偏好会保留。`source.zip` 是源码，不是安装包。
+在 root 管理器中安装 `NovaSched-v2.2.9-release.zip`，覆盖更新后重启手机。已有有效配置、应用规则和自动调度偏好会保留。`source.zip` 是源码，不是安装包。
 
 支持 ARM64。安装不按管理器品牌或版本号拦截；Magisk（含 Alpha）、KernelSU 系列与 APatch 使用相同的模块入口。没有内置 WebUI 的管理器需要独立 WebUI 宿主，并授予其 root / Shell 权限。具体分支仍取决于它是否提供标准模块安装、启动和命令接口。
 
