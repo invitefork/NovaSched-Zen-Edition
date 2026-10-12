@@ -345,9 +345,81 @@
   .theme-picker button { height: 36px; padding: 0 15px; border-radius: 999px; color: var(--muted); font-size: 11.5px; font-weight: 620; transition: background .2s, color .2s; }
   .theme-picker button.active { background: var(--surface); color: var(--ink); box-shadow: 0 4px 14px #1a4c7c18; }
   .about-foot { margin-top: 26px; color: var(--muted); font-size: 10.5px; line-height: 1.75; }
+  .demo-card {
+    margin-top: 20px; padding: 20px 22px;
+    display: flex; align-items: center; justify-content: space-between; gap: 18px;
+    border: 1px solid var(--card-line, #ffffffc2); border-radius: 26px;
+    background: linear-gradient(145deg, color-mix(in oklch, var(--brand), transparent 92%), var(--surface));
+    box-shadow: 0 16px 42px #14243b10, inset 0 1px 0 var(--glass-edge, #fff);
+    backdrop-filter: blur(16px) saturate(1.5); -webkit-backdrop-filter: blur(16px) saturate(1.5);
+    --lg-ring: 8px;
+  }
+  [data-theme="dark"] .demo-card { --card-line: #ffffff1f; --glass-edge: #ffffff1f; background: linear-gradient(145deg, #101c2e, #0e1219); }
+  .demo-copy { min-width: 0; }
+  .demo-copy b { display: block; font-size: 15px; letter-spacing: -.02em; }
+  .demo-copy small { display: block; margin-top: 5px; color: var(--muted); font-size: 11.5px; line-height: 1.6; }
+  .demo-card .button { flex: 0 0 auto; }
+  .mode-card, .rule-row, .auto-card { --lg-ring: 7px; }
+  .demo-frame { width: 100%; height: min(68vh, 640px); border: 1px solid var(--line); border-radius: 22px; background: #0a0c11; }
 }
 
 @layer components {
+  /* ---------------- 液态玻璃质感（复刻星辞引擎三要素） ----------------
+   * .liquid 的伪元素在每张玻璃卡上叠加：
+   *   ::before 边缘环 = 聚光提亮 + 七彩色散描边（星辞的 refraction/dispersion）
+   *   ::after 高光弧 = 斜向镜面高光（星辞的 highlight）
+   * 星辞原版引擎（WebGL2）完整保留在 assets/liquid-glass.html，
+   * 「关于」页可打开原版演示。 */
+  .liquid { position: relative; isolation: isolate; }
+  .liquid > * { position: relative; z-index: 1; }
+  .liquid::before {
+    content: ""; position: absolute; inset: 0; z-index: 0; border-radius: inherit;
+    padding: var(--lg-ring, 12px);
+    background:
+      linear-gradient(135deg, #ffffff70, transparent 32% 68%, #ffffff45),
+      conic-gradient(from 120deg, #ff80ab2e, #80d8ff2e, #a7ffeb26, #ffd54f2e, #b39dff2e, #ff80ab2e);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    backdrop-filter: brightness(1.07) saturate(1.45) contrast(1.04);
+    -webkit-backdrop-filter: brightness(1.07) saturate(1.45) contrast(1.04);
+    pointer-events: none;
+  }
+  .liquid::after {
+    content: ""; position: absolute; inset: 0; z-index: 2; border-radius: inherit;
+    background: linear-gradient(160deg, #ffffff59, transparent 24% 58%, #ffffff12 88%, transparent);
+    mix-blend-mode: screen;
+    pointer-events: none;
+  }
+  [data-theme="dark"] .liquid::before {
+    background:
+      linear-gradient(135deg, #ffffff2b, transparent 32% 68%, #ffffff1c),
+      conic-gradient(from 120deg, #ff80ab21, #80d8ff21, #a7ffeb1a, #ffd54f21, #b39dff21, #ff80ab21);
+    backdrop-filter: brightness(1.12) saturate(1.3);
+    -webkit-backdrop-filter: brightness(1.12) saturate(1.3);
+  }
+  [data-theme="dark"] .liquid::after { background: linear-gradient(160deg, #ffffff26, transparent 24% 58%, #ffffff0d 88%, transparent); }
+
+  /* 星辞背景光斑：缓慢漂移的径向渐变（bgTex + blobTex 的 DOM 版） */
+  body::before {
+    content: ""; position: fixed; inset: -22%; z-index: -1; pointer-events: none;
+    background:
+      radial-gradient(circle at 20% 14%, #ddd8ffb8, transparent 30%),
+      radial-gradient(circle at 84% 22%, #f0e7ffcc, transparent 32%),
+      radial-gradient(circle at 50% 78%, #e8e8ff, transparent 38%);
+    filter: blur(28px);
+    animation: novaBlobDrift 26s ease-in-out infinite alternate;
+  }
+  [data-theme="dark"] body::before {
+    background:
+      radial-gradient(circle at 20% 14%, #2c2a55b8, transparent 30%),
+      radial-gradient(circle at 84% 22%, #232c4bcc, transparent 32%),
+      radial-gradient(circle at 50% 78%, #1c2038, transparent 38%);
+  }
+  @keyframes novaBlobDrift { to { transform: translate(4%, -3%) rotate(5deg) scale(1.09); } }
+  @media (prefers-reduced-motion: reduce) { body::before { animation: none; } }
+
   .snackbar {
     position: fixed; z-index: 300; left: 50%; bottom: calc(88px + max(14px, env(safe-area-inset-bottom))); transform: translate(-50%, 20px);
     max-width: min(560px, calc(100vw - 40px));

@@ -29,7 +29,7 @@
           <div class="hero-badges" id="hero-badges">
             <span data-tone="brand"><i class="dot"></i>等待本地服务</span>
           </div>
-          <p class="compatibility" id="hero-compat">NovaSched v2.2.3 · 需要宿主 root／Shell 权限</p>
+          <p class="compatibility" id="hero-compat">NovaSched v2.2.4 · 需要宿主 root／Shell 权限</p>
           <div class="overview-actions">
             <button class="button primary" id="hero-auto" type="button" disabled>自动调度 · 未知状态</button>
             <button class="button text-button" id="hero-reconnect" type="button">重新连接</button>
@@ -76,15 +76,15 @@
           <h1>四个档位，<br>各管一段。</h1>
           <p class="page-sub">省电、均衡、性能、极速按设备实际 policy 与频率范围下发；自动模式游戏极速、日用省电，手动选档会退出自动。</p>
         </header>
-        <div class="mode-board">
+        <div class="mode-board liquid">
           <div class="mode-grid" id="mode-grid">
-            <button class="mode-card" data-mode="powersave" type="button"><span class="badge" hidden>当前生效</span><b>省电</b><small>一省到底：进一步压低各簇频率上限</small></button>
-            <button class="mode-card" data-mode="balance" type="button"><span class="badge" hidden>当前生效</span><b>均衡</b><small>日用默认：保留流畅度的同时压住功耗</small></button>
-            <button class="mode-card" data-mode="performance" type="button"><span class="badge" hidden>当前生效</span><b>性能</b><small>响应优先：适度抬高最低频率</small></button>
-            <button class="mode-card" data-mode="fast" type="button"><span class="badge" hidden>当前生效</span><b>极速</b><small>开放完整频率范围，跟随 FAS 全力响应</small></button>
+            <button class="mode-card liquid" data-mode="powersave" type="button"><span class="badge" hidden>当前生效</span><b>省电</b><small>一省到底：进一步压低各簇频率上限</small></button>
+            <button class="mode-card liquid" data-mode="balance" type="button"><span class="badge" hidden>当前生效</span><b>均衡</b><small>日用默认：保留流畅度的同时压住功耗</small></button>
+            <button class="mode-card liquid" data-mode="performance" type="button"><span class="badge" hidden>当前生效</span><b>性能</b><small>响应优先：适度抬高最低频率</small></button>
+            <button class="mode-card liquid" data-mode="fast" type="button"><span class="badge" hidden>当前生效</span><b>极速</b><small>开放完整频率范围，跟随 FAS 全力响应</small></button>
           </div>
           <div class="mode-side">
-            <div class="auto-card">
+            <div class="auto-card liquid">
               <span><b>自动调度</b><small>游戏极速 · 日用与桌面省电 · 待机更深</small></span>
               <button class="switch" id="auto-switch" role="switch" aria-checked="false" aria-label="自动调度" disabled type="button"></button>
             </div>
@@ -115,7 +115,7 @@
           <h1>发生了什么，<br>写在这里。</h1>
           <p class="page-sub">进入本页时按需连接日志流，不在后台持续订阅；级别过滤、详情与复制都在。</p>
         </header>
-        <div class="log-board">
+        <div class="log-board liquid">
           <div class="log-tools">
             <span class="segmented" role="group" aria-label="日志级别">
               <button data-level="all" class="active" type="button">全部</button>
@@ -139,7 +139,7 @@
           <h1>NovaSched<br>Zen Edition。</h1>
           <p class="page-sub">按处理器和内核能力映射 CPU 策略，支持应用单独设置、Scene N1 联动与 FAS 跟随。</p>
         </header>
-        <div class="about-card">
+        <div class="about-card liquid">
           <div class="about-mark">N</div>
           <div class="about-copy">
             <p class="card-kicker">ABOUT</p>
@@ -161,7 +161,14 @@
             </div>
           </div>
         </div>
-        <p class="about-foot">按设备实际 CPU policy、频率范围与可用调速器下发调度；可选 CpuSet、uclamp 与 GPU 控制默认关闭。模块不写入任何温控、电池或充电节点。界面设计语言来自 SleepDown 课程表。© NovaSched Zen Edition · 作者 ZenJooo</p>
+        <div class="demo-card liquid">
+          <div class="demo-copy">
+            <b>星辞 · 液态玻璃</b>
+            <small>你自己的液态玻璃引擎（WebGL2）完整保留在这里：折射、色散、高光、弹簧物理，玻璃可拖拽、三种模式、参数实时可调。</small>
+          </div>
+          <button class="button primary" id="open-liquid-demo" type="button">打开演示</button>
+        </div>
+        <p class="about-foot">按设备实际 CPU policy、频率范围与可用调速器下发调度；可选 CpuSet、uclamp 与 GPU 控制默认关闭。模块不写入任何温控、电池或充电节点。界面设计语言来自 SleepDown 课程表，液态玻璃质感与演示引擎来自「星辞」。© NovaSched Zen Edition · 作者 ZenJooo</p>
       </div>
     </section>
   </main>
@@ -176,7 +183,7 @@
   </nav>
 
   <div class="dialog-layer" id="dialog-layer">
-    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+    <div class="dialog liquid" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
       <div id="dialog-body"></div>
     </div>
   </div>

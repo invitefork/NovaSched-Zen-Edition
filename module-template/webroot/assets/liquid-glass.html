@@ -1,0 +1,1851 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"/>
+<meta name="color-scheme" content="dark"/>
+<title>星辞 · 液态玻璃 · NovaSched 演示（引擎与效果原样保留，作者 星辞）</title>
+<style>
+  html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#0a0c11;}
+  canvas{display:block;width:100vw;height:100vh;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;}
+  #fallback{position:fixed;inset:0;display:none;align-items:center;justify-content:center;color:#cfd6e4;
+    font:14px/1.7 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;padding:24px;text-align:center;}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="fallback"></div>
+<script>
+/* ============================================================================
+ * 星辞 液态玻璃 · Web 移植版
+ * 原版: C++ / Dear ImGui / OpenGL ES 3  (来自·星辞 - 2026 星辞)
+ * 本文件: 逐模块移植为 JavaScript + WebGL2 单文件版
+ *   - SpringFloat / DampedDragAnimation / InteractiveHighlight 弹簧物理: 逐字移植
+ *   - 玻璃折射/模糊/色散/高光/内阴影 片元着色器: 原样复用 (GLSL ES 3.0)
+ *   - 组件: 玻璃按钮 / 开关 / 滑块 / 底部标签栏 / 模态弹窗
+ *
+ * 免责声明: 本项目仅供学习、交流与合法用途, 开发者本意不在于造成任何不良影响。
+ * 使用者应遵守适用法律法规, 并自行承担因不当使用所产生的责任。
+ * ========================================================================== */
+(() => {
+'use strict';
+
+const fallbackEl = document.getElementById('fallback');
+function showFallback(msg) { fallbackEl.textContent = msg; fallbackEl.style.display = 'flex'; }
+
+try { boot(); } catch (err) { console.error(err); showFallback('渲染初始化失败: ' + err.message); }
+
+function boot() {
+
+/* ------------------------------------------------------------------ *
+ * 0. 常量与基础工具
+ * ------------------------------------------------------------------ */
+const FAMILY = '-apple-system, "PingFang SC", "HarmonyOS Sans SC", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif';
+const TAU = Math.PI * 2;
+const LIGHT = false;                                    // 主题(原版默认深色)
+const FROSTED_DARK = [0.12, 0.13, 0.15, 1.0];           // FrostedBackdrop() 深色
+const FROSTED_LIGHT = [0.98, 0.98, 0.99, 1.0];
+const PAGE_BG = [0.07, 0.075, 0.09, 1.0];
+
+const clampf = (v, lo, hi) => v < lo ? lo : (v > hi ? hi : v);
+const clamp01 = v => v < 0 ? 0 : (v > 1 ? 1 : v);
+const lerp = (a, b, t) => a + (b - a) * t;
+
+function argb(c) {                                      // 0xAARRGGBB -> [r,g,b,a]
+  return [((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255, ((c >>> 24) & 255) / 255];
+}
+function argbAlpha(a, rgb) {                            // Argb(alpha, rgb)
+  return [((rgb >> 16) & 255) / 255, ((rgb >> 8) & 255) / 255, (rgb & 255) / 255, clamp01(a)];
+}
+function colorLerp(c1, c2, t) {                         // ColorLerp
+  t = clamp01(t);
+  return [lerp(c1[0], c2[0], t), lerp(c1[1], c2[1], t), lerp(c1[2], c2[2], t), lerp(c1[3], c2[3], t)];
+}
+function easeOut(x) {                                   // EaseOut (三次贝塞尔牛顿迭代)
+  x = clampf(x, 0, 1);
+  if (x === 0 || x === 1) return x;
+  let t = x;
+  for (let i = 0; i < 8; i++) {
+    const omt = 1 - t;
+    const curveX = 3 * 0.58 * omt * t * t + t * t * t;
+    const derivative = 6 * 0.58 * omt * t - 3 * 0.58 * t * t + 3 * t * t;
+    const error = curveX - x;
+    if (Math.abs(error) < 0.00001 || Math.abs(derivative) < 0.00001) break;
+    t = clampf(t - error / derivative, 0, 1);
+  }
+  const omt = 1 - t;
+  return 3 * omt * t * t + t * t * t;
+}
+
+/* ------------------------------------------------------------------ *
+ * 1. 弹簧物理 (移植自 星辞_spring.h)
+ * ------------------------------------------------------------------ */
+class SpringFloat {
+  constructor(v, damping, stiffness, threshold) {
+    this.value = v; this.velocity = 0; this.target = v;
+    this.dampingRatio = damping; this.stiffness = stiffness;
+    this.threshold = threshold > 0.000001 ? threshold : 0.000001;
+  }
+  snapTo(v) { this.value = v; this.target = v; this.velocity = 0; }
+  animateTo(v) { this.target = v; }
+  step(dt) {
+    if (dt <= 0) return false;
+    if (dt > 0.064) dt = 0.064;
+    const omega0 = Math.sqrt(this.stiffness > 0.000001 ? this.stiffness : 0.000001);
+    const zeta = this.dampingRatio;
+    const y0 = this.value - this.target;
+    const v0 = this.velocity;
+    let y, v;
+    if (zeta < 1.0 - 1.0e-4) {
+      const omegaD = omega0 * Math.sqrt(1.0 - zeta * zeta);
+      const envelope = Math.exp(-zeta * omega0 * dt);
+      const c = Math.cos(omegaD * dt), s = Math.sin(omegaD * dt);
+      const b = (v0 + zeta * omega0 * y0) / omegaD;
+      const inner = y0 * c + b * s;
+      y = envelope * inner;
+      v = envelope * (-zeta * omega0 * inner + (-y0 * omegaD * s + b * omegaD * c));
+    } else if (zeta > 1.0 + 1.0e-4) {
+      const s = Math.sqrt(zeta * zeta - 1.0);
+      const r1 = -omega0 * (zeta - s), r2 = -omega0 * (zeta + s);
+      const c1 = (v0 - r2 * y0) / (r1 - r2), c2 = y0 - c1;
+      const e1 = Math.exp(r1 * dt), e2 = Math.exp(r2 * dt);
+      y = c1 * e1 + c2 * e2;
+      v = r1 * c1 * e1 + r2 * c2 * e2;
+    } else {
+      const envelope = Math.exp(-omega0 * dt);
+      const c = v0 + omega0 * y0;
+      y = envelope * (y0 + c * dt);
+      v = envelope * (v0 - omega0 * c * dt);
+    }
+    this.value = this.target + y;
+    this.velocity = v;
+    if (!isFinite(this.value) || !isFinite(this.velocity)) {
+      this.value = isFinite(this.target) ? this.target : 0;
+      if (!isFinite(this.target)) this.target = 0;
+      this.velocity = 0;
+    }
+    if (Math.abs(this.value - this.target) <= this.threshold &&
+        Math.abs(this.velocity) <= this.threshold * 62.5) {
+      this.value = this.target;
+      this.velocity = 0;
+    }
+    return this.value !== this.target || this.velocity !== 0;
+  }
+}
+
+class DampedDragAnimation {
+  constructor(initialValue, rangeStart, rangeEnd, visibilityThreshold, initialScale, pressedScale,
+              valueStiffness = 1000, valueDamping = 1) {
+    this.rangeStart = rangeStart; this.rangeEnd = rangeEnd;
+    this.visibilityThreshold = visibilityThreshold;
+    this.initialScale = initialScale; this.pressedScale = pressedScale;
+    this.valueSpring = new SpringFloat(initialValue, valueDamping, valueStiffness, visibilityThreshold);
+    this.velocitySpring = new SpringFloat(0, 0.5, 300, visibilityThreshold * 10);
+    this.pressProgressSpring = new SpringFloat(0, 1, 1000, 0.001);
+    this.scaleXSpring = new SpringFloat(initialScale, 0.6, 250, 0.001);
+    this.scaleYSpring = new SpringFloat(initialScale, 0.7, 250, 0.001);
+    this.lastObservedValue = initialValue;
+    this.posted = false; this.releasePending = false; this.releaseWaitOneFrame = false;
+    this.trackValueVelocity = false; this.lastStepDt = 1 / 60;
+  }
+  getValue() { return this.valueSpring.value; }
+  getTargetValue() { return this.valueSpring.target; }
+  setRange(s, e) {
+    this.rangeStart = s; this.rangeEnd = e;
+    this.valueSpring.target = clampf(this.valueSpring.target, s, e);
+    if (this.valueSpring.value < s) { this.valueSpring.value = s; this.lastObservedValue = s; }
+    if (this.valueSpring.value > e) { this.valueSpring.value = e; this.lastObservedValue = e; }
+  }
+  getProgress() {
+    const d = this.rangeEnd - this.rangeStart;
+    return d === 0 ? 0 : (this.valueSpring.value - this.rangeStart) / d;
+  }
+  getPressProgress() { return clamp01(this.pressProgressSpring.value); }
+  getScaleX() { return this.scaleXSpring.value; }
+  getScaleY() { return this.scaleYSpring.value; }
+  getVelocity() { return this.velocitySpring.value; }
+  isAnimating() { return this.posted || this.releasePending; }
+  press() {
+    this.releasePending = false; this.releaseWaitOneFrame = false;
+    this.lastObservedValue = this.valueSpring.value;
+    this.pressProgressSpring.animateTo(1.0);
+    this.scaleXSpring.animateTo(this.pressedScale);
+    this.scaleYSpring.animateTo(this.pressedScale);
+    this.posted = true;
+  }
+  release() { this.releasePending = true; this.releaseWaitOneFrame = true; this.posted = true; }
+  updateValue(v) { this.trackValueVelocity = true; this.valueSpring.animateTo(this.clampRange(v)); this.posted = true; }
+  snapValue(v) { this.trackValueVelocity = true; this.valueSpring.snapTo(this.clampRange(v)); this.updateMeasuredVelocity(); }
+  animateToValue(v) { this.press(); this.settleToValue(v); this.release(); this.posted = true; }
+  settleToValue(v) {
+    this.trackValueVelocity = false;
+    this.valueSpring.animateTo(this.clampRange(v));
+    if (this.velocitySpring.value !== 0 || this.velocitySpring.target !== 0) this.velocitySpring.animateTo(0);
+    this.posted = true;
+  }
+  releasePressNow() {
+    this.releasePending = false; this.releaseWaitOneFrame = false;
+    this.pressProgressSpring.animateTo(0);
+    this.scaleXSpring.animateTo(this.initialScale);
+    this.scaleYSpring.animateTo(this.initialScale);
+    this.posted = true;
+  }
+  step(dt) {
+    this.lastStepDt = dt > 0.0001 ? dt : 1 / 60;
+    let active = false;
+    if (this.valueSpring.step(dt)) active = true;
+    if (this.trackValueVelocity) this.updateMeasuredVelocity();
+    if (this.velocitySpring.step(dt)) active = true;
+
+    if (this.releasePending) {
+      if (this.releaseWaitOneFrame) this.releaseWaitOneFrame = false;
+      else {
+        const threshold = Math.abs(this.rangeEnd - this.rangeStart) * 0.025;
+        if (this.valueSpring.value === this.valueSpring.target ||
+            Math.abs(this.valueSpring.value - this.valueSpring.target) < threshold) {
+          this.pressProgressSpring.animateTo(0);
+          this.scaleXSpring.animateTo(this.initialScale);
+          this.scaleYSpring.animateTo(this.initialScale);
+          this.releasePending = false;
+        }
+      }
+    }
+    if (this.pressProgressSpring.step(dt)) active = true;
+    if (this.scaleXSpring.step(dt)) active = true;
+    if (this.scaleYSpring.step(dt)) active = true;
+    if (this.releasePending) active = true;
+
+    const vs = this.valueSpring, vsp = this.velocitySpring, pp = this.pressProgressSpring;
+    if (!isFinite(vs.value)) vs.value = isFinite(vs.target) ? vs.target : this.rangeStart;
+    if (!isFinite(vs.velocity)) vs.velocity = 0;
+    if (!isFinite(vs.target)) vs.target = this.rangeStart;
+    if (!isFinite(vsp.value)) vsp.value = 0;
+    if (!isFinite(vsp.target)) vsp.target = 0;
+    if (!isFinite(pp.value)) pp.value = 0;
+    if (!isFinite(this.scaleXSpring.value)) this.scaleXSpring.value = this.initialScale;
+    if (!isFinite(this.scaleYSpring.value)) this.scaleYSpring.value = this.initialScale;
+
+    this.posted = active || this.releasePending;
+    return active;
+  }
+  clampRange(v) { return v < this.rangeStart ? this.rangeStart : (v > this.rangeEnd ? this.rangeEnd : v); }
+  updateMeasuredVelocity() {
+    const range = this.rangeEnd - this.rangeStart;
+    if (Math.abs(range) > 0.0001) {
+      const perSecond = (this.valueSpring.value - this.lastObservedValue) / this.lastStepDt / range;
+      this.velocitySpring.animateTo(perSecond);
+    }
+    this.lastObservedValue = this.valueSpring.value;
+  }
+}
+
+class InteractiveHighlight {
+  constructor() {
+    this.pressProgress = new SpringFloat(0, 0.5, 300, 0.001);
+    this.posX = new SpringFloat(0, 0.5, 300, 0.5);
+    this.posY = new SpringFloat(0, 0.5, 300, 0.5);
+    this.startX = 0; this.startY = 0; this.animating = false;
+    this.intensityScale = 1.0; this.enabled = true;
+  }
+  press(px, py) {
+    if (!this.enabled) return;
+    this.startX = px; this.startY = py;
+    this.pressProgress.animateTo(1.0);
+    this.posX.snapTo(px); this.posY.snapTo(py);
+    this.animating = true;
+  }
+  move(px, py) {
+    if (!this.enabled) return;
+    this.posX.snapTo(px); this.posY.snapTo(py);
+    if (this.pressProgress.value !== this.pressProgress.target) this.animating = true;
+  }
+  release() {
+    if (!this.enabled) return;
+    this.pressProgress.animateTo(0.0);
+    this.posX.animateTo(this.startX); this.posY.animateTo(this.startY);
+    this.animating = true;
+  }
+  cancel() {
+    this.pressProgress.snapTo(0.0);
+    this.posX.snapTo(this.startX); this.posY.snapTo(this.startY);
+    this.animating = false;
+  }
+  step(dt) {
+    let a = false;
+    if (this.pressProgress.step(dt)) a = true;
+    if (this.posX.step(dt)) a = true;
+    if (this.posY.step(dt)) a = true;
+    this.animating = a;
+  }
+  getPressProgress() { return this.pressProgress.value; }
+  getOffsetX() { return this.posX.value - this.startX; }
+  getOffsetY() { return this.posY.value - this.startY; }
+  getPointerX() { return this.posX.value; }
+  getPointerY() { return this.posY.value; }
+  isHighlightVisible() { return this.enabled && this.pressProgress.value > 0.0; }
+  isAnimating() { return this.animating; }
+}
+
+/* ------------------------------------------------------------------ *
+ * 2. WebGL2 渲染器
+ * ------------------------------------------------------------------ */
+const canvas = document.getElementById('cv');
+const gl = canvas.getContext('webgl2', {
+  antialias: false, alpha: false, depth: false, stencil: false,
+  premultipliedAlpha: false, preserveDrawingBuffer: false, powerPreference: 'high-performance'
+});
+if (!gl) { showFallback('当前浏览器不支持 WebGL2，无法运行液态玻璃渲染。'); return; }
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+
+/* ---- 着色器源码 ---- */
+
+const VS_SOLID = `#version 300 es
+precision highp float;
+in vec2 aPos;
+in vec2 aCoord;
+out vec2 vLocal;
+void main() { gl_Position = vec4(aPos, 0.0, 1.0); vLocal = aCoord; }
+`;
+
+const FS_SOLID = `#version 300 es
+precision highp float;
+in vec2 vLocal;
+out vec4 fragColor;
+uniform vec2 uSize;
+uniform float uRadius;
+uniform vec4 uColor;
+float sdRoundBox(vec2 p, vec2 b, float r) {
+    vec2 q = abs(p) - b + vec2(r);
+    return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - r;
+}
+void main() {
+    vec2 half_ = uSize * 0.5;
+    float r = min(uRadius, min(half_.x, half_.y));
+    float d = sdRoundBox(vLocal - half_, half_, r);
+    float aa = fwidth(d);
+    if (aa < 0.0001) aa = 1.0;
+    float alpha = 1.0 - smoothstep(-aa * 0.5, aa * 0.5, d);
+    fragColor = vec4(uColor.rgb, uColor.a * alpha);
+}
+`;
+
+const VS_TEX = `#version 300 es
+precision highp float;
+in vec2 aPos;
+in vec2 aUV;
+out vec2 vUV;
+void main() { gl_Position = vec4(aPos, 0.0, 1.0); vUV = aUV; }
+`;
+
+const FS_TEX = `#version 300 es
+precision highp float;
+in vec2 vUV;
+out vec4 fragColor;
+uniform sampler2D uTex;
+uniform vec4 uTint;
+void main() {
+    vec4 c = texture(uTex, vUV);
+    fragColor = vec4(c.rgb * uTint.rgb, c.a * uTint.a);
+}
+`;
+
+const VS_BLIT = `#version 300 es
+precision highp float;
+in vec2 aPos;
+void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
+`;
+
+const FS_BLIT = `#version 300 es
+precision highp float;
+uniform sampler2D uTex;
+uniform vec2 uSize;
+out vec4 fragColor;
+void main() { fragColor = texture(uTex, gl_FragCoord.xy / uSize); }
+`;
+
+const VS_GLASS = `#version 300 es
+precision highp float;
+in vec2 aPos;
+in vec2 aCoord;
+out vec2 vCoord;
+void main() { gl_Position = vec4(aPos, 0.0, 1.0); vCoord = aCoord; }
+`;
+
+/* 玻璃片元着色器 —— 与 C++ 原版逐字一致 */
+const FS_GLASS = `#version 300 es
+precision highp float;
+#define float2 vec2
+#define float3 vec3
+#define float4 vec4
+#define half float
+#define half2 vec2
+#define half3 vec3
+#define half4 vec4
+in vec2 vCoord;
+out vec4 fragColor;
+uniform sampler2D uContent;
+uniform vec2 uSize;
+uniform vec2 uCaptureOriginOffset;
+uniform vec2 uCaptureSize;
+uniform vec2 uCaptureTextureSize;
+uniform float uBackdropScaleX;
+uniform float uBackdropScaleY;
+uniform float uBackdropMix;
+uniform vec4 uCornerRadii;
+uniform float uRefractionHeight;
+uniform float uRefractionAmount;
+uniform float uDepthEffect;
+uniform float uDispersion;
+uniform float uBlurRadius;
+uniform float uOpacity;
+uniform vec3 uColorCtrl;
+uniform float uVibrancy;
+uniform vec4 uSurfaceColor;
+uniform float uTintMode;
+uniform float uHighlightMode;
+uniform vec4 uHighlightColor;
+uniform float uHighlightColorAlpha;
+uniform float uHighlightAngle;
+uniform float uHighlightFalloff;
+uniform float uHighlightAlpha;
+uniform float uHighlightWidth;
+uniform float uHighlightBlur;
+uniform float uUseTexture;
+uniform float uOpaque;
+uniform vec4 uFallback;
+uniform vec4 uInnerShadowColor;
+uniform vec2 uInnerShadowOffset;
+uniform float uInnerShadowRadius;
+uniform float uInnerShadowAlpha;
+uniform float uIHMode;
+uniform vec2 uIHPosition;
+uniform float uIHRadius;
+uniform float uIHAlpha;
+
+float radiusAt(vec2 coord, vec4 radii) {
+    if (coord.x >= 0.0) return coord.y <= 0.0 ? radii.y : radii.z;
+    return coord.y <= 0.0 ? radii.x : radii.w;
+}
+float sdRoundedRect(vec2 coord, vec2 halfSize, float radius) {
+    vec2 cornerCoord = abs(coord) - (halfSize - vec2(radius));
+    float outside = length(max(cornerCoord, vec2(0.0))) - radius;
+    float inside = min(max(cornerCoord.x, cornerCoord.y), 0.0);
+    return outside + inside;
+}
+vec2 gradSdRoundedRect(vec2 coord, vec2 halfSize, float radius) {
+    vec2 cornerCoord = abs(coord) - (halfSize - vec2(radius));
+    if (cornerCoord.x >= 0.0 || cornerCoord.y >= 0.0) {
+        vec2 g = max(cornerCoord, vec2(0.0));
+        float gl = length(g);
+        return sign(coord) * (gl > 0.0001 ? g / gl : vec2(0.0));
+    }
+    float gradX = step(cornerCoord.y, cornerCoord.x);
+    return sign(coord) * vec2(gradX, 1.0 - gradX);
+}
+float circleMap(float x) {
+    float safeX = clamp(x, 0.0, 1.0);
+    return 1.0 - sqrt(max(1.0 - safeX * safeX, 0.0));
+}
+vec2 safeNormalize(vec2 v) {
+    float len = length(v);
+    return len > 0.0001 ? v / len : vec2(0.0);
+}
+vec2 contentUv(vec2 pixel) {
+    vec2 storage = max(uCaptureTextureSize, vec2(1.0));
+    vec2 valid = max((uCaptureSize - vec2(0.5)) / storage, vec2(0.0));
+    vec2 uv = vec2(pixel.x / storage.x, (uCaptureSize.y - pixel.y) / storage.y);
+    return clamp(uv, vec2(0.0), valid);
+}
+vec4 backdropSample(vec2 pixel) {
+    vec4 c = texture(uContent, contentUv(pixel));
+    float fbA = clamp(c.a, 0.0, 1.0);
+    c.rgb += uFallback.rgb * uFallback.a * (1.0 - fbA);
+    c.a = fbA + uFallback.a * (1.0 - fbA);
+    return c;
+}
+vec4 sampleContent(vec2 coord) {
+    vec2 pixel = coord + uCaptureOriginOffset;
+    vec4 base = backdropSample(pixel);
+    float mixAmount = clamp(uBackdropMix, 0.0, 1.0);
+    if (mixAmount <= 0.0) return base;
+    vec2 scale = vec2(uBackdropScaleX, uBackdropScaleY);
+    if (scale.x <= 0.001 || scale.y <= 0.001) return base;
+    vec2 center = uCaptureSize * 0.5;
+    vec2 transformedPixel = center + (pixel - center) / scale;
+    vec4 layer = backdropSample(transformedPixel) * mixAmount;
+    return layer + base * (1.0 - layer.a);
+}
+vec4 blurContent(vec2 coord, float radius) {
+    if (uUseTexture < 0.5) return uFallback;
+    vec4 c;
+    if (radius <= 0.5) {
+        c = sampleContent(coord);
+    } else {
+        float stepSize = radius * 0.5;
+        vec2 diag = vec2(stepSize) * 0.7;
+        c = sampleContent(coord);
+        c += sampleContent(coord + vec2(stepSize, 0.0));
+        c += sampleContent(coord - vec2(stepSize, 0.0));
+        c += sampleContent(coord + vec2(0.0, stepSize));
+        c += sampleContent(coord - vec2(0.0, stepSize));
+        c += sampleContent(coord + diag);
+        c += sampleContent(coord + vec2(diag.x, -diag.y));
+        c += sampleContent(coord + vec2(-diag.x, diag.y));
+        c += sampleContent(coord - diag);
+        c /= 9.0;
+    }
+    if (c.a <= 0.001) return vec4(0.0);
+    c.rgb = clamp(c.rgb / c.a, 0.0, 1.0);
+    if (uOpaque > 0.5 && c.a > 0.001) c.a = 1.0;
+    return c;
+}
+vec3 applyColorControls(vec3 c, vec3 bcs) {
+    float brightness = bcs.x;
+    float contrast = bcs.y;
+    float saturation = bcs.z;
+    float invSat = 1.0 - saturation;
+    vec3 lum = vec3(0.213, 0.715, 0.072) * invSat;
+    float t = 0.5 - contrast * 0.5 + brightness;
+    return vec3(dot(c, contrast * (lum + vec3(saturation, 0.0, 0.0))) + t,
+                dot(c, contrast * (lum + vec3(0.0, saturation, 0.0))) + t,
+                dot(c, contrast * (lum + vec3(0.0, 0.0, saturation))) + t);
+}
+void main() {
+    vec2 halfSize = uSize * 0.5;
+    vec2 centeredCoord = vCoord - halfSize;
+    float radius = radiusAt(centeredCoord, uCornerRadii);
+    float sd = sdRoundedRect(centeredCoord, halfSize, radius);
+    vec2 contentCoord = vCoord;
+    float dispersion = uDispersion;
+    if (-sd < uRefractionHeight && uRefractionHeight > 0.0001 && uRefractionAmount > 0.0) {
+        float sdC = min(sd, 0.0);
+        float d = circleMap(1.0 - (-sdC / uRefractionHeight)) * (-uRefractionAmount);
+        float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
+        vec2 grad = safeNormalize(gradSdRoundedRect(centeredCoord, halfSize, gradRadius)
+                       + uDepthEffect * safeNormalize(centeredCoord));
+        contentCoord = vCoord + d * grad;
+    } else if (uRefractionAmount > 0.0) {
+        dispersion = 0.0;
+    }
+    vec4 color;
+    if (dispersion > 0.0 && uRefractionHeight > 0.0001 && uRefractionAmount > 0.0) {
+        float sdC = min(sd, 0.0);
+        float d = circleMap(1.0 - (-sdC / uRefractionHeight)) * (-uRefractionAmount);
+        float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
+        vec2 grad = safeNormalize(gradSdRoundedRect(centeredCoord, halfSize, gradRadius)
+                       + uDepthEffect * safeNormalize(centeredCoord));
+        vec2 refractedCoord = vCoord + d * grad;
+        float edgeX = abs(centeredCoord.x / max(halfSize.x, 0.001));
+        float edgeY = abs(centeredCoord.y / max(halfSize.y, 0.001));
+        float dispersionIntensity = dispersion * clamp(edgeX * edgeY, 0.0, 1.0);
+        vec2 dispersedCoord = d * grad * dispersionIntensity;
+        color = vec4(0.0);
+        vec4 red = blurContent(refractedCoord + dispersedCoord, uBlurRadius);
+        color.r += red.r / 3.5; color.a += red.a / 7.0;
+        vec4 orange = blurContent(refractedCoord + dispersedCoord * (2.0 / 3.0), uBlurRadius);
+        color.r += orange.r / 3.5; color.g += orange.g / 7.0; color.a += orange.a / 7.0;
+        vec4 yellow = blurContent(refractedCoord + dispersedCoord * (1.0 / 3.0), uBlurRadius);
+        color.r += yellow.r / 3.5; color.g += yellow.g / 3.5; color.a += yellow.a / 7.0;
+        vec4 green = blurContent(refractedCoord, uBlurRadius);
+        color.g += green.g / 3.5; color.a += green.a / 7.0;
+        vec4 cyan = blurContent(refractedCoord - dispersedCoord * (1.0 / 3.0), uBlurRadius);
+        color.g += cyan.g / 3.5; color.b += cyan.b / 3.0; color.a += cyan.a / 7.0;
+        vec4 blue = blurContent(refractedCoord - dispersedCoord * (2.0 / 3.0), uBlurRadius);
+        color.b += blue.b / 3.0; color.a += blue.a / 7.0;
+        vec4 purple = blurContent(refractedCoord - dispersedCoord, uBlurRadius);
+        color.r += purple.r / 7.0; color.b += purple.b / 3.0; color.a += purple.a / 7.0;
+        color.a = clamp(color.a, 0.0, 1.0);
+    } else {
+        color = blurContent(contentCoord, uBlurRadius);
+    }
+    vec3 bcs = uColorCtrl;
+    if (uVibrancy > 0.5) bcs.z *= 1.5;
+    color.rgb = applyColorControls(color.rgb, bcs);
+    color.a *= uOpacity;
+    if (uTintMode > 1.5) {
+        color = vec4(mix(color.rgb, uSurfaceColor.rgb, uSurfaceColor.a),
+                     color.a + uSurfaceColor.a * (1.0 - color.a));
+    } else if (uTintMode > 0.5) {
+        float luma = dot(color.rgb, vec3(0.213, 0.715, 0.072));
+        vec3 hue = uSurfaceColor.rgb * (0.35 + 1.3 * luma);
+        color.rgb = mix(color.rgb, hue, 0.75 * uSurfaceColor.a);
+        color.a = max(color.a, 0.75 * uSurfaceColor.a);
+    }
+    if (uHighlightMode > 0.5) {
+        float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
+        vec2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
+        float edgeDistance = abs(sd);
+        float edgeBand = 1.0 - smoothstep(max(uHighlightWidth - uHighlightBlur, 0.0),
+                                           uHighlightWidth + uHighlightBlur, edgeDistance);
+        float d = dot(grad, vec2(cos(uHighlightAngle), sin(uHighlightAngle)));
+        float intensity = pow(abs(d), max(uHighlightFalloff, 0.001));
+        if (uHighlightMode > 2.5) {
+            float ha = uHighlightAlpha * uHighlightColorAlpha * edgeBand;
+            color.rgb += uHighlightColor.rgb * ha; color.a = clamp(color.a + ha, 0.0, 1.0);
+        } else if (uHighlightMode > 1.5) {
+            float ha = intensity * edgeBand * uHighlightAlpha * step(0.0, d);
+            color.rgb = mix(color.rgb, vec3(1.0), ha); color.a += ha * (1.0 - color.a);
+        } else {
+            float ha = intensity * edgeBand * uHighlightAlpha;
+            color.rgb += uHighlightColor.rgb * ha; color.a = clamp(color.a + ha, 0.0, 1.0);
+        }
+    }
+    if (uInnerShadowAlpha > 0.001) {
+        vec2 offCoord = centeredCoord - uInnerShadowOffset;
+        float isd = sdRoundedRect(offCoord, halfSize, radius);
+        float mask = clamp(isd / max(uInnerShadowRadius, 1.0), 0.0, 1.0);
+        float inside = clamp(0.5 - sd, 0.0, 1.0);
+        float sa = mask * inside * uInnerShadowAlpha;
+        color.rgb = mix(color.rgb, uInnerShadowColor.rgb, sa);
+        color.a += sa * (1.0 - color.a);
+    }
+    if (uIHMode > 0.5 && uIHAlpha > 0.001) {
+        float p = uIHAlpha;
+        float spot = smoothstep(uIHRadius, uIHRadius * 0.5, distance(vCoord, uIHPosition));
+        color.rgb += vec3(0.08 * p + 0.15 * p * spot);
+        color.a = clamp(color.a + 0.08 * p + 0.15 * p * spot, 0.0, 1.0);
+    }
+    float edgeWidth = max(fwidth(sd), 0.75);
+    color.a *= 1.0 - smoothstep(0.0, edgeWidth, sd);
+    fragColor = color;
+}
+`;
+
+/* ---- 编译 & 链接 ---- */
+function compileShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.warn('shader compile failed:', gl.getShaderInfoLog(s));
+    gl.deleteShader(s);
+    return null;
+  }
+  return s;
+}
+function linkProgram(vsSrc, fsSrc) {
+  const v = compileShader(gl.VERTEX_SHADER, vsSrc);
+  const f = compileShader(gl.FRAGMENT_SHADER, fsSrc);
+  if (!v || !f) { if (v) gl.deleteShader(v); if (f) gl.deleteShader(f); return null; }
+  const p = gl.createProgram();
+  gl.attachShader(p, v); gl.attachShader(p, f);
+  gl.bindAttribLocation(p, 0, 'aPos');
+  gl.bindAttribLocation(p, 1, 'aCoord');
+  gl.bindAttribLocation(p, 1, 'aUV');
+  gl.bindAttribLocation(p, 1, 'aLocal');
+  gl.linkProgram(p);
+  gl.deleteShader(v); gl.deleteShader(f);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    console.warn('program link failed:', gl.getProgramInfoLog(p));
+    gl.deleteProgram(p);
+    return null;
+  }
+  return p;
+}
+
+const progSolid = linkProgram(VS_SOLID, FS_SOLID);
+const progTex = linkProgram(VS_TEX, FS_TEX);
+const progBlit = linkProgram(VS_BLIT, FS_BLIT);
+let progGlass = linkProgram(VS_GLASS, FS_GLASS);
+if (!progGlass) {
+  const stripped = FS_GLASS.split('\n').filter(l => l.indexOf('#define') !== 0).join('\n');
+  progGlass = linkProgram(VS_GLASS, stripped);
+}
+if (!progSolid || !progTex || !progBlit || !progGlass) {
+  showFallback('着色器编译失败：需要支持 WebGL2 / GLSL ES 3.0 的浏览器。');
+  return;
+}
+
+const uniCache = new WeakMap();
+function uloc(prog, name) {
+  let m = uniCache.get(prog);
+  if (!m) { m = {}; uniCache.set(prog, m); }
+  if (!(name in m)) m[name] = gl.getUniformLocation(prog, name);
+  return m[name];
+}
+
+/* ---- VAO / VBO ---- */
+function makeQuadVAO() {
+  const vao = gl.createVertexArray();
+  const vbo = gl.createBuffer();
+  gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8);
+  gl.bindVertexArray(null);
+  return { vao, vbo };
+}
+const vaoSolid = makeQuadVAO();
+const vaoTex = makeQuadVAO();
+const vaoGlass = makeQuadVAO();
+const blitVAO = (() => {
+  const vao = gl.createVertexArray();
+  const vbo = gl.createBuffer();
+  gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
+  gl.bindVertexArray(null);
+  return { vao, vbo };
+})();
+
+/* ---- 纹理工具 ---- */
+function texFromCanvas(cv) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, cv);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+const emptyTex = (() => {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+})();
+
+/* ---- 场景 FBO 与捕获纹理 ---- */
+let W = 0, H = 0, S = 1;
+let sceneTex = null, sceneFbo = null;
+let capTex = null, capW = 0, capH = 0;
+
+function createScene(w, h) {
+  if (sceneTex) gl.deleteTexture(sceneTex);
+  if (sceneFbo) gl.deleteFramebuffer(sceneFbo);
+  sceneTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  sceneFbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sceneTex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  W = w; H = h;
+}
+function ensureCapture(w, h) {
+  if (!capTex) {
+    capTex = gl.createTexture();
+  }
+  gl.bindTexture(gl.TEXTURE_2D, capTex);
+  if (w > capW || h > capH) {
+    const nw = Math.max(w, capW), nh = Math.max(h, capH);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, nw, nh, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    capW = nw; capH = nh;
+  }
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return true;
+}
+
+/* ------------------------------------------------------------------ *
+ * 3. 文本纹理系统 (Canvas2D 栅格化 -> GL 纹理)
+ * ------------------------------------------------------------------ */
+const metric = document.createElement('canvas').getContext('2d');
+const textCache = new Map();
+function clearTextCache() {
+  for (const e of textCache.values()) gl.deleteTexture(e.tex);
+  textCache.clear();
+}
+function getTextTex(line, fontPx, weight) {
+  const key = weight + '|' + fontPx.toFixed(1) + '|' + line;
+  let e = textCache.get(key);
+  if (e) return e;
+  metric.font = weight + ' ' + fontPx + 'px ' + FAMILY;
+  const tw = Math.ceil(metric.measureText(line).width);
+  const padX = Math.ceil(fontPx * 0.3) + 2, padY = Math.ceil(fontPx * 0.4) + 2;
+  const w = Math.max(2, tw + padX * 2);
+  const h = Math.ceil(fontPx * 1.5) + padY * 2;
+  const cv = document.createElement('canvas');
+  cv.width = w; cv.height = h;
+  const c2 = cv.getContext('2d');
+  c2.font = weight + ' ' + fontPx + 'px ' + FAMILY;
+  c2.fillStyle = '#fff';
+  c2.textAlign = 'left';
+  c2.textBaseline = 'middle';
+  c2.fillText(line, padX, h / 2);
+  e = { tex: texFromCanvas(cv), w, h };
+  textCache.set(key, e);
+  if (textCache.size > 900) clearTextCache();
+  return e;
+}
+function wrapText(str, fontPx, maxWfb, weight) {
+  metric.font = weight + ' ' + fontPx + 'px ' + FAMILY;
+  const out = [];
+  for (const seg of String(str).split('\n')) {
+    if (seg === '') { out.push(''); continue; }
+    let line = '';
+    for (const ch of seg) {
+      const test = line + ch;
+      if (line && metric.measureText(test).width > maxWfb) { out.push(line); line = ch; }
+      else line = test;
+    }
+    out.push(line);
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
+ * 4. 渲染队列 / 绘制命令
+ * ------------------------------------------------------------------ */
+const queue = [];
+function emitRect(x, y, w, h, color, r = 0) { queue.push({ t: 0, x, y, w, h, color, r }); }
+function emitTex(tex, x, y, w, h, tint, add = false) { queue.push({ t: 1, tex, x, y, w, h, tint, add }); }
+function emitGlass(x, y, w, h, P) {
+  const m = Math.min(w, h) * 0.5;
+  let radii;
+  if (P.shape === 'pill') radii = [m, m, m, m];
+  else if (typeof P.shape === 'number') {
+    const rr = Math.max(0, P.shape);
+    radii = [Math.min(rr, m), Math.min(rr, m), Math.min(rr, m), Math.min(rr, m)];
+  } else radii = P.shape.map(v => Math.min(Math.max(0, v), m));
+  P.radii = radii;
+  if (P.shadow) pushShadow(x, y, w, h, P.shadow, radii[0]);
+  queue.push({ t: 2, x, y, w, h, P });
+}
+function pushShadow(x, y, w, h, sh, cornerTL) {
+  const radius = sh.radius;
+  const layers = 5;
+  const alpha = sh.alpha === undefined ? 1 : sh.alpha;
+  for (let layer = layers; layer >= 1; layer--) {
+    const expand = radius * layer / layers;
+    let weight = (layers - layer + 1) / (layers + 1);
+    weight = weight * weight;
+    const a = sh.color[3] * alpha * weight;
+    if (a <= 0) continue;
+    const maxR = Math.min(w, h) * 0.5;
+    const rr = Math.min(cornerTL + expand, maxR + expand);
+    emitRect(x - expand + sh.ox, y - expand + sh.oy, w + 2 * expand, h + 2 * expand,
+      [sh.color[0], sh.color[1], sh.color[2], a], rr);
+  }
+}
+function pushText(str, x, y, sizeCss, color, opts = {}) {
+  const align = opts.align || 'left';
+  const weight = opts.weight || 400;
+  const lhMul = opts.lineHeight || 1.5;
+  const fontPx = Math.max(5, sizeCss * S);
+  const lines = (opts.maxWidth > 0)
+    ? wrapText(str, fontPx, opts.maxWidth * S, weight)
+    : String(str).split('\n');
+  const lh = sizeCss * lhMul;
+  let yStart = y;
+  if (opts.middle) yStart = y - (lines.length * lh) / 2;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    const e = getTextTex(line, fontPx, weight);
+    const wCss = e.w / S, hCss = e.h / S;
+    let x0 = x;
+    if (align === 'center') x0 = x - wCss / 2;
+    else if (align === 'right') x0 = x - wCss;
+    const y0 = yStart + i * lh + (lh - hCss) / 2;
+    emitTex(e.tex, x0, y0, wCss, hCss, [color[0], color[1], color[2], color[3] === undefined ? 1 : color[3]]);
+  }
+}
+
+/* ---- 玻璃参数工厂 ---- */
+function glassParams(o) {
+  return Object.assign({
+    shape: 'pill',
+    vibrancy: false,
+    blur: 0,
+    refH: 0, refA: 0, depth: false, chroma: false, chromaAmount: 1,
+    opacity: 1, colorCtrl: [0, 1, 1], surface: [0, 0, 0, 0], tintMode: 0,
+    useBackdrop: true, opaque: false, scaleX: 1, scaleY: 1, mix: 0, fallback: [0, 0, 0, 0],
+    hl: null, inner: null, ih: null, shadow: null
+  }, o);
+}
+
+/* ---- 渲染执行 ---- */
+function setBlendNormal() {
+  gl.enable(gl.BLEND);
+  gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+}
+function setBlendAdd() {
+  gl.enable(gl.BLEND);
+  gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE, gl.ONE, gl.ONE);
+}
+function bindDraw(v, verts) {
+  gl.bindVertexArray(v.vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, v.vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STREAM_DRAW);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+  gl.bindVertexArray(null);
+}
+function drawSolidCmd(c) {
+  const x = c.x * S, y = c.y * S, w = c.w * S, h = c.h * S;
+  if (w <= 0 || h <= 0) return;
+  const l = 2 * x / W - 1, t = 1 - 2 * y / H;
+  const r = 2 * (x + w) / W - 1, b = 1 - 2 * (y + h) / H;
+  const verts = new Float32Array([
+    l, t, 0, 0, r, t, w, 0, r, b, w, h,
+    l, t, 0, 0, r, b, w, h, l, b, 0, h
+  ]);
+  gl.useProgram(progSolid);
+  gl.uniform2f(uloc(progSolid, 'uSize'), w, h);
+  gl.uniform1f(uloc(progSolid, 'uRadius'), (c.r || 0) * S);
+  gl.uniform4f(uloc(progSolid, 'uColor'), c.color[0], c.color[1], c.color[2], c.color[3]);
+  bindDraw(vaoSolid, verts);
+}
+function drawTexCmd(c) {
+  const x = c.x * S, y = c.y * S, w = c.w * S, h = c.h * S;
+  if (w <= 0 || h <= 0) return;
+  const l = 2 * x / W - 1, t = 1 - 2 * y / H;
+  const r = 2 * (x + w) / W - 1, b = 1 - 2 * (y + h) / H;
+  const verts = new Float32Array([
+    l, t, 0, 1, r, t, 1, 1, r, b, 1, 0,
+    l, t, 0, 1, r, b, 1, 0, l, b, 0, 0
+  ]);
+  gl.useProgram(progTex);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, c.tex);
+  gl.uniform1i(uloc(progTex, 'uTex'), 0);
+  gl.uniform4f(uloc(progTex, 'uTint'), c.tint[0], c.tint[1], c.tint[2], c.tint[3]);
+  bindDraw(vaoTex, verts);
+}
+function drawGlassCmd(c) {
+  const P = c.P;
+  const l = c.x * S, t = c.y * S, rectW = c.w * S, rectH = c.h * S;
+  if (rectW <= 0 || rectH <= 0) return;
+
+  const refH = P.refH * S, refA = P.refA * S, blur = P.blur * S;
+  let pad = 2.0;
+  if (blur > 0) pad += blur;
+
+  let cx = Math.floor(l - pad), cy = Math.floor(t - pad);
+  let cw = Math.ceil(rectW + pad * 2), ch = Math.ceil(rectH + pad * 2);
+  if (cx < 0) { cw += cx; cx = 0; }
+  if (cy < 0) { ch += cy; cy = 0; }
+  if (cx > W) cw = 0;
+  if (cy > H) ch = 0;
+  if (cx + cw > W) cw = W - cx;
+  if (cy + ch > H) ch = H - cy;
+  if (cw < 0) cw = 0;
+  if (ch < 0) ch = 0;
+
+  let useTex = P.useBackdrop ? 1.0 : 0.0;
+  let texW = capW || 1, texH = capH || 1;
+
+  if (useTex > 0.5) {
+    if (cw > 0 && ch > 0 && W > 0 && H > 0) {
+      ensureCapture(cw, ch);
+      if (cw > capW || ch > capH) { useTex = 0.0; }
+      else {
+        gl.bindTexture(gl.TEXTURE_2D, capTex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        while (gl.getError() !== gl.NO_ERROR) {}
+        const glY = H - (cy + ch);
+        gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, cx, glY, cw, ch);
+        if (gl.getError() !== gl.NO_ERROR) { useTex = 0.0; while (gl.getError() !== gl.NO_ERROR) {} }
+        else { texW = capW; texH = capH; }
+      }
+    } else { useTex = 0.0; }
+  }
+
+  setBlendNormal();
+  gl.useProgram(progGlass);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, capTex || emptyTex);
+
+  const U = n => uloc(progGlass, n);
+  gl.uniform1i(U('uContent'), 0);
+  gl.uniform1f(U('uUseTexture'), useTex);
+  gl.uniform1f(U('uOpaque'), P.opaque ? 1.0 : 0.0);
+  gl.uniform4f(U('uFallback'), P.fallback[0], P.fallback[1], P.fallback[2], P.fallback[3]);
+  gl.uniform1f(U('uBackdropScaleX'), P.scaleX);
+  gl.uniform1f(U('uBackdropScaleY'), P.scaleY);
+  gl.uniform1f(U('uBackdropMix'), P.mix);
+  gl.uniform2f(U('uSize'), rectW, rectH);
+  gl.uniform2f(U('uCaptureOriginOffset'), l - cx, t - cy);
+  gl.uniform2f(U('uCaptureSize'), cw, ch);
+  gl.uniform2f(U('uCaptureTextureSize'), texW, texH);
+  gl.uniform4f(U('uCornerRadii'), P.radii[0] * S, P.radii[1] * S, P.radii[2] * S, P.radii[3] * S);
+  gl.uniform1f(U('uRefractionHeight'), refH);
+  gl.uniform1f(U('uRefractionAmount'), refA);
+  gl.uniform1f(U('uDepthEffect'), P.depth ? 1.0 : 0.0);
+  gl.uniform1f(U('uDispersion'), P.chroma ? clampf(P.chromaAmount, 0.0, 4.0) : 0.0);
+  gl.uniform1f(U('uBlurRadius'), blur);
+  gl.uniform1f(U('uOpacity'), P.opacity);
+  gl.uniform3f(U('uColorCtrl'), P.colorCtrl[0], P.colorCtrl[1], P.colorCtrl[2]);
+  gl.uniform1f(U('uVibrancy'), P.vibrancy ? 1.0 : 0.0);
+  gl.uniform4f(U('uSurfaceColor'), P.surface[0], P.surface[1], P.surface[2], P.surface[3]);
+  gl.uniform1f(U('uTintMode'), P.tintMode);
+
+  const hl = P.hl;
+  if (hl) {
+    gl.uniform1f(U('uHighlightMode'), hl.mode);
+    gl.uniform4f(U('uHighlightColor'), hl.color[0], hl.color[1], hl.color[2], 1.0);
+    gl.uniform1f(U('uHighlightColorAlpha'), hl.colorA);
+    gl.uniform1f(U('uHighlightAngle'),
+      (hl.angleDeg === undefined ? 45 : hl.angleDeg) * Math.PI / 180);
+    gl.uniform1f(U('uHighlightFalloff'), hl.falloff === undefined ? 1 : hl.falloff);
+    gl.uniform1f(U('uHighlightAlpha'), hl.alpha);
+    let wpx = hl.width * S;
+    const maxW = Math.min(rectW, rectH) * 0.5;
+    if (wpx > maxW) wpx = maxW;
+    gl.uniform1f(U('uHighlightWidth'), Math.ceil(wpx));
+    gl.uniform1f(U('uHighlightBlur'), hl.blur * S);
+  } else {
+    gl.uniform1f(U('uHighlightMode'), 0);
+    gl.uniform1f(U('uHighlightWidth'), 0);
+    gl.uniform1f(U('uHighlightBlur'), 0);
+  }
+
+  const inn = P.inner;
+  if (inn) {
+    gl.uniform4f(U('uInnerShadowColor'), inn.color[0], inn.color[1], inn.color[2], 1.0);
+    gl.uniform2f(U('uInnerShadowOffset'), inn.ox * S, inn.oy * S);
+    gl.uniform1f(U('uInnerShadowRadius'), inn.radius * S);
+    gl.uniform1f(U('uInnerShadowAlpha'), inn.alpha);
+  } else {
+    gl.uniform1f(U('uInnerShadowAlpha'), 0);
+  }
+
+  const ih = P.ih;
+  if (ih && ih.progress > 0.001) {
+    gl.uniform1f(U('uIHMode'), 1);
+    gl.uniform2f(U('uIHPosition'), ih.x * S, ih.y * S);
+    gl.uniform1f(U('uIHRadius'), Math.min(rectW, rectH) * 1.5);
+    gl.uniform1f(U('uIHAlpha'), ih.progress);
+  } else {
+    gl.uniform1f(U('uIHMode'), 0);
+  }
+
+  const l2 = 2 * l / W - 1, t2 = 1 - 2 * t / H;
+  const r2 = 2 * (l + rectW) / W - 1, b2 = 1 - 2 * (t + rectH) / H;
+  const verts = new Float32Array([
+    l2, t2, 0, 0, r2, t2, rectW, 0, r2, b2, rectW, rectH,
+    l2, t2, 0, 0, r2, b2, rectW, rectH, l2, b2, 0, rectH
+  ]);
+  bindDraw(vaoGlass, verts);
+}
+
+function executeQueue() {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFbo);
+  gl.viewport(0, 0, W, H);
+  gl.disable(gl.BLEND);
+  gl.clearColor(0, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  for (const c of queue) {
+    if (c.t === 0) { setBlendNormal(); drawSolidCmd(c); }
+    else if (c.t === 1) { c.add ? setBlendAdd() : setBlendNormal(); drawTexCmd(c); }
+    else drawGlassCmd(c);
+  }
+}
+function present() {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, W, H);
+  gl.disable(gl.BLEND);
+  gl.useProgram(progBlit);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+  gl.uniform1i(uloc(progBlit, 'uTex'), 0);
+  gl.uniform2f(uloc(progBlit, 'uSize'), W, H);
+  gl.bindVertexArray(blitVAO.vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, blitVAO.vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STREAM_DRAW);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.bindVertexArray(null);
+}
+
+/* ------------------------------------------------------------------ *
+ * 5. 输入
+ * ------------------------------------------------------------------ */
+const input = {
+  x: 0, y: 0, down: false,
+  justPressed: false, justReleased: false,
+  activeId: null, downAt: 0
+};
+function pointerPos(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+canvas.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+  const p = pointerPos(e);
+  input.x = p.x; input.y = p.y;
+  if (!input.down) { input.down = true; input.justPressed = true; }
+  e.preventDefault();
+}, { passive: false });
+canvas.addEventListener('pointermove', e => {
+  const p = pointerPos(e);
+  input.x = p.x; input.y = p.y;
+  e.preventDefault();
+}, { passive: false });
+window.addEventListener('pointerup', e => { input.down = false; input.justReleased = true; });
+window.addEventListener('pointercancel', () => { input.down = false; input.justReleased = true; });
+window.addEventListener('blur', () => { input.down = false; input.justReleased = true; });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+/* ------------------------------------------------------------------ *
+ * 6. 组件
+ * ------------------------------------------------------------------ */
+let u = 1;                                       // dp -> css 缩放
+
+/* ---- 玻璃按钮 ---- */
+const btn = {
+  label: '液态玻璃按钮',
+  x: 0, y: 0, w: 0, h: 0,
+  ih: new InteractiveHighlight(),
+  wasPressed: false,
+  update(dt, time, can) {
+    let clicked = false;
+    const hovered = can && input.x >= this.x && input.x <= this.x + this.w &&
+                    input.y >= this.y && input.y <= this.y + this.h;
+    if (can && input.justPressed && input.activeId === null && hovered) {
+      input.activeId = this; clicked = true;
+    }
+    const held = can && input.down && input.activeId === this;
+    if (held) {
+      if (!this.wasPressed) this.ih.press(input.x - this.x, input.y - this.y);
+      else this.ih.move(input.x - this.x, input.y - this.y);
+    } else if (this.wasPressed && !held) {
+      this.ih.release();
+    }
+    this.wasPressed = held;
+    if (this.ih.isAnimating() || this.ih.isHighlightVisible()) this.ih.step(dt);
+    return clicked;
+  },
+  draw() {
+    const x = this.x, y = this.y, w = this.w, h = this.h;
+    const prog = clamp01(this.ih.getPressProgress());
+    const scale = lerp(1, 1 + 4 * u / h, prog);
+    const maxOffset = Math.min(w, h);
+    const ox = this.ih.getOffsetX(), oy = this.ih.getOffsetY();
+    const tx = maxOffset * Math.tanh(0.05 * ox / maxOffset);
+    const ty = maxOffset * Math.tanh(0.05 * oy / maxOffset);
+    const maxDragScale = 4 * u / h;
+    const angle = Math.atan2(oy, ox);
+    const sx = scale + maxDragScale * Math.abs(Math.cos(angle) * ox / Math.max(w, h)) * Math.min(w / h, 1);
+    const sy = scale + maxDragScale * Math.abs(Math.sin(angle) * oy / Math.max(w, h)) * Math.min(h / w, 1);
+    const cx = x + w / 2 + tx, cy = y + h / 2 + ty;
+    const dw = w * sx, dh = h * sy;
+    const rx = cx - dw / 2, ry = cy - dh / 2;
+
+    const P = glassParams({
+      shape: 'pill',
+      vibrancy: true,
+      blur: 2 * u,
+      refH: 12 * u, refA: 24 * u, depth: false, chroma: true, chromaAmount: 0.28,
+      surface: argb(0x5C0091FF), tintMode: 1,
+      hl: { mode: 1, color: [1, 1, 1], colorA: 0.5, angleDeg: 45, falloff: 1, alpha: 1, width: 0.5 * u, blur: 0.25 * u },
+      fallback: LIGHT ? FROSTED_LIGHT : FROSTED_DARK
+    });
+    if (this.ih.isHighlightVisible()) {
+      P.ih = {
+        x: clampf(this.ih.getPointerX(), 0, w),
+        y: clampf(this.ih.getPointerY(), 0, h),
+        progress: clamp01(prog) * this.ih.intensityScale
+      };
+    }
+    emitGlass(rx, ry, dw, dh, P);
+    pushText(this.label, cx, cy, 16 * u, LIGHT ? [0, 0, 0, 1] : [1, 1, 1, 1],
+      { align: 'center', middle: true, weight: 500 });
+  }
+};
+
+/* ---- 玻璃开关 ---- */
+const toggle = {
+  selected: false,
+  anim: new DampedDragAnimation(0, 0, 1, 0.001, 1.0, 1.5),
+  touchActive: false, didDrag: false, lastRawX: 0, heldSince: -1,
+  x: 0, y: 0, w: 0, h: 0,
+  update(dt, time, can) {
+    let toggled = false;
+    const x = this.x, y = this.y, w = this.w, h = this.h;
+    const thumbW = 40 * u, thumbH = 24 * u, trackW = 64 * u, trackH = 28 * u;
+    const trackX = x, thumbY = y + (h - thumbH) / 2;
+
+    const hovered = can && input.x >= x && input.x <= x + w && input.y >= y && input.y <= y + h;
+    if (can && input.justPressed && input.activeId === null && hovered) {
+      input.activeId = this;
+      const txNow = lerp(2 * u, 22 * u, this.anim.getValue());
+      const tl = trackX + txNow, tr = tl + thumbW, tt = thumbY, tb = tt + thumbH;
+      if (input.x >= tl && input.x <= tr && input.y >= tt && input.y <= tb) {
+        this.lastRawX = input.x; this.touchActive = true; this.didDrag = false;
+        this.heldSince = time; this.anim.press();
+      }
+    }
+    const held = can && input.down && input.activeId === this;
+    if (held && this.touchActive) {
+      const dx = input.x - this.lastRawX;
+      this.lastRawX = input.x;
+      if (Math.abs(dx) > 1.0 * u) { this.didDrag = true; this.heldSince = time; }
+      if (this.heldSince > 0 && time - this.heldSince > 2.0) {
+        input.down = false; input.activeId = null;
+        const newSel = this.didDrag ? (this.anim.getTargetValue() >= 0.5) : !this.selected;
+        if (newSel !== this.selected) { this.selected = newSel; toggled = true; }
+        this.anim.updateValue(newSel ? 1 : 0);
+        this.didDrag = false; this.anim.release(); this.touchActive = false;
+      } else {
+        const delta = dx / (20 * u);
+        this.anim.updateValue(clampf(this.anim.getTargetValue() + delta, 0, 1));
+      }
+    }
+    if (can && input.justReleased && input.activeId === this && this.touchActive) {
+      this.touchActive = false;
+      const newSel = this.didDrag ? (this.anim.getTargetValue() >= 0.5) : !this.selected;
+      if (newSel !== this.selected) { this.selected = newSel; toggled = true; }
+      this.anim.updateValue(newSel ? 1 : 0);
+      this.didDrag = false;
+      this.anim.release();
+    }
+    this.anim.step(dt);
+    return toggled;
+  },
+  draw() {
+    const x = this.x, y = this.y, w = this.w, h = this.h;
+    const trackW = 64 * u, trackH = 28 * u, thumbW = 40 * u, thumbH = 24 * u;
+    const trackX = x, trackY = y + (h - trackH) / 2;
+    const thumbY = y + (h - thumbH) / 2;
+    const value = this.anim.getValue();
+    const pressP = this.anim.getPressProgress();
+    const accent = argb(0xFF30D158);
+    const trackCol = colorLerp(argb(0x5C787880), accent, value);
+    emitRect(trackX, trackY, trackW, trackH, trackCol, trackH / 2);
+
+    const tx = lerp(2 * u, 22 * u, value);
+    const velocity = this.anim.getVelocity() / 50;
+    const sx = this.anim.getScaleX() / (1 - clampf(velocity * 0.75, -0.2, 0.2));
+    const sy = this.anim.getScaleY() * (1 - clampf(velocity * 0.25, -0.2, 0.2));
+    const tw = thumbW * sx, th = thumbH * sy;
+    const px = trackX + tx - (tw - thumbW) / 2;
+    const py = thumbY + (thumbH - th) / 2;
+
+    const P = glassParams({
+      shape: 'pill',
+      vibrancy: true,
+      blur: 8 * u * (1 - pressP),
+      refH: 5 * u * pressP, refA: 10 * u * pressP, depth: false, chroma: true, chromaAmount: 1.0,
+      scaleX: lerp(2 / 3, 0.75, pressP), scaleY: lerp(0, 0.75, pressP), mix: 1,
+      surface: [1, 1, 1, clamp01(1 - pressP)], tintMode: 2,
+      fallback: PAGE_BG,
+      shadow: { radius: 4 * u, ox: 0, oy: 4 * u / 6, color: argb(0x0D000000), alpha: 1 }
+    });
+    const hp = clamp01(pressP);
+    if (hp > 0.001) {
+      P.hl = { mode: 2, color: [1, 1, 1], colorA: 0.38, angleDeg: 45, falloff: 1, alpha: hp * 0.38, width: 0.5 * u / 1.5, blur: 0.25 * u / 1.5 };
+    }
+    if (pressP > 0.001) {
+      P.inner = { color: [0, 0, 0], alpha: pressP * (38 / 255), ox: 0, oy: 4 * u * pressP, radius: 4 * u * pressP };
+    }
+    emitGlass(px, py, tw, th, P);
+  }
+};
+
+/* ---- 玻璃滑块 ---- */
+const slider = {
+  value: 35, rangeStart: 0, rangeEnd: 100,
+  anim: new DampedDragAnimation(35, 0, 100, 0.001, 1.0, 1.5),
+  dragging: false, didDrag: false, lastRawX: 0, trackTapPending: false, heldSince: -1,
+  x: 0, y: 0, w: 0, h: 0,
+  update(dt, time, can) {
+    let changed = false;
+    const x = this.x, y = this.y, w = this.w, h = this.h;
+    const thumbW = 40 * u, thumbH = 24 * u, trackH = 6 * u;
+    const thumbY = y + (h - thumbH) / 2;
+
+    const hovered = can && input.x >= x && input.x <= x + w && input.y >= y && input.y <= y + h;
+    if (can && input.justPressed && input.activeId === null && hovered) {
+      input.activeId = this;
+      const prog0 = clamp01(this.anim.getProgress());
+      const raw0 = -thumbW * 0.5 + w * prog0;
+      const tx0 = clampf(raw0, -thumbW * 0.25, w - thumbW * 0.75);
+      const tl = x + tx0, tr = tl + thumbW, tt = thumbY, tb = tt + thumbH;
+      if (input.x < tl || input.x > tr || input.y < tt || input.y > tb) {
+        this.trackTapPending = true; this.anim.press();
+      } else {
+        this.dragging = true; this.didDrag = false; this.lastRawX = input.x; this.anim.press();
+      }
+      this.heldSince = time;
+    }
+    const held = can && input.down && input.activeId === this;
+    if (held && (this.dragging || this.trackTapPending)) {
+      if (this.heldSince > 0 && time - this.heldSince > 2.0) {
+        input.down = false; input.activeId = null;
+        if (this.dragging) { this.dragging = false; this.anim.release(); }
+        if (this.trackTapPending) {
+          this.trackTapPending = false;
+          const prog = clampf((input.x - x) / (w > 1 ? w : 1), 0, 1);
+          this.value = clampf(this.rangeStart + (this.rangeEnd - this.rangeStart) * prog, this.rangeStart, this.rangeEnd);
+          this.anim.animateToValue(this.value);
+          changed = true;
+        }
+      } else if (this.dragging) {
+        const dx = input.x - this.lastRawX;
+        this.lastRawX = input.x;
+        if (dx !== 0) { this.didDrag = true; changed = true; }
+        if (Math.abs(dx) > 0.75 * u) this.heldSince = time;
+        const target = this.anim.getTargetValue() + (this.rangeEnd - this.rangeStart) * (dx / (w > 1 ? w : 1));
+        this.value = clampf(target, this.rangeStart, this.rangeEnd);
+        this.anim.updateValue(this.value);
+      }
+    }
+    if (can && input.justReleased && input.activeId === this) {
+      if (this.dragging) { this.dragging = false; this.anim.release(); }
+      if (this.trackTapPending) {
+        this.trackTapPending = false;
+        const prog = clampf((input.x - x) / (w > 1 ? w : 1), 0, 1);
+        this.value = clampf(this.rangeStart + (this.rangeEnd - this.rangeStart) * prog, this.rangeStart, this.rangeEnd);
+        this.anim.animateToValue(this.value);
+        changed = true;
+      }
+    }
+    this.anim.step(dt);
+    return changed;
+  },
+  draw() {
+    const x = this.x, y = this.y, w = this.w, h = this.h;
+    const trackH = 6 * u, thumbW = 40 * u, thumbH = 24 * u;
+    const trackY = y + (h - trackH) / 2;
+    const thumbY = y + (h - thumbH) / 2;
+    const progress = clamp01(this.anim.getProgress());
+    const pressP = this.anim.getPressProgress();
+    const accent = argb(0xFF0091FF);
+
+    const raw = -thumbW * 0.5 + w * progress;
+    const tx = clampf(raw, -thumbW * 0.25, w - thumbW * 0.75);
+    const velocity = this.anim.getVelocity() / 10;
+    const sx = this.anim.getScaleX() / (1 - clampf(velocity * 0.75, -0.2, 0.2));
+    const sy = this.anim.getScaleY() * (1 - clampf(velocity * 0.25, -0.2, 0.2));
+    const tw = thumbW * sx, th = thumbH * sy;
+    const px = x + tx - (tw - thumbW) / 2;
+    const py = thumbY + (thumbH - th) / 2;
+
+    emitRect(x, trackY, w, trackH, argb(0x5C787880), trackH / 2);
+    const fillW = w * progress;
+    if (fillW > 0.5) {
+      const fillRadius = Math.min(fillW, trackH) * 0.5;
+      emitRect(x, trackY, fillW, trackH, accent, fillRadius);
+    }
+
+    const P = glassParams({
+      shape: 'pill',
+      vibrancy: true,
+      blur: 8 * u * (1 - pressP),
+      refH: 10 * u * pressP, refA: 14 * u * pressP, depth: false, chroma: true, chromaAmount: 1.0,
+      scaleX: lerp(2 / 3, 1, pressP), scaleY: lerp(0, 1, pressP), mix: 1,
+      surface: [1, 1, 1, clamp01(1 - pressP)], tintMode: 2,
+      fallback: LIGHT ? FROSTED_LIGHT : FROSTED_DARK,
+      shadow: { radius: 4 * u, ox: 0, oy: 4 * u / 6, color: argb(0x0D000000), alpha: 1 }
+    });
+    const hp = clamp01(pressP);
+    if (hp > 0.001) {
+      P.hl = { mode: 2, color: [1, 1, 1], colorA: 0.38, angleDeg: 45, falloff: 1, alpha: hp * 0.38, width: 0.5 * u / 1.5, blur: 0.25 * u / 1.5 };
+    }
+    if (pressP > 0.001) {
+      P.inner = { color: [0, 0, 0], alpha: pressP * (38 / 255), ox: 0, oy: 4 * u * pressP, radius: 4 * u * pressP };
+    }
+    emitGlass(px, py, tw, th, P);
+  }
+};
+
+/* ---- 底部玻璃标签栏 ---- */
+const tabs = {
+  labels: ['首页', '发现', '消息', '我的'],
+  selected: 0,
+  anim: new DampedDragAnimation(0, 0, 3, 0.001, 1.0, 78 / 56),
+  panelOffsetSpring: new SpringFloat(0, 1.0, 300, 0.5),
+  interactive: new InteractiveHighlight(),
+  touchActive: false, gestureMoved: false, lastRawX: 0,
+  gestureDownX: 0, gestureDownY: 0, rawDragOffset: 0,
+  heldSince: -1, panelOffsetActive: false, releaseHandled: false,
+  x: 0, y: 0, w: 0, h: 0,
+  update(dt, time, can) {
+    let changed = false;
+    const x = this.x, y = this.y, w = this.w, h = this.h;
+    const n = this.labels.length;
+    const inset = 4 * u;
+    const tabWidth = Math.max(1, (w - 8 * u) / n);
+
+    const hovered = can && input.x >= x && input.x <= x + w && input.y >= y && input.y <= y + h;
+    if (can && input.justPressed && input.activeId === null && hovered) {
+      input.activeId = this;
+      this.lastRawX = input.x; this.gestureDownX = input.x; this.gestureDownY = input.y;
+      this.gestureMoved = false; this.releaseHandled = false;
+      this.touchActive = true; this.heldSince = time;
+      this.interactive.press(input.x - x, input.y - y);
+      this.anim.press();
+      this.panelOffsetSpring.snapTo(this.rawDragOffset);
+    }
+    if (!(input.down && input.activeId === this) && !this.touchActive) this.gestureMoved = false;
+
+    const held = can && input.down && input.activeId === this;
+    if (held && this.touchActive) {
+      let forced = false;
+      if (this.heldSince > 0 && time - this.heldSince > 2.0) {
+        input.down = false; input.activeId = null;
+        this.touchActive = false; this.releaseHandled = true;
+        this.interactive.release();
+        let healTarget = Math.round(this.anim.getTargetValue());
+        if (!this.gestureMoved) healTarget = Math.floor((input.x - (x + inset)) / tabWidth);
+        healTarget = clampf(healTarget, 0, n - 1);
+        if (healTarget !== this.selected) { this.selected = healTarget; changed = true; }
+        this.anim.animateToValue(healTarget);
+        this.panelOffsetSpring.animateTo(0);
+        this.panelOffsetActive = true;
+        forced = true;
+      }
+      if (!forced) {
+        const mx = input.x, my = input.y;
+        const dx = mx - this.lastRawX; this.lastRawX = mx;
+        const ddx = mx - this.gestureDownX, ddy = my - this.gestureDownY;
+        if (ddx * ddx + ddy * ddy > (8 * u) * (8 * u)) this.gestureMoved = true;
+        if (Math.abs(dx) > 0.75 * u || Math.abs(ddy) > 0.75 * u) this.heldSince = time;
+        const target = this.anim.getTargetValue() + dx / tabWidth;
+        this.anim.updateValue(clampf(target, 0, n - 1));
+        this.rawDragOffset += dx;
+        this.panelOffsetSpring.snapTo(this.rawDragOffset);
+        this.interactive.move(mx - x, my - y);
+      }
+    }
+    if (can && input.justReleased && input.activeId === this && this.touchActive && !this.releaseHandled) {
+      const wasTap = !this.gestureMoved;
+      this.touchActive = false; this.releaseHandled = true;
+      this.interactive.release();
+      let target = Math.round(this.anim.getTargetValue());
+      if (wasTap) target = Math.floor((input.x - (x + inset)) / tabWidth);
+      target = clampf(target, 0, n - 1);
+      if (target !== this.selected) { this.selected = target; changed = true; }
+      this.anim.animateToValue(target);
+      this.panelOffsetSpring.animateTo(0);
+      this.panelOffsetActive = true;
+    }
+    if (!held && !input.down) { this.releaseHandled = false; }
+
+    if (this.panelOffsetActive) {
+      const active = this.panelOffsetSpring.step(dt);
+      this.rawDragOffset = this.panelOffsetSpring.value;
+      if (!active) this.panelOffsetActive = false;
+    }
+    this.anim.step(dt);
+    if (this.interactive.isAnimating() || this.interactive.isHighlightVisible()) this.interactive.step(dt);
+    return changed;
+  },
+  draw() {
+    const x = this.x, y = this.y, w = this.w, h = this.h;
+    const n = this.labels.length;
+    const inset = 4 * u, innerH = 56 * u, panelH = 64 * u;
+    const panelY = y + (h - panelH) / 2;
+    const tabWidth = Math.max(1, (w - 8 * u) / n);
+
+    const pressP = this.anim.getPressProgress();
+    const value = this.anim.getValue();
+    let panelOffset = 0;
+    if (w > 0) {
+      const fraction = clampf(this.rawDragOffset / w, -1, 1);
+      const sign = fraction < 0 ? -1 : (fraction > 0 ? 1 : 0);
+      panelOffset = 4 * u * sign * easeOut(Math.abs(fraction));
+    }
+    const panelScale = lerp(1, 1 + 16 * u / w, pressP);
+    const pw2 = w * panelScale, ph2 = panelH * panelScale;
+    const panelMinX = x + (w - pw2) / 2 + panelOffset;
+    const panelMinY = panelY + (panelH - ph2) / 2;
+
+    const ihP = this.interactive.isHighlightVisible()
+      ? clamp01(this.interactive.getPressProgress()) * this.interactive.intensityScale : 0;
+
+    const P = glassParams({
+      shape: 'pill',
+      vibrancy: true,
+      blur: 8 * u,
+      refH: 24 * u, refA: 24 * u, depth: false, chroma: false,
+      surface: argb(0x66121212), tintMode: 2,
+      fallback: LIGHT ? FROSTED_LIGHT : FROSTED_DARK,
+      hl: { mode: 1, color: [1, 1, 1], colorA: 0.5, angleDeg: 45, falloff: 1, alpha: 1, width: 0.5 * u, blur: 0.25 * u },
+      shadow: { radius: 24 * u, ox: 0, oy: 4 * u, color: argb(0x1A000000), alpha: 1 }
+    });
+    if (ihP > 0.001) {
+      const xg = (value + 0.5) * tabWidth + panelOffset;
+      const indCx = pw2 * 0.5 + (xg - w * 0.5) * panelScale;
+      P.ih = { x: clampf(indCx, 0, pw2), y: clampf(ph2 * 0.5, 0, ph2), progress: ihP };
+    }
+    emitGlass(panelMinX, panelMinY, pw2, ph2, P);
+
+    const accent = argb(0xFF0091FF);
+    for (let i = 0; i < n; i++) {
+      const cx = x + inset + tabWidth * (i + 0.5) + panelOffset;
+      const cy = panelY + inset + innerH * 0.5;
+      const col = (i === this.selected) ? accent : (LIGHT ? [0, 0, 0, 1] : [1, 1, 1, 1]);
+      pushText(this.labels[i], cx, cy, 12 * u, col, { align: 'center', middle: true, weight: 500 });
+    }
+
+    const indW = tabWidth, indH = innerH;
+    const indX = x + inset + value * tabWidth + panelOffset;
+    const indY = panelY + inset;
+    const velocity = this.anim.getVelocity() / 10;
+    const isx = this.anim.getScaleX() / (1 - clampf(velocity * 0.75, -0.2, 0.2));
+    const isy = this.anim.getScaleY() * (1 - clampf(velocity * 0.25, -0.2, 0.2));
+    const iw = indW * isx, ih2 = indH * isy;
+    const imx = indX - (iw - indW) / 2;
+    const imy = indY - (ih2 - indH) / 2;
+
+    const hp = clamp01(pressP);
+    const ea = clamp01(0.1 * (1 - pressP));
+    const ba = clamp01(0.03 * pressP);
+    const outA = ba + ea * (1 - ba);
+    const edgeOut = outA > 0.0001 ? (1.0 * ea * (1 - ba)) / outA : 0;
+
+    const P2 = glassParams({
+      shape: 'pill',
+      vibrancy: false,
+      blur: 0,
+      refH: 10 * u * pressP, refA: 14 * u * pressP, depth: false, chroma: true,
+      chromaAmount: 0.35 + 0.75 * pressP,
+      scaleX: 1, scaleY: 1, mix: 0,
+      surface: [edgeOut, edgeOut, edgeOut, outA], tintMode: 2,
+      fallback: LIGHT ? FROSTED_LIGHT : FROSTED_DARK
+    });
+    if (hp > 0.001) {
+      P2.hl = { mode: 1, color: [1, 1, 1], colorA: 0.5, angleDeg: 45, falloff: 1, alpha: hp, width: 0.5 * u, blur: 0.25 * u };
+    }
+    if (pressP > 0.001) {
+      P2.shadow = { radius: 24 * u, ox: 0, oy: 4 * u, color: argb(0x1A000000), alpha: pressP };
+      P2.inner = { color: [0, 0, 0], alpha: pressP * (38 / 255), ox: 0, oy: 8 * u * pressP, radius: 8 * u * pressP };
+    }
+    emitGlass(imx, imy, iw, ih2, P2);
+  }
+};
+
+/* ---- 打开弹窗按钮(普通样式) ---- */
+const openBtn = {
+  label: '打开弹窗(模态)',
+  x: 0, y: 0, w: 0, h: 0,
+  press: new SpringFloat(0, 0.5, 300, 0.001),
+  update(dt, time, can) {
+    let clicked = false;
+    const hovered = can && input.x >= this.x && input.x <= this.x + this.w &&
+                    input.y >= this.y && input.y <= this.y + this.h;
+    if (can && input.justPressed && input.activeId === null && hovered) {
+      input.activeId = this; clicked = true;
+    }
+    const held = can && input.down && input.activeId === this;
+    this.press.animateTo(held ? 1 : 0);
+    this.press.step(dt);
+    return clicked;
+  },
+  draw() {
+    const p = this.press.value;
+    const sc = 1 - 0.03 * p;
+    const cx = this.x + this.w / 2, cy = this.y + this.h / 2;
+    const w = this.w * sc, h = this.h * sc;
+    emitRect(cx - w / 2, cy - h / 2, w, h, [0.0, 0.569, 1.0, 0.92 - 0.08 * p], h / 2);
+    pushText(this.label, cx, cy, 15 * u, [1, 1, 1, 0.92 - 0.08 * p],
+      { align: 'center', middle: true, weight: 500 });
+  }
+};
+
+/* ---- 模态弹窗 ---- */
+const dialog = {
+  visible: false, closing: false, result: 0, skipClick: false,
+  title: '液态玻璃弹窗',
+  message: '这是一个液态玻璃模态弹窗:\n遮罩 + 玻璃卡片 + 缩放弹簧入场/退场。\n点遮罩或"取消"关闭, 点"确定"返回 2。',
+  progress: new SpringFloat(0, 0.82, 260, 0.001),
+  open() {
+    this.result = 0; this.closing = false; this.visible = true;
+    this.skipClick = true;                      // 打开这一帧忽略同一次点击, 避免被立即关闭
+    this.progress.snapTo(0); this.progress.animateTo(1);
+  },
+  close(r) {
+    this.result = r; this.closing = true;
+    this.progress.animateTo(0);
+  },
+  step(dt) {
+    if (!this.visible) return;
+    this.progress.step(dt);
+    if (this.closing && this.progress.value <= 0.001 && this.progress.target <= 0.001) {
+      this.progress.snapTo(0);
+      this.visible = false; this.closing = false;
+    }
+  },
+  draw(fullW, fullH, dt) {
+    if (!this.visible) return;
+    this.step(dt);
+    if (!this.visible) return;
+
+    const p = clamp01(this.progress.value);
+    const sc = lerp(0.94, 1, p);
+    const dimRgb = LIGHT ? 0x29293A : 0x121212;
+    const dimAlpha = (LIGHT ? 0.23 : 0.56) * p;
+    emitRect(0, 0, fullW, fullH, argbAlpha(dimAlpha, dimRgb), 0);
+
+    const baseW = Math.min(fullW - 80 * u, 420 * u);
+    const dW = Math.max(260 * u, baseW);
+    const dH = 252 * u;
+    const cx = fullW / 2, cy = fullH / 2;
+    const hw = dW * sc / 2, hh = dH * sc / 2;
+    const rx = cx - hw, ry = cy - hh, rw = hw * 2, rh = hh * 2;
+
+    const buttonPad = 24 * u * sc;
+    const buttonGap = 16 * u * sc;
+    const buttonH = 48 * u * sc;
+    const buttonW = (rw - buttonPad * 2 - buttonGap) * 0.5;
+    const buttonY = ry + rh - buttonPad - buttonH;
+    const cancelR = [rx + buttonPad, buttonY, buttonW, buttonH];
+    const okayR = [cancelR[0] + buttonW + buttonGap, buttonY, buttonW, buttonH];
+
+    if (input.justPressed && !this.skipClick) {
+      const inCancel = input.x >= cancelR[0] && input.x <= cancelR[0] + cancelR[2] &&
+                       input.y >= cancelR[1] && input.y <= cancelR[1] + cancelR[3];
+      const inOkay = input.x >= okayR[0] && input.x <= okayR[0] + okayR[2] &&
+                     input.y >= okayR[1] && input.y <= okayR[1] + okayR[3];
+      const inDialog = input.x >= rx && input.x <= rx + rw && input.y >= ry && input.y <= ry + rh;
+      if (inCancel) this.close(1);
+      else if (inOkay) this.close(2);
+      else if (!inDialog) this.close(1);
+    }
+    this.skipClick = false;
+
+    const surfaceRgb = LIGHT ? 0xFAFAFA : 0x121212;
+    const P = glassParams({
+      shape: 48 * u,
+      vibrancy: true,
+      colorCtrl: LIGHT ? [0.2, 1, 1.5] : [0.0, 1, 1.5],
+      blur: (LIGHT ? 16 : 8) * u,
+      refH: 24 * u, refA: 48 * u, depth: true, chroma: false,
+      surface: [((surfaceRgb >> 16) & 255) / 255, ((surfaceRgb >> 8) & 255) / 255, (surfaceRgb & 255) / 255,
+                (LIGHT ? 0.60 : 0.40) * p],
+      tintMode: 2,
+      opacity: p,
+      fallback: LIGHT ? FROSTED_LIGHT : FROSTED_DARK,
+      hl: { mode: 3, color: [1, 1, 1], colorA: 0.38, angleDeg: 45, falloff: 1, alpha: p, width: 0.5 * u, blur: 0.25 * u }
+    });
+    emitGlass(rx, ry, rw, rh, P);
+
+    const textRgb = LIGHT ? 0x000000 : 0xFFFFFF;
+    pushText(this.title, rx + 28 * u * sc, ry + 24 * u * sc, 24 * u * sc,
+      [((textRgb >> 16) & 255) / 255, ((textRgb >> 8) & 255) / 255, (textRgb & 255) / 255, p],
+      { weight: 500, lineHeight: 1.3 });
+    pushText(this.message, rx + 24 * u * sc, ry + 68 * u * sc, 15 * u * sc,
+      [((textRgb >> 16) & 255) / 255, ((textRgb >> 8) & 255) / 255, (textRgb & 255) / 255, 0.68 * p],
+      { maxWidth: rw - 48 * u * sc, lineHeight: 1.6 });
+
+    emitRect(cancelR[0], cancelR[1], cancelR[2], cancelR[3], argbAlpha(0.12 * p, surfaceRgb), buttonH / 2);
+    emitRect(okayR[0], okayR[1], okayR[2], okayR[3], argbAlpha(p, LIGHT ? 0x0088FF : 0x0091FF), buttonH / 2);
+    pushText('取消', cancelR[0] + cancelR[2] / 2, cancelR[1] + cancelR[3] / 2, 16 * u * sc,
+      [((textRgb >> 16) & 255) / 255, ((textRgb >> 8) & 255) / 255, (textRgb & 255) / 255, p],
+      { align: 'center', middle: true, weight: 500 });
+    pushText('确定', okayR[0] + okayR[2] / 2, okayR[1] + okayR[3] / 2, 16 * u * sc,
+      [1, 1, 1, p], { align: 'center', middle: true, weight: 500 });
+  }
+};
+
+/* ------------------------------------------------------------------ *
+ * 7. 背景(壁纸纹理 + 动态光斑)
+ * ------------------------------------------------------------------ */
+let bgTex = null, blobTex = null;
+function buildBgTexture() {
+  if (bgTex) gl.deleteTexture(bgTex);
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const c = cv.getContext('2d');
+  const g = c.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#161c2a');
+  g.addColorStop(0.55, '#0e131d');
+  g.addColorStop(1, '#090b10');
+  c.fillStyle = g;
+  c.fillRect(0, 0, W, H);
+  const blob = (x, y, r, col) => {
+    const rg = c.createRadialGradient(x, y, 0, x, y, r);
+    rg.addColorStop(0, col);
+    rg.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = rg;
+    c.beginPath(); c.arc(x, y, r, 0, TAU); c.fill();
+  };
+  blob(W * 0.18, H * 0.22, Math.max(W, H) * 0.45, 'rgba(94,110,255,0.20)');
+  blob(W * 0.88, H * 0.16, Math.max(W, H) * 0.40, 'rgba(0,186,255,0.16)');
+  blob(W * 0.82, H * 0.78, Math.max(W, H) * 0.45, 'rgba(255,92,138,0.13)');
+  blob(W * 0.16, H * 0.86, Math.max(W, H) * 0.45, 'rgba(47,224,138,0.12)');
+  bgTex = texFromCanvas(cv);
+}
+function buildBlobTexture() {
+  const s = 256;
+  const cv = document.createElement('canvas');
+  cv.width = s; cv.height = s;
+  const c = cv.getContext('2d');
+  const g = c.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  g.addColorStop(0, 'rgba(255,255,255,0.85)');
+  g.addColorStop(0.5, 'rgba(255,255,255,0.32)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  c.fillStyle = g;
+  c.fillRect(0, 0, s, s);
+  blobTex = texFromCanvas(cv);
+}
+
+/* ------------------------------------------------------------------ *
+ * 8. 布局与帧构建
+ * ------------------------------------------------------------------ */
+let cssW = 0, cssH = 0;
+const TITLE_TEXT = '星辞 Liquid Glass / 液态玻璃组件';
+const CAPTION_TEXT = '玻璃面板折射身后的条纹内容';
+const LAYOUT_EST = 468.5;                       // dp 估算高度
+
+function buildFrame(time, dt) {
+  queue.length = 0;
+  u = clampf(Math.min(cssW / 480, cssH / 760), 0.75, 1.5);
+
+  const colW = Math.min(cssW - 36 * u, 430 * u);
+  const colX = (cssW - colW) * 0.5;
+  let y = clampf((cssH - LAYOUT_EST * u) * 0.42, 16, 200);
+
+  /* 壁纸 + 动态光斑 */
+  emitTex(bgTex, 0, 0, cssW, cssH, [1, 1, 1, 1]);
+  let bx = cssW * (0.22 + 0.10 * Math.sin(time * 0.11));
+  let by = cssH * (0.26 + 0.07 * Math.cos(time * 0.09));
+  let br = cssW * 0.55;
+  emitTex(blobTex, bx - br, by - br, br * 2, br * 2, [0.36, 0.44, 1.0, 0.10], true);
+  bx = cssW * (0.80 + 0.08 * Math.cos(time * 0.07 + 2));
+  by = cssH * (0.74 + 0.08 * Math.sin(time * 0.13 + 1));
+  br = cssW * 0.5;
+  emitTex(blobTex, bx - br, by - br, br * 2, br * 2, [1.0, 0.36, 0.55, 0.07], true);
+
+  /* 标题 */
+  pushText(TITLE_TEXT, colX, y, 15 * u, [1, 1, 1, 0.95], { weight: 500 });
+  y += 15 * u * 1.5 + 14 * u;
+
+  /* 条纹卡片 + 玻璃面板(折射身后的条纹) */
+  const cardH = 96 * u;
+  const stripeCols = [argb(0xFFFF6B6B), argb(0xFF4CD98B), argb(0xFF5A9CFF), argb(0xFFFFD166)];
+  const sw = colW / 4;
+  for (let i = 0; i < 4; i++) emitRect(colX + sw * i, y, sw + 0.5, cardH, stripeCols[i], 0);
+  pushText(CAPTION_TEXT, colX + 12 * u, y + 10 * u, 14 * u, [1, 1, 1, 1]);
+  emitGlass(colX, y, colW, cardH, glassParams({
+    shape: 24 * u,
+    vibrancy: true,
+    blur: 10 * u,
+    refH: 24 * u, refA: 24 * u, depth: true, chroma: true, chromaAmount: 0.9,
+    surface: argb(0x26FFFFFF), tintMode: 2,
+    fallback: LIGHT ? FROSTED_LIGHT : FROSTED_DARK,
+    hl: { mode: 1, color: [1, 1, 1], colorA: 0.5, angleDeg: 45, falloff: 1, alpha: 1, width: 0.5 * u, blur: 0.25 * u },
+    shadow: { radius: 24 * u, ox: 0, oy: 4 * u, color: argb(0x1A000000), alpha: 1 }
+  }));
+  y += cardH + 16 * u;
+
+  const can = !dialog.visible;                  // 弹窗打开时阻断底层交互
+
+  /* 玻璃按钮 */
+  btn.x = colX + (colW - 120 * u) / 2; btn.y = y; btn.w = 120 * u; btn.h = 48 * u;
+  btn.update(dt, time, can);
+  btn.draw();
+  y += 48 * u + 12 * u;
+
+  /* 开关 */
+  toggle.x = colX + (colW - 76 * u) / 2; toggle.y = y; toggle.w = 76 * u; toggle.h = 40 * u;
+  toggle.update(dt, time, can);
+  toggle.draw();
+  y += 40 * u + 12 * u;
+
+  /* 滑块 */
+  slider.x = colX + (colW - 300 * u) / 2; slider.y = y; slider.w = 300 * u; slider.h = 44 * u;
+  slider.update(dt, time, can);
+  slider.draw();
+  y += 44 * u + 12 * u;
+
+  /* 标签栏 */
+  tabs.x = colX + (colW - 320 * u) / 2; tabs.y = y; tabs.w = 320 * u; tabs.h = 56 * u;
+  tabs.update(dt, time, can);
+  tabs.draw();
+  y += 56 * u + 18 * u;
+
+  /* 打开弹窗按钮 */
+  openBtn.x = colX + (colW - 150 * u) / 2; openBtn.y = y; openBtn.w = 150 * u; openBtn.h = 44 * u;
+  if (openBtn.update(dt, time, can)) dialog.open();
+  openBtn.draw();
+  y += 44 * u + 16 * u;
+
+  /* 状态行 */
+  const status = '开关:' + (toggle.selected ? '开启' : '关闭') +
+                 '   滑块:' + Math.round(slider.value) +
+                 '   标签:' + tabs.labels[tabs.selected];
+  pushText(status, cssW / 2, y, 11.5 * u, [1, 1, 1, 0.55], { align: 'center' });
+
+  /* 版权小字 */
+  pushText('WebGL2 · 移植自 C++/ImGui 版「星辞 液态玻璃」· 来自·星辞',
+    cssW / 2, cssH - 24 * u, 10.5 * u, [1, 1, 1, 0.28], { align: 'center' });
+
+  /* 模态弹窗(最上层) */
+  dialog.draw(cssW, cssH, dt);
+}
+
+/* ------------------------------------------------------------------ *
+ * 9. 尺寸 / 主循环
+ * ------------------------------------------------------------------ */
+function resize() {
+  cssW = Math.max(1, Math.round(window.innerWidth));
+  cssH = Math.max(1, Math.round(window.innerHeight));
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  let s = Math.min(dpr, 2048 / Math.max(cssW, cssH), Math.sqrt(3.4e6 / (cssW * cssH)));
+  s = Math.max(s, 0.5);
+  const nw = Math.max(1, Math.round(cssW * s));
+  const nh = Math.max(1, Math.round(cssH * s));
+  canvas.width = nw;
+  canvas.height = nh;
+  W = nw; H = nh; S = nw / cssW;
+  createScene(W, H);
+  buildBgTexture();
+  clearTextCache();
+  capW = 0; capH = 0;                            // 捕获纹理保留,尺寸标记重置无妨(会复用/增长)
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 120));
+
+let lastT = performance.now(), startT = lastT;
+function frame() {
+  requestAnimationFrame(frame);
+  const tNow = performance.now();
+  let dt = (tNow - lastT) / 1000;
+  lastT = tNow;
+  if (!(dt > 0)) dt = 1 / 60;
+  if (dt > 0.064) dt = 0.064;
+  const time = (tNow - startT) / 1000;
+
+  buildFrame(time, dt);
+  executeQueue();
+  present();
+
+  input.justPressed = false;
+  input.justReleased = false;
+  if (!input.down) input.activeId = null;
+}
+/* ---- 启动 ---- */
+buildBlobTexture();
+resize();
+requestAnimationFrame(frame);
+
+/* 调试接口: 便于自动化测试/排查问题, 不影响正常使用 */
+window.__ytblDebug = () => ({
+  toggle: toggle.selected,
+  slider: Math.round(slider.value),
+  tab: tabs.selected,
+  dialogVisible: dialog.visible,
+  dialogProgress: +dialog.progress.value.toFixed(3),
+  dialogResult: dialog.result,
+  inputDown: input.down,
+  active: input.activeId ? true : false,
+  openBtnRect: [openBtn.x, openBtn.y, openBtn.w, openBtn.h]
+});
+
+
+}  // boot()
+
+})();
+</script>
+</body>
+</html>

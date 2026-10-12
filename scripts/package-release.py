@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / 'module-template'
 DIST = ROOT / 'dist'
 DIST.mkdir(exist_ok=True)
-VERSION = '2.2.3'
-VERSION_CODE = 323
+VERSION = '2.2.4'
+VERSION_CODE = 324
 CONFIG_VERSION = 320  # config schema generation; PROFILE_VERSION in config.rs must match
 parser = argparse.ArgumentParser()
 parser.add_argument('--source-only', action='store_true', help='Package source without requiring an Android binary')
@@ -77,10 +77,14 @@ assert '--origin ${shellQuote(origin)}' in ui, 'Origin-bound root credential req
 # the visual contract of the liquid-glass single page.
 for marker in ['--brand: #007aff', 'backdrop-filter: blur(30px) saturate(1.65)',
                '.tab-bar button[aria-current="page"]', '[data-theme="dark"]',
-               '把性能，', '.tab-bar', '.page.active', 'id="auto-switch"', 'sceneInstalled', 'fasAvailable']:
+               '.liquid::before', '.tab-bar', '.page.active', 'id="auto-switch"', 'sceneInstalled', 'fasAvailable', 'novaBlobDrift']:
     assert marker in (css + html + ui), f'design/feature marker missing: {marker}'
-for banned in ['FS_GLASS', 'SpringFloat', '__ytblDebug', 'assets/zen']:
-    assert banned not in (css + html + ui), f'retired canvas engine leftover: {banned}'
+for banned in ['assets/zen']:
+    assert banned not in (css + html + ui), f'retired DOM UI leftover: {banned}'
+# 星辞 engine ships intact as the standalone demo page
+lg = (MODULE/'webroot/assets/liquid-glass.html').read_text()
+for marker in ['class SpringFloat', 'const FS_GLASS', 'window.__ytblDebug', "getContext('webgl2'"]:
+    assert marker in lg, f'liquid glass engine marker missing: {marker}'
 assert 'cts-v101' not in html
 
 # Explicit source roots work both in a checkout and an extracted source archive.
