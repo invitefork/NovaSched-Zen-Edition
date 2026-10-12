@@ -58,14 +58,19 @@ function releaseNotes() {
   return (end < 0 ? rest : rest.slice(0, end)).trim();
 }
 
+/* Asset uploads go through curl: undici fails mid-transfer on multi-hundred-KB
+ * bodies against uploads.github.com from this network, curl does not. */
 function uploadAsset(releaseId, filePath, contentType) {
   const name = path.basename(filePath);
-  const size = fs.statSync(filePath).size;
-  return api(`/releases/${releaseId}/assets?name=${encodeURIComponent(name)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': contentType, 'Content-Length': size },
-    body: fs.readFileSync(filePath),
-  }, 'https://uploads.github.com');
+  execFileSync('curl', [
+    '-sS', '--fail', '--max-time', '600',
+    '-X', 'POST',
+    '-H', `Authorization: Bearer ${TOKEN}`,
+    '-H', `Content-Type: ${contentType}`,
+    '--data-binary', `@${filePath}`,
+    `https://uploads.github.com/repos/${REPO}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}`,
+  ], { stdio: ['ignore', 'ignore', 'inherit'] });
+  return { name, size: fs.statSync(filePath).size };
 }
 
 async function main() {
