@@ -8,7 +8,7 @@ stage() {
 }
 
 ui_print " "
-ui_print "✦ NovaSched Zen Edition v2.2.7"
+ui_print "✦ NovaSched Zen Edition v2.3.0"
 ui_print "  作者 ZenJooo"
 stage 1 "检查运行环境" "根据内核能力适配 Magisk、Alpha、KernelSU 系列和 APatch。"
 if [ "$ARCH" != "arm64" ] && [ "$ARCH" != "arm64-v8a" ]; then
@@ -88,4 +88,4 @@ ui_print "  管理器没有 WebUI 时，可使用独立 WebUI 宿主并授予 ro
 ui_print "  安装记录：$CHECK_LOG"
 ui_print "  运行记录：/data/adb/novasched/novasched.log"
 ui_print " "
-ui_print "✦ NovaSched v2.2.7 · ZenJooo"
+ui_print "✦ NovaSched v2.3.0 · ZenJooo"

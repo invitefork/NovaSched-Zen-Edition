@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / 'module-template'
 DIST = ROOT / 'dist'
 DIST.mkdir(exist_ok=True)
-VERSION = '2.2.9'
-VERSION_CODE = 329
+VERSION = '2.3.0'
+VERSION_CODE = 330
 CONFIG_VERSION = 320  # config schema generation; PROFILE_VERSION in config.rs must match
 parser = argparse.ArgumentParser()
 parser.add_argument('--source-only', action='store_true', help='Package source without requiring an Android binary')

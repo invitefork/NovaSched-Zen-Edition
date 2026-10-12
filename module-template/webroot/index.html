@@ -146,14 +146,14 @@
 
     <!-- ============ 关于（设置分组 + 个性化面板） ============ -->
     <section class="page" id="page-about" aria-label="关于">
-      <div class="section-divider head"><span class="sec-label big">关于</span><i class="sec-line" aria-hidden="true"></i><span class="sec-time" id="about-version-foot">v2.2.9</span></div>
+      <div class="section-divider head"><span class="sec-label big">关于</span><i class="sec-line" aria-hidden="true"></i><span class="sec-time" id="about-version-foot">v2.3.0</span></div>
 
       <article class="course-card g" data-radius="24" id="hero-compat">
         <h3>NovaSched <span class="accent-text">Zen Edition</span></h3>
         <p class="course-note">根据处理器与内核能力调整 CPU 策略，支持四档调度、应用规则与 Scene 联动。</p>
         <div class="fact-list">
           <div><dt>作者</dt><dd>ZenJooo</dd></div>
-          <div><dt>版本</dt><dd id="about-version">v2.2.9</dd></div>
+          <div><dt>版本</dt><dd id="about-version">v2.3.0</dd></div>
           <div><dt>处理器</dt><dd id="about-soc">待识别</dd></div>
           <div><dt>配置模板</dt><dd id="about-profile">待识别</dd></div>
           <div><dt>Scene FAS</dt><dd id="about-fas">待识别</dd></div>
@@ -200,6 +200,14 @@
         </div>
       </article>
 
+      <article class="course-card row-card g" data-radius="22">
+        <div class="row-copy">
+          <h3>共享存储日志镜像</h3>
+          <p id="mirror-note">默认关闭。开启后日志同步写入 /sdcard/Android/NovaSched/log.txt，会多一次共享存储写入。</p>
+        </div>
+        <button class="switch" id="mirror-switch" role="switch" aria-checked="false" aria-label="共享存储日志镜像" type="button"><span></span></button>
+      </article>
+
       <article class="course-card g" data-radius="24">
         <h3>帮助与许可</h3>
         <div class="link-list">
@@ -211,7 +219,7 @@
       <p class="section-note">模块不修改温控、电池和充电节点。卸载时恢复保存的原厂节点与 Scene 回调。</p>
     </section>
 
-    <footer class="footer"><p id="footer-version">v2.2.9 · ZenJooo</p></footer>
+    <footer class="footer"><p id="footer-version">v2.3.0 · ZenJooo</p></footer>
   </main>
 
   <nav class="dock g" data-radius="999" aria-label="页面切换">

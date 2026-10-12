@@ -1,4 +1,4 @@
-/* NovaSched WebUI v2.2.9 · ZenJooo. Authenticated local controls and confirmed runtime state.
+/* NovaSched WebUI v2.3.0 · ZenJooo. Authenticated local controls and confirmed runtime state.
  * 视图结构对齐 SleepDown-Schedule 实机 UI：日期块顶栏、助手卡、分区线 + 课程卡列表、胶囊 dock、个性化面板。 */
 (() => {
   "use strict";
@@ -16,6 +16,15 @@
     if (match) { MODULE = match[1]; MODULE_CANDIDATES.unshift(MODULE); }
   } catch (_) {}
   const STORAGE = "novasched.zen.ui.v2";
+
+  /* 统一计时器收口：具名定时器全部走这里，页面隐藏时 clearAll 一次清干净。
+   * socket 槽上的 deadline/retry 仍随 stopSocket 清理，不进这个表。 */
+  const Timers = {
+    t: {},
+    set(name, fn, ms) { this.clear(name); this.t[name] = setTimeout(fn, ms); },
+    clear(name) { if (this.t[name]) { clearTimeout(this.t[name]); delete this.t[name]; } },
+    clearAll() { for (const name of Object.keys(this.t)) { clearTimeout(this.t[name]); delete this.t[name]; } },
+  };
 
   const MODES = {
     powersave:   { name: "省电", copy: "一省到底：进一步压低各簇频率上限" },
@@ -37,12 +46,12 @@
     automatic: false, automaticActive: false, appKind: "", classificationSource: "",
     rules: [], rulesLoaded: false, overrides: {},
     pending: null, sockets: {}, suspended: false, retry: 0, epoch: 0, probes: new Set(),
-    transport: "", rootTimer: 0, rootJob: null, rootOrigin: "", rootGeneration: 0, logCursor: "",
+    transport: "", rootJob: null, rootOrigin: "", rootGeneration: 0, logCursor: "",
     discovered: false, logConnected: false, logConnecting: false, logs: [], logTail: "", level: "all", follow: true,
     logReceived: false,
   };
   const ACCENTS = { blue: "蓝色", indigo: "靛色", purple: "紫色", rose: "粉色", amber: "橙色", green: "绿色" };
-  const ui = { theme: "system", accent: "blue", glassLevel: 55, wallBlur: 0, wallBright: 100, wallData: "" };
+  const ui = { theme: "system", accent: "blue", glassLevel: 55, wallBlur: 0, wallBright: 100 };
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE) || "{}");
     if (own(THEME_NAMES, saved.theme)) ui.theme = saved.theme;
@@ -50,15 +59,14 @@
     if (Number.isInteger(saved.glassLevel) && saved.glassLevel >= 0 && saved.glassLevel <= 100) ui.glassLevel = saved.glassLevel;
     if (Number.isInteger(saved.wallBlur) && saved.wallBlur >= 0 && saved.wallBlur <= 100) ui.wallBlur = saved.wallBlur;
     if (Number.isInteger(saved.wallBright) && saved.wallBright >= 40 && saved.wallBright <= 100) ui.wallBright = saved.wallBright;
-    if (typeof saved.wallData === "string") ui.wallData = saved.wallData.slice(0, 3000000);
+    if (typeof saved.wallData === "string") { delete saved.wallData; try { localStorage.setItem(STORAGE, JSON.stringify(saved)); } catch (_) {} }
+    /* 旧版壁纸以 base64 存在 STORAGE 里，v2.3.0 起改存 IndexedDB Blob：上面一次性清掉旧字段 */
   } catch (_) { /* 宿主 WebView 可能禁用存储 */ }
-  const saveUI = () => { try { localStorage.setItem(STORAGE, JSON.stringify(ui)); } catch (_) { /* 壁纸过大或存储被禁用 */ } };
+  const saveUI = () => { try { localStorage.setItem(STORAGE, JSON.stringify(ui)); } catch (_) { /* 存储被禁用 */ } };
 
   const darkQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
 
   /* ---------------- 小工具 ---------------- */
-  let snackbarTimer = 0;
-  let pendingTimer = 0;
   let bridgeCounter = 0;
   let sessionToken = "";
   let authRequest = null;
@@ -73,8 +81,7 @@
     const bar = $("#snackbar");
     bar.textContent = message;
     bar.classList.add("show");
-    clearTimeout(snackbarTimer);
-    snackbarTimer = setTimeout(() => bar.classList.remove("show"), timeout);
+    Timers.set("snackbar", () => bar.classList.remove("show"), timeout);
   }
   function modeNote(message, error = false) {
     const node = $("#mode-note");
@@ -239,7 +246,7 @@
       if (epoch !== s.epoch || s.suspended) return;
       sessionToken = ""; s.connectionError = message;
       s.online = false; s.connecting = false; render();
-      clearTimeout(s.retry); if (retry) s.retry = setTimeout(discover, 5000);
+      Timers.clear("retry"); if (retry) Timers.set("retry", discover, 5000);
     };
     let origin = "";
     try { origin = new URL(location.href).origin; } catch (_) {}
@@ -281,7 +288,7 @@
     catch (_) { finish(1, "", "宿主命令接口执行失败，请检查 root／Shell 授权。"); }
   }
   function cancelRootBridge() {
-    clearTimeout(s.rootTimer); s.rootTimer = 0; s.rootJob = null; s.rootGeneration++;
+    Timers.clear("root"); s.rootJob = null; s.rootGeneration++;
   }
   function rootExec(command, timeout = 30000, negotiate = true) {
     return new Promise((resolve, reject) => {
@@ -336,8 +343,9 @@
       offline("root"); s.connectionError = "宿主备用通道失败：" + publicError(error.message); render();
     }).finally(() => {
       if (s.rootJob === job) s.rootJob = null;
+      /* 备用通道快照 2s → 4s：状态变化不需要秒级实时，降低常驻唤醒 */
       if (epoch === s.epoch && !s.suspended && s.transport === "root")
-        s.rootTimer = setTimeout(() => pollRootBridge(epoch), 2000);
+        Timers.set("root", () => pollRootBridge(epoch), 4000);
     });
   }
   function startRootBridge() {
@@ -360,11 +368,11 @@
     stopSocket("modes"); stopSocket("apps"); stopSocket("logs"); s.logConnected = false; s.logConnecting = false;
     if (s.pending) finishPending(false, "连接中断，请重新连接后确认结果");
     render(); renderLogs();
-    if (retry && !s.suspended) { clearTimeout(s.retry); s.retry = setTimeout(discover, 4000); }
+    if (retry && !s.suspended) { Timers.clear("retry"); Timers.set("retry", discover, 4000); }
   }
   function discover() {
     if (s.suspended) return;
-    const epoch = ++s.epoch; clearTimeout(s.retry); cancelProbes(); cancelAuthentication();
+    const epoch = ++s.epoch; Timers.clear("retry"); cancelProbes(); cancelAuthentication();
     cancelRootBridge(); s.transport = "websocket";
     ["modes","apps","logs"].forEach(stopSocket);
     s.online = false; s.connecting = true; s.discovered = false; render();
@@ -436,7 +444,7 @@
   }
   function openEndpoint(kind) {
     if (s.transport === "root") {
-      if (!s.rootJob) { clearTimeout(s.rootTimer); pollRootBridge(s.epoch); }
+      if (!s.rootJob) { Timers.clear("root"); pollRootBridge(s.epoch); }
       return;
     }
     if (!s.discovered || !sessionToken || s.suspended || (kind === "logs" && !logsActive())) return;
@@ -499,13 +507,13 @@
     if (!editable()) { toast(s.external ? "Scene 外部调度器接管中，请先在 Scene 停用它的调度" : "请先连接本地守护进程"); return false; }
     if (s.transport === "root") {
       const epoch = s.epoch, generation = ++s.rootGeneration;
-      clearTimeout(s.rootTimer);
+      Timers.clear("root");
       rootRequest({endpoint:kind === "apps" ? "apps" : "modes", message}).then(reply => {
         if (epoch === s.epoch && generation === s.rootGeneration && !s.suspended) receiveRootSnapshot(reply);
       }).catch(error => {
         if (epoch === s.epoch && generation === s.rootGeneration) finishPending(false, "操作未确认：" + publicError(error.message));
       }).finally(() => {
-        if (epoch === s.epoch && !s.suspended) { clearTimeout(s.rootTimer); s.rootTimer = setTimeout(() => pollRootBridge(epoch), 100); }
+        if (epoch === s.epoch && !s.suspended) { Timers.clear("root"); Timers.set("root", () => pollRootBridge(epoch), 100); }
       });
       return true;
     }
@@ -523,7 +531,7 @@
     if (!send(endpoint, message)) { s.pending = null; render(); return false; }
     if (kind === "mode") modeNote(`正在请求${MODES[value].name}档，等待守护进程反馈…`);
     if (kind === "auto") modeNote("正在切换自动调度，等待守护进程确认…");
-    pendingTimer = setTimeout(() => {
+    Timers.set("pending", () => {
       if (!s.pending) return;
       const p = s.pending;
       finishPending(false, p.kind === "mode" && s.mode === p.value ? "默认档位已保存，但尚未确认实际生效；请查看概览或诊断" : "未收到确认，状态未标记为成功，请重连后检查");
@@ -547,7 +555,7 @@
     else if (p.kind === "delete" && !s.rules.some(r => r.package === p.pkg)) finishPending(true, "应用规则已删除，今后沿用默认档位");
   }
   function finishPending(success, message) {
-    const p = s.pending; clearTimeout(pendingTimer); pendingTimer = 0; s.pending = null;
+    const p = s.pending; Timers.clear("pending"); s.pending = null;
     if (p?.kind === "mode" || p?.kind === "auto") modeNote(message, !success);
     if (success && ["rule", "delete"].includes(p?.kind)) closeDialog();
     if (!success && ["rule", "delete"].includes(p?.kind)) {
@@ -687,12 +695,12 @@
     $("#add-rule").disabled = !editable() || !!s.pending;
 
     /* 关于 */
-    present("#about-version", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.9");
-    present("#about-version-foot", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.9");
+    present("#about-version", s.version ? "v" + s.version.replace(/^v/, "") : "v2.3.0");
+    present("#about-version-foot", s.version ? "v" + s.version.replace(/^v/, "") : "v2.3.0");
     present("#about-soc", s.online && s.soc ? s.soc : "待识别");
     present("#about-profile", s.online && s.configProfile ? s.configProfile : "待识别");
     present("#about-fas", s.fasAvailable ? "已就绪 · 档位联动" : "未检测到（可选）");
-    present("#footer-version", (s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.9") + " · ZenJooo");
+    present("#footer-version", (s.version ? "v" + s.version.replace(/^v/, "") : "v2.3.0") + " · ZenJooo");
   }
   function renderRules() {
     const root = $("#rule-list");
@@ -846,16 +854,48 @@
   bindSlider("#wall-bright", value => { ui.wallBright = value; });
   darkQuery?.addEventListener?.("change", applyTheme);
 
-  /* ---------------- 壁纸（选图 → 压缩存储 → 作为玻璃背景） ---------------- */
-  function loadWallpaperFromStorage() {
-    if (!ui.wallData || !ui.wallData.startsWith("data:image/")) return;
+  /* ---------------- 壁纸（选图 → 压缩 → IndexedDB Blob 存储） ----------------
+   * v2.3.0 起壁纸不再以 base64 字符串写入 localStorage（同步大字符串写会卡主线程、
+   * 且占配额）；压缩后的 JPEG 以 Blob 直接进 IndexedDB，展示走 ObjectURL。 */
+  const WALL_DB = "novasched.zen.ui", WALL_STORE = "kv";
+  let wallObjectURL = "";
+  function openWallDB() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(WALL_DB, 1);
+      request.onupgradeneeded = () => request.result.createObjectStore(WALL_STORE);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+  async function wallStore(action, value, key) {
+    const db = await openWallDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(WALL_STORE, "readwrite");
+      const store = tx.objectStore(WALL_STORE);
+      const request = key ? store[action](value, key) : store[action](value);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+      tx.oncomplete = () => db.close();
+    });
+  }
+  function showWallpaper(blob) {
+    if (wallObjectURL) URL.revokeObjectURL(wallObjectURL);
+    wallObjectURL = URL.createObjectURL(blob);
     const img = new Image();
     img.onload = () => window.NovaGlass?.setWallpaper(img);
-    img.src = ui.wallData;
+    img.src = wallObjectURL;
+  }
+  async function loadWallpaperFromStorage() {
+    try {
+      if (!("indexedDB" in window)) return;
+      const blob = await wallStore("get", "wallpaper");
+      if (blob instanceof Blob) showWallpaper(blob);
+    } catch (_) { /* 打不开 IndexedDB 就退回无壁纸 */ }
   }
   $("#wall-pick")?.addEventListener("click", () => $("#wall-input")?.click());
-  $("#wall-clear")?.addEventListener("click", () => {
-    ui.wallData = ""; saveUI();
+  $("#wall-clear")?.addEventListener("click", async () => {
+    try { await wallStore("delete", "wallpaper"); } catch (_) { /* 存储不可用则仅清除本次会话 */ }
+    if (wallObjectURL) { URL.revokeObjectURL(wallObjectURL); wallObjectURL = ""; }
     window.NovaGlass?.setWallpaper(null);
     toast("已清除背景壁纸");
   });
@@ -866,20 +906,21 @@
     const reader = new FileReader();
     reader.onload = () => {
       const img = new Image();
-      img.onload = () => {
-        /* 压缩到最长边 1280px 的 JPEG，控制 localStorage 占用 */
-        const maxSide = 1280;
+      img.onload = async () => {
+        /* 压到最长边 720px 的 JPEG 再入库 */
+        const maxSide = 720;
         const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
         const canvasEl = document.createElement("canvas");
         canvasEl.width = Math.max(1, Math.round(img.naturalWidth * scale));
         canvasEl.height = Math.max(1, Math.round(img.naturalHeight * scale));
         canvasEl.getContext("2d").drawImage(img, 0, 0, canvasEl.width, canvasEl.height);
         try {
-          ui.wallData = canvasEl.toDataURL("image/jpeg", 0.82);
-        } catch (_) { toast("当前 WebView 无法读取图片"); return; }
-        saveUI();
-        window.NovaGlass?.setWallpaper(img);
-        toast("背景壁纸已更新");
+          const blob = await new Promise((resolve, reject) => canvasEl.toBlob(
+            encoded => encoded ? resolve(encoded) : reject(new Error("encode")), "image/jpeg", 0.82));
+          await wallStore("put", blob, "wallpaper");
+          showWallpaper(blob);
+          toast("背景壁纸已更新");
+        } catch (_) { toast("当前 WebView 无法保存壁纸，仅本次会话生效"); }
       };
       img.onerror = () => toast("图片无法解析，请换一张试试");
       img.src = String(reader.result);
@@ -1032,7 +1073,7 @@
     beginPending("auto", s.automatic ? "off" : "on");
     render();
   };
-  $("#hero-reconnect").onclick = () => { if (!s.suspended) { clearTimeout(s.retry); discover(); toast("正在重新发现本地服务"); } };
+  $("#hero-reconnect").onclick = () => { if (!s.suspended) { Timers.clear("retry"); discover(); toast("正在重新发现本地服务"); } };
   $("#hero-diagnose").onclick = () => showDiagnostics();
   $("#scene-diagnose").onclick = () => showDiagnostics(true);
   $("#nav-brand").onclick = () => setPage("overview");
@@ -1041,7 +1082,29 @@
   });
   $("#about-diagnose").onclick = event => { event.preventDefault(); showDiagnostics(); };
   $("#about-license").onclick = event => { event.preventDefault(); toast("GPL-3.0-only · 许可文本见模块内 LICENSE"); };
-  $("#nav-cta").onclick = () => { if (!s.online && !s.connecting) { clearTimeout(s.retry); discover(); } };
+  /* 关于页：共享存储日志镜像开关。镜像默认关闭；开关只操作守护进程 STATE_DIR 下的
+   * /data/adb/novasched/sdcard-log 标记文件，与原生 logging.rs 读的是同一路径。 */
+  const mirrorSwitch = $("#mirror-switch");
+  if (mirrorSwitch) {
+    const mirrorState = () => {
+      rootExec("test -f /data/adb/novasched/sdcard-log && echo on || echo off", 8000).then(result => {
+        mirrorSwitch.setAttribute("aria-checked", String(String(result.stdout).trim() === "on"));
+      }).catch(() => {});
+    };
+    mirrorSwitch.onclick = async () => {
+      const on = mirrorSwitch.getAttribute("aria-checked") !== "true";
+      mirrorSwitch.disabled = true;
+      const result = await rootExec(`${on ? "touch" : "rm -f"} /data/adb/novasched/sdcard-log`, 15000)
+        .catch(error => ({ errno: 1, stderr: error.message }));
+      mirrorSwitch.disabled = false;
+      if (result.errno === 0) mirrorSwitch.setAttribute("aria-checked", String(on));
+      toast(result.errno === 0
+        ? (on ? "共享存储日志镜像已开启" : "共享存储日志镜像已关闭")
+        : "开关失败：" + publicError(result.stderr || result.stdout));
+    };
+    mirrorState();
+  }
+  $("#nav-cta").onclick = () => { if (!s.online && !s.connecting) { Timers.clear("retry"); discover(); } };
   $(".assistant-card").onclick = () => showDiagnostics();
   $(".assistant-card").addEventListener("keydown", event => {
     if (event.key === "Enter" || event.key === " ") { event.preventDefault(); showDiagnostics(); }
@@ -1077,7 +1140,7 @@
   function suspend() {
     cancelRootBridge();
     if (s.suspended) return;
-    s.suspended = true; s.epoch++; clearTimeout(s.retry); cancelProbes(); cancelAuthentication();
+    s.suspended = true; s.epoch++; Timers.clearAll(); cancelProbes(); cancelAuthentication();
     ["modes","apps","logs"].forEach(stopSocket);
     s.online = false; s.connecting = false; s.discovered = false;
     if (s.pending) finishPending(false, "页面进入后台，返回后请确认操作结果");

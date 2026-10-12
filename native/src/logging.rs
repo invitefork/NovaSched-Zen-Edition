@@ -49,6 +49,8 @@ pub struct Logger {
 
 impl Logger {
     pub fn new(state_dir: &Path) -> Self {
+        // sdcard 镜像默认关闭（省一条日志一次共享存储 I/O）；在运行目录放
+        // `sdcard-log` 标记文件即开启，WebUI 关于页的开关就是 touch/rm 这个文件。
         Self {
             inner: Arc::new(Inner {
                 mirror: PathBuf::from("/sdcard/Android/NovaSched/log.txt"),
@@ -103,7 +105,18 @@ impl Logger {
             return;
         };
         let mut wrote = false;
+        // 开关即时生效：每条日志前直接查一次标记文件。相比一次日志追加 I/O，
+        // stat 的开销可以忽略；缓存在原子量里反而会让 WebUI 的开关延迟上百条日志。
+        let mirror_on = self
+            .inner
+            .persistent
+            .parent()
+            .map(|dir| dir.join("sdcard-log").exists())
+            .unwrap_or(false);
         for path in [&self.inner.persistent, &self.inner.mirror] {
+            if path == &self.inner.mirror && !mirror_on {
+                continue;
+            }
             // Shared storage is only a convenience mirror.  It may not be
             // mounted yet at boot, and should never make the daemon noisy or
             // unhealthy; the protected /data/adb log is authoritative.

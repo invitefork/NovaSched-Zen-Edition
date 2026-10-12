@@ -61,13 +61,15 @@ function walk(dir, base = '') {
 }
 
 const COMMIT_MESSAGE = [
-  'Bump version to v2.2.9 (329)',
+  'Release v2.3.0 (330)',
   '',
-  'Ships the glass-surface drift fix, the WebView viewport black-bar fix and the',
-  '360-392px top-bar compaction as a versioned release. module.prop,',
-  'powercfg.json, package.json, Cargo.toml, the packaging script and the WebUI',
-  'fallback strings now track v2.2.9 - 329. Scheduling core and config schema',
-  'unchanged (CONFIG_VERSION 320).',
+  'Ships the consolidated Liquid Glass WebUI (single WebGL2 renderer with a',
+  'full DOM fallback), the unified frontend timer manager, the 4s root',
+  'fallback, screen-off foreground-scan throttling, nice 10 + SCHED_BATCH for',
+  'the daemon and the sdcard log mirror defaulting to off behind a marker',
+  'file. module.prop, powercfg.json, package.json, Cargo.toml, the packaging',
+  'script and the WebUI fallback strings now track v2.3.0 - 330. Config',
+  'schema unchanged (CONFIG_VERSION 320).',
 ].join('\n');
 
 async function main() {

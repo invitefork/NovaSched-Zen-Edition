@@ -270,17 +270,30 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
     let mut stamps = FileStamps::new();
     let mut watcher = EventLoop::new(&watch_paths());
     logger.info(watcher.describe());
+    // 常驻 root 进程让出调度优先级：nice 10 + SCHED_BATCH，
+    // 系统繁忙时与前台公平竞争而非抢占；WebUI 交互仍由独立线程即时服务。
+    unsafe { crate::ffi::setpriority(crate::ffi::PRIO_PROCESS, 0, 10) };
+    let sched_param = crate::ffi::SchedParam { sched_priority: 0 };
+    let sched = unsafe { crate::ffi::sched_setscheduler(0, crate::ffi::SCHED_BATCH, &sched_param) };
+    logger.info(if sched == 0 {
+        "进程调度：nice 10 + SCHED_BATCH".to_string()
+    } else {
+        "进程调度：nice 10（SCHED_BATCH 不可用）".to_string()
+    });
     let mut last_status = String::new();
     let mut status_written = Instant::now();
     let mut retry_at = Instant::now();
     let mut suspended = scene.controls_locked();
     let mut first_scan = true;
+    let mut idle_screen = false;
     let mut node_audit = NodeAuditClock::new(Instant::now());
     let mut scene_probe_at = Instant::now() + scene::PRESENCE_INTERVAL;
     while !STOP_REQUESTED.load(Ordering::Relaxed) && !state_dir.join("stop.requested").exists() {
         let wake = if first_scan {
             first_scan = false;
             WakeReason::Event
+        } else if idle_screen {
+            watcher.wait_idle(crate::event_loop::IDLE_FALLBACK)
         } else {
             watcher.wait(crate::event_loop::FOREGROUND_FALLBACK)
         };
@@ -288,6 +301,17 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         if !wake.needs_rescan() && !forced {
             continue;
         }
+        // 息屏且没有文件事件：前台几乎不变，跳过本轮前台扫描（免读节点、免 fork
+        // dumpsys），兜底拉长到 30 秒。背光节点不保证 inotify 通知，亮屏靠
+        // 30 秒看门狗恢复 2 秒节奏；配置 / 规则 / cgroup 事件仍然即时唤醒。
+        if wake == WakeReason::Watchdog && !forced && !crate::event_loop::screen_on() {
+            if !idle_screen {
+                idle_screen = true;
+                logger.debug("息屏：前台扫描进入 30 秒低频兜底");
+            }
+            continue;
+        }
+        idle_screen = false;
         let config_changed = stamps.changed(Path::new(CONFIG_PATH));
         let rules_changed = stamps.changed(Path::new(APP_MODES_PATH));
         let automatic_changed = stamps.changed(Path::new(util::AUTO_POLICY_PATH));
