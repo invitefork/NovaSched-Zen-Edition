@@ -1,7 +1,7 @@
 {
   "name": "novasched-zen-ui-validation",
   "private": true,
-  "version": "2.2.6",
+  "version": "2.2.7",
   "scripts": {
     "test:webui": "node scripts/test-glass-ui.cjs"
   },

@@ -1,4 +1,4 @@
-/* NovaSched Zen Edition WebUI v2.2.6.
+/* NovaSched Zen Edition WebUI v2.2.7.
  * 视觉设计照搬 SleepDown 课程表官网的液态玻璃语言（见 app.css）。
  * 连接协议沿用守护进程的既有契约：认证 WebSocket（/modes /app-modes /logs）
  * 与宿主 root 备用通道；渲染永远反映实际读回，不把“已发送”当“已生效”。
@@ -595,7 +595,7 @@
       : s.automatic ? "自动调度 · 已开启（点按关闭）" : "自动调度 · 已关闭（点按开启）";
 
     const heartbeat = s.online && Number.isFinite(s.heartbeat) ? `${(Math.round(s.heartbeat / 100) / 10).toFixed(1)}s` : "—";
-    present("#hero-compat", `NovaSched ${s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.6"} · 守护心跳 ${heartbeat} · ${sourceLabel()}`);
+    present("#hero-compat", `NovaSched ${s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.7"} · 守护心跳 ${heartbeat} · ${sourceLabel()}`);
 
     /* Shot 卡 1：当前档位 */
     present("#shot-mode-name", s.online ? (s.external ? "外部控制" : MODES[s.effective]?.name || "待确认") : "待确认");
@@ -669,11 +669,11 @@
     $("#add-rule").disabled = !editable() || !!s.pending;
 
     /* 关于 */
-    present("#about-version", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.6");
+    present("#about-version", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.7");
     present("#about-soc", s.online && s.soc ? s.soc : "待识别");
     present("#about-profile", s.online && s.configProfile ? s.configProfile : "待识别");
     present("#about-fas", s.fasAvailable ? "已就绪 · 档位联动" : "未检测到（可选）");
-    present("#footer-version", (s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.6") + " · ZenJooo");
+    present("#footer-version", (s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.7") + " · ZenJooo");
   }
   function renderRules() {
     const root = $("#rule-list");
@@ -691,13 +691,14 @@
     }
     root.innerHTML = s.rules.map(rule => {
       const a = appInfo(rule.package);
-      return `<button class="rule-row liquid" type="button" data-edit="${esc(rule.package)}" aria-label="${esc(a.name)}，${esc(MODES[rule.mode]?.name || "未知")}档">
+      return `<button class="rule-row liquid-glass" type="button" data-edit="${esc(rule.package)}" aria-label="${esc(a.name)}，${esc(MODES[rule.mode]?.name || "未知")}档">
         <span class="rule-avatar" style="background:${avatarColor(a.name)}">${esc(a.initial)}</span>
         <span class="row-copy"><b>${esc(a.name)}</b><small>${esc(rule.package)}</small></span>
         <span class="mode-badge">${esc(MODES[rule.mode]?.name || "未知")}</span>
         <svg class="chev" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
       </button>`;
     }).join("");
+    ensureGlass(root);
   }
   const LV_TAG = { error: "错误", warn: "警告", info: "信息", debug: "调试" };
   function renderLogs() {
@@ -719,25 +720,44 @@
   }
   const logsActive = () => s.page === "logs";
 
-  /* ---------------- 页面切换（底部 tab 栏） ---------------- */
+  /* ---------------- 页面切换（照抄 XiaoP demo 的 tab-item / tab-pane 机制） ---------------- */
   const PAGE_IDS = ["overview", "modes", "rules", "logs", "about"];
   let currentPage = "overview";
+  /* XiaoP 库无 refresh API：位移贴图按初始尺寸生成一次。隐藏 pane 的玻璃
+     尺寸为 0，因此惰性初始化——切到某页后等一帧布局完成再建该页玻璃；
+     LiquidGlass 的 initialized 标志保证重复调用安全。 */
+  function ensureGlass(root) {
+    if (!root || !window.LiquidGlass || typeof window.LiquidGlass.LiquidGlass !== "function") return;
+    requestAnimationFrame(() => {
+      root.querySelectorAll(".liquid-glass:not(.liquid-glass-container)").forEach(el => {
+        try {
+          new window.LiquidGlass.LiquidGlass(el, {
+            mode: "standard",
+            scale: 18,
+            radius: parseFloat(getComputedStyle(el).borderRadius) || 16,
+            blur: 10 + ui.glassLevel * 0.18,
+            enableEffects: false,
+          });
+          el.style.setProperty("--lg-blur", (10 + ui.glassLevel * 0.18).toFixed(1) + "px");
+        } catch (_) { /* 玻璃初始化失败退化为普通卡片，控制功能不受影响 */ }
+      });
+    });
+  }
   function setPage(page) {
     if (!PAGE_IDS.includes(page)) page = "overview";
     const changed = currentPage !== page;
     currentPage = page; s.page = page;
-    $$(".page").forEach(node => node.classList.toggle("active", node.id === "page-" + page));
-    $$(".tab-bar button").forEach(button => {
-      if (button.dataset.page === page) button.setAttribute("aria-current", "page");
-      else button.removeAttribute("aria-current");
-    });
-    $(".tab-bar").style.setProperty("--tab-index", String(PAGE_IDS.indexOf(page)));
+    $$(".tab-pane").forEach(pane => pane.classList.toggle("active", pane.id === "pane-" + page));
+    $$(".tab-bar .tab-item").forEach(button => button.classList.toggle("active", button.dataset.page === page));
+    $$(".nav-link").forEach(link => link.classList.toggle("active", link.dataset.nav === page));
     if (changed) window.scrollTo({ top: 0, behavior: "instant" });
+    ensureGlass(document.getElementById("pane-" + page));
     /* 日志页按需连接：进入才连，离开即断 */
     if (page === "logs") openEndpoint("logs");
     else { stopSocket("logs"); s.logConnected = false; s.logConnecting = false; renderLogs(); }
   }
-  $$(".tab-bar button").forEach(button => button.onclick = () => setPage(button.dataset.page));
+  $$(".tab-bar .tab-item").forEach(button => button.onclick = () => setPage(button.dataset.page));
+  $$(".nav-link").forEach(link => link.onclick = event => { event.preventDefault(); setPage(link.dataset.nav); });
   if (motionQuery?.matches) document.body.classList.add("no-motion");
 
   /* ---------------- 主题：深浅模式 + 强调色 + 玻璃强度 ---------------- */
@@ -746,14 +766,13 @@
     const root = document.documentElement;
     root.dataset.theme = dark ? "dark" : "light";
     root.dataset.accent = ui.accent;
-    $("meta[name=theme-color]").content = dark ? "#0a0d13" : "#f5f7fa";
+    $("meta[name=theme-color]").content = dark ? "#141a2e" : "#eef4ff";
     $$(".theme-picker button").forEach(button => button.classList.toggle("active", button.dataset.themeChoice === ui.theme));
     $$(".swatch-row button").forEach(button => button.classList.toggle("active", button.dataset.accentChoice === ui.accent));
-    /* 玻璃强度：blur 10–28px、饱和 1.4–2.0、液态环 4–18px，实时写入 CSS 变量 */
-    const level = ui.glassLevel, style = root.style;
-    style.setProperty("--glass-blur", (10 + level * 0.18).toFixed(1) + "px");
-    style.setProperty("--glass-sat", (1.4 + level * 0.006).toFixed(2));
-    style.setProperty("--lg-ring", (4 + level * 0.14).toFixed(1) + "px");
+    /* 玻璃强度联动 XiaoP 的 --lg-blur（0–100 → 10–28px），实时作用于全部玻璃实例 */
+    const level = ui.glassLevel, blur = (10 + level * 0.18).toFixed(1) + "px";
+    root.style.setProperty("--lg-blur", blur);
+    $$(".liquid-glass-container").forEach(el => el.style.setProperty("--lg-blur", blur));
     const slider = $("#glass-level");
     if (slider) {
       if (slider.value !== String(level)) slider.value = String(level);
@@ -786,6 +805,7 @@
   function openDialog(bodyHtml) {
     $("#dialog-body").innerHTML = bodyHtml;
     $("#dialog-layer").classList.add("open");
+    ensureGlass($("#dialog-layer"));
     const input = $("#dialog-input");
     if (input) setTimeout(() => input.focus(), 60);
   }

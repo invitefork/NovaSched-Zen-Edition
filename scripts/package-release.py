@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / 'module-template'
 DIST = ROOT / 'dist'
 DIST.mkdir(exist_ok=True)
-VERSION = '2.2.6'
-VERSION_CODE = 326
+VERSION = '2.2.7'
+VERSION_CODE = 327
 CONFIG_VERSION = 320  # config schema generation; PROFILE_VERSION in config.rs must match
 parser = argparse.ArgumentParser()
 parser.add_argument('--source-only', action='store_true', help='Package source without requiring an Android binary')
@@ -75,16 +75,19 @@ assert 'register_origin(Path::new(STATE_DIR), origin)' in auth, 'Root Origin reg
 assert '--origin ${shellQuote(origin)}' in ui, 'Origin-bound root credential request missing'
 # The SleepDown-derived design language must ship intact; these markers are
 # the visual contract of the liquid-glass single page.
-for marker in ['--brand: #007aff', 'backdrop-filter: blur(30px) saturate(1.65)',
-               '.tab-bar button[aria-current="page"]', '[data-theme="dark"]',
-               '.liquid::before', '.tab-bar', '.page.active', 'id="auto-switch"', 'sceneInstalled', 'fasAvailable', 'novaBlobDrift']:
+for marker in ['.liquid-glass-content { padding: 0; }', '.liquid-glass-nav',
+               '.auto-card .liquid-glass-content { display: flex;',
+               '.tab-bar', 'liquid-glass.css', 'xiaop-liquid-glass.js',
+               'id="auto-switch"', 'sceneInstalled', 'fasAvailable', '把性能，']:
     assert marker in (css + html + ui), f'design/feature marker missing: {marker}'
 for banned in ['assets/zen']:
     assert banned not in (css + html + ui), f'retired DOM UI leftover: {banned}'
-# 星辞 engine ships intact as the standalone demo page
-lg = (MODULE/'webroot/assets/liquid-glass.html').read_text()
-for marker in ['class SpringFloat', 'const FS_GLASS', 'window.__ytblDebug', "getContext('webgl2'"]:
-    assert marker in lg, f'liquid glass engine marker missing: {marker}'
+# XiaoP Liquid Glass ships verbatim: the 4-layer refraction library and its
+# design tokens must stay intact.
+xp_js = (MODULE/'webroot/assets/xiaop-liquid-glass.js').read_text(errors='replace')
+xp_css = (MODULE/'webroot/assets/xiaop-liquid-glass.css').read_text()
+for marker in ['LiquidGlass', 'feDisplacementMap', 'liquid-glass-container', '--lg-blur']:
+    assert marker in (xp_js + xp_css), f'XiaoP liquid glass marker missing: {marker}'
 assert 'cts-v101' not in html
 
 # Explicit source roots work both in a checkout and an extracted source archive.

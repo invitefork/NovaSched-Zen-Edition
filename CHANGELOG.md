@@ -1,5 +1,13 @@
 # 更新记录
 
+## v2.2.7 · 版本代码 327
+
+- WebUI 照抄 [XiaoP Liquid Glass](https://github.com/xiaop-coder/xiaop-liquid-glass) 设计系统：引入其 dist 发行版（零依赖 4 层液态玻璃——SVG feDisplacementMap 边缘折射 + cover 覆盖 + sharp 高光 + reflect 反射），布局类（nav-container / tab-bar / tab-item / tab-pane / stat-card / content-header）与 `--lg-*` 令牌体系逐字沿用；demo 的玻璃 tab 分段控件、stat 图标卡、渐变强调按钮全部照搬。
+- 玻璃为真实折射：每张卡片由库自动生成 Canvas SDF 位移贴图，边缘出现折射形变（可与背景光斑对照观察）。切页采用惰性初始化（库无 refresh API，隐藏页布局完成后实例化，重复调用安全）；弹窗与规则行同样接入。
+- 主题对接 `data-theme`：深浅模式切换玻璃层变量；强调色六选一映射到 `--lg-primary/--lg-secondary` 渐变；玻璃强度滑块实时联动全部玻璃实例的 `--lg-blur`。
+- 修复：库的 `.liquid-glass-content` 包裹层会打断原 flex 布局（inline 元素被挤成一行），组件布局语义下放到包裹层恢复；包裹层自带内边距归零。
+- 版本 v2.2.7 / 327，调度核心不变。
+
 ## v2.2.6 · 版本代码 326
 
 - 修复 Scene N1 识别不到的问题（用户已安装 N1 2026.10 Alpha14、包名 com.omarea.vtools 仍报未安装）：包管理器查询超时从 2 秒放宽到 4 秒；新增硬底兜底——`cmd`/`pm` 查询失败或无响应时直接读取 `/data/system/packages.list`（root 下毫秒级、任何 ROM 可读），包族存在即按已安装处理并注明证据来源。安装脚本的 Scene 步骤走同一探测链，同步受益。
