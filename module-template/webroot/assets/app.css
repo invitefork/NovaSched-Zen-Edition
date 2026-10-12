@@ -345,22 +345,7 @@
   .theme-picker button { height: 36px; padding: 0 15px; border-radius: 999px; color: var(--muted); font-size: 11.5px; font-weight: 620; transition: background .2s, color .2s; }
   .theme-picker button.active { background: var(--surface); color: var(--ink); box-shadow: 0 4px 14px #1a4c7c18; }
   .about-foot { margin-top: 26px; color: var(--muted); font-size: 10.5px; line-height: 1.75; }
-  .demo-card {
-    margin-top: 20px; padding: 20px 22px;
-    display: flex; align-items: center; justify-content: space-between; gap: 18px;
-    border: 1px solid var(--card-line, #ffffffc2); border-radius: 26px;
-    background: linear-gradient(145deg, color-mix(in oklch, var(--brand), transparent 92%), var(--surface));
-    box-shadow: 0 16px 42px #14243b10, inset 0 1px 0 var(--glass-edge, #fff);
-    backdrop-filter: blur(16px) saturate(1.5); -webkit-backdrop-filter: blur(16px) saturate(1.5);
-    --lg-ring: 8px;
-  }
-  [data-theme="dark"] .demo-card { --card-line: #ffffff1f; --glass-edge: #ffffff1f; background: linear-gradient(145deg, #101c2e, #0e1219); }
-  .demo-copy { min-width: 0; }
-  .demo-copy b { display: block; font-size: 15px; letter-spacing: -.02em; }
-  .demo-copy small { display: block; margin-top: 5px; color: var(--muted); font-size: 11.5px; line-height: 1.6; }
-  .demo-card .button { flex: 0 0 auto; }
   .mode-card, .rule-row, .auto-card { --lg-ring: 7px; }
-  .demo-frame { width: 100%; height: min(68vh, 640px); border: 1px solid var(--line); border-radius: 22px; background: #0a0c11; }
 }
 
 @layer components {
@@ -465,17 +450,14 @@
 }
 
 @layer motion {
+  /* 轻入场：无 blur、无整页透明帧——底下是同色背景也不露闪 */
   @keyframes pageIn {
-    from { opacity: 0; transform: translateY(16px) scale(.992); filter: blur(4px); }
-    to { opacity: 1; transform: none; filter: none; }
+    from { opacity: .55; transform: translateY(8px); }
+    to { opacity: 1; transform: none; }
   }
-  .page.active { animation: pageIn .42s var(--ease-spring); }
-  .page.active > .page-wrap > * { animation: pageIn .5s var(--ease-spring) backwards; }
-  .page.active > .page-wrap > *:nth-child(2) { animation-delay: .05s; }
-  .page.active > .page-wrap > *:nth-child(3) { animation-delay: .1s; }
-  .page.active > .page-wrap > *:nth-child(4) { animation-delay: .15s; }
+  .page.active { animation: pageIn .24s var(--ease); }
   @media (prefers-reduced-motion: reduce) {
-    .page.active, .page.active > .page-wrap > * { animation: none; }
+    .page.active { animation: none; }
   }
 }
 

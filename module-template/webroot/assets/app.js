@@ -1,4 +1,4 @@
-/* NovaSched Zen Edition WebUI v2.2.4.
+/* NovaSched Zen Edition WebUI v2.2.5.
  * 视觉设计照搬 SleepDown 课程表官网的液态玻璃语言（见 app.css）。
  * 连接协议沿用守护进程的既有契约：认证 WebSocket（/modes /app-modes /logs）
  * 与宿主 root 备用通道；渲染永远反映实际读回，不把“已发送”当“已生效”。
@@ -592,7 +592,7 @@
       : s.automatic ? "自动调度 · 已开启（点按关闭）" : "自动调度 · 已关闭（点按开启）";
 
     const heartbeat = s.online && Number.isFinite(s.heartbeat) ? `${(Math.round(s.heartbeat / 100) / 10).toFixed(1)}s` : "—";
-    present("#hero-compat", `NovaSched ${s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.4"} · 守护心跳 ${heartbeat} · ${sourceLabel()}`);
+    present("#hero-compat", `NovaSched ${s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.5"} · 守护心跳 ${heartbeat} · ${sourceLabel()}`);
 
     /* Shot 卡 1：当前档位 */
     present("#shot-mode-name", s.online ? (s.external ? "外部控制" : MODES[s.effective]?.name || "待确认") : "待确认");
@@ -666,14 +666,18 @@
     $("#add-rule").disabled = !editable() || !!s.pending;
 
     /* 关于 */
-    present("#about-version", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.4");
+    present("#about-version", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.5");
     present("#about-soc", s.online && s.soc ? s.soc : "待识别");
     present("#about-profile", s.online && s.configProfile ? s.configProfile : "待识别");
     present("#about-fas", s.fasAvailable ? "已就绪 · 档位联动" : "未检测到（可选）");
-    present("#footer-version", (s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.4") + " · ZenJooo");
+    present("#footer-version", (s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.5") + " · ZenJooo");
   }
   function renderRules() {
     const root = $("#rule-list");
+    /* 心跳每 2 秒触发一次 render：内容没变时绝不重建 DOM，否则规则页会随心跳闪烁 */
+    const key = JSON.stringify([s.rulesLoaded, s.rules, [...labels.entries()].map(([k, v]) => [k, v.appLabel])]);
+    if (root.dataset.key === key) return;
+    root.dataset.key = key;
     if (!s.rulesLoaded) {
       root.innerHTML = `<div class="rule-empty">等待应用规则<br><small>成功连接后，这里会显示守护进程保存的应用策略。</small></div>`;
       return;
@@ -872,19 +876,6 @@
     render();
   };
   $("#hero-reconnect").onclick = () => { if (!s.suspended) { clearTimeout(s.retry); discover(); toast("正在重新发现本地服务"); } };
-  /* 星辞液态玻璃原版演示：按需加载 iframe，关闭即释放 WebGL 上下文 */
-  $("#open-liquid-demo").onclick = () => {
-    openDialog(`
-      <p class="eyebrow">星辞 · 液态玻璃</p>
-      <h3 id="dialog-title">液态玻璃演示（原版引擎）</h3>
-      <p class="dialog-sub">拖拽玻璃移动，切换普通 / 弹性 / 触摸模式，参数实时生效。引擎逐字保留自「星辞液态玻璃」。</p>
-      <iframe class="demo-frame" src="./assets/liquid-glass.html" title="星辞液态玻璃演示" loading="lazy"></iframe>
-      <div class="dialog-actions">
-        <button class="button primary" type="button" id="dialog-cancel">关闭演示</button>
-      </div>
-    `);
-    $("#dialog-cancel").onclick = closeDialog;
-  };
   $("#hero-diagnose").onclick = showDiagnostics;
   $("#about-diagnose").onclick = event => { event.preventDefault(); showDiagnostics(); };
   $("#about-license").onclick = event => { event.preventDefault(); toast("GPL-3.0-only · 许可文本见模块内 LICENSE"); };
