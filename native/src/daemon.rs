@@ -136,7 +136,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
             .clone()
             .or_else(app_modes::read_mode_file)
             .unwrap_or_else(|| app_modes.default_mode())
-    } else if automatic.enabled() {
+    } else if local_automatic_enabled(automatic.enabled(), &scene) {
         "powersave".to_string()
     } else if app_modes::scene_pedestal_active(scene.linked()) {
         "fast".to_string()
@@ -190,8 +190,9 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
     // 接管模型：检测到 Scene（含 N1 改名包）即注册为它的调度回调，Scene 里切
     // 档位由本模块执行；未安装 Scene 时由 WebUI 直接接管。
     runtime.set_scene_installed(scene.availability == crate::scene::SceneAvailability::Available);
+    runtime.set_scene_presence(scene.availability);
     runtime.set_automatic_active(
-        automatic.enabled() && !scene.controls_locked() && last_apply_error.is_empty(),
+        local_automatic_enabled(automatic.enabled(), &scene) && last_apply_error.is_empty(),
     );
     runtime.set_power_profile(scheduler.current_power_profile());
     runtime.set_classification(&Classification {
@@ -342,7 +343,10 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
                 scene = scene::detect();
             }
             scene_changed |= previous_scene != scene;
-            runtime.set_scene_installed(scene.availability == crate::scene::SceneAvailability::Available);
+            runtime.set_scene_installed(
+                scene.availability == crate::scene::SceneAvailability::Available,
+            );
+            runtime.set_scene_presence(scene.availability);
             if previous_scene.linked() && !scene.linked() {
                 // Pedestal is transient. It must not survive an uninstall,
                 // or a replacement provider in this boot.
@@ -401,7 +405,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
             revision.fetch_add(1, Ordering::Relaxed);
         }
 
-        let automatic_enabled = automatic.enabled();
+        let automatic_enabled = local_automatic_enabled(automatic.enabled(), &scene);
         let foreground = monitor.detect(
             &app_modes,
             scheduler.ignored_packages(),
@@ -412,7 +416,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
             .as_deref()
             .unwrap_or(&monitor.current)
             .to_string();
-        let classification = if automatic_enabled && monitor.activity.is_none() {
+        let classification = if package.is_empty() && monitor.activity.is_none() {
             Classification {
                 kind: crate::automatic::AppKind::Unknown,
                 source: "foreground_unknown",
@@ -662,7 +666,9 @@ pub fn print_policy_audit(config: &Config) -> String {
             .parse::<u64>()
             .ok()
             .zip(
-                scheduler::normalize_frequency(&base, &configured_max, false)
+                // 配置里普遍是 "58%" 这类百分比，必须先按策略物理上限换算成 kHz，
+                // 否则对比永远失败，审计会把正常生效误报为“上限被占用”。
+                scheduler::resolve_param_frequency(&configured_max, &base)
                     .parse::<u64>()
                     .ok(),
             )
@@ -815,46 +821,28 @@ impl ForegroundMonitor {
         automatic: bool,
     ) -> Option<String> {
         let new_pids = read_top_app_pids();
-        let activity_due = automatic
-            && self
-                .activity_at
-                .map(|at| at.elapsed() >= Duration::from_secs(2))
-                .unwrap_or(true);
-        if new_pids == self.pids && !refresh && !activity_due {
+        let activity_due = refresh || self.activity_at
+            .map(|at| at.elapsed() >= Duration::from_secs(2)).unwrap_or(true);
+        if new_pids == self.pids && !activity_due {
             return None;
         }
         let added: BTreeSet<i32> = new_pids.difference(&self.pids).copied().collect();
         self.pids = new_pids;
-        let processes: Vec<_> = self
-            .pids
-            .iter()
-            .filter_map(|pid| read_process(*pid).map(|process| (*pid, process)))
-            .collect();
+        let processes: Vec<_> = self.pids.iter()
+            .filter_map(|pid| read_process(*pid).map(|process| (*pid, process))).collect();
         if activity_due {
             self.activity_at = Some(Instant::now());
-            self.activity = util::current_android_user().ok().and_then(|user| {
-                util::query_command_limited(
-                    "/system/bin/dumpsys",
-                    &["activity", "activities"],
-                    Duration::from_millis(750),
-                    262_144,
-                )
-                .ok()
-                .and_then(|text| resumed_package(&text, user))
-            });
+            self.activity = query_foreground();
         }
-        let selected = if automatic {
-            // ActivityManager resolves retained top-app processes (PiP,
-            // launchers, overlays). Failed ambiguous scans use powersave.
-            Some(self.activity.clone().unwrap_or_default())
+        // ActivityManager/WindowManager wins even when cpuset is missing or
+        // retains a launcher/PiP process. Ambiguous automatic scans stay idle.
+        let selected = if let Some(activity) = &self.activity {
+            Some(activity.clone())
+        } else if automatic {
+            unambiguous_top_app(&processes)
         } else {
-            select_foreground(
-                &self.current,
-                &processes,
-                &added,
-                ignored_packages,
-                |package| rules.has_rule(package),
-            )
+            select_foreground(&self.current, &processes, &added, ignored_packages,
+                |package| rules.has_rule(package))
         };
         let Some(found) = selected else {
             if !self.current.is_empty() {
@@ -871,65 +859,73 @@ impl ForegroundMonitor {
     }
 }
 
-/// A top-resumed activity wins over retained/secondary resumed activities.
-/// Sleeping/keyguard summaries represent no interactive application.
+fn local_automatic_enabled(enabled: bool, scene: &scene::SceneState) -> bool {
+    enabled && !scene.linked() && !scene.controls_locked()
+}
+
+fn query_foreground() -> Option<String> {
+    let user = util::current_android_user().ok();
+    for args in [&["activity", "activities"][..], &["window", "windows"][..], &["activity", "top"][..]] {
+        if let Ok(text) = util::query_command_limited(
+            "/system/bin/dumpsys", args, Duration::from_millis(900), 1_048_576,
+        ) {
+            if let Some(package) = activity_package(&text, user) {
+                return Some(package);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
 fn resumed_package(text: &str, user: u32) -> Option<String> {
-    let sleeping = text.split_whitespace().any(|field| {
-        matches!(
-            field.trim_end_matches(','),
-            "mSleeping=true" | "mKeyguardShowing=true" | "isKeyguardShowing=true"
-        )
-    });
-    if sleeping {
+    activity_package(text, Some(user))
+}
+
+fn activity_package(text: &str, user: Option<u32>) -> Option<String> {
+    if text.split_whitespace().any(|field| matches!(field.trim_end_matches(','),
+        "mSleeping=true" | "mKeyguardShowing=true" | "isKeyguardShowing=true")) {
         return Some(String::new());
     }
     let mut resumed = BTreeSet::new();
+    let mut focused_app = None;
     for line in text.lines() {
-        if !line.contains("ResumedActivity") && !line.contains("resumedActivity") {
-            continue;
-        }
-        if !line.contains("ActivityRecord{") {
-            continue;
-        }
+        let top = line.contains("topResumedActivity") || line.contains("mTopResumedActivity");
+        let focus = line.contains("mCurrentFocus=");
+        let marker = top || focus || line.contains("ResumedActivity")
+            || line.contains("resumedActivity") || line.contains("mFocusedApp=")
+            || line.trim_start().starts_with("ACTIVITY ");
+        if !marker { continue; }
         let parts: Vec<_> = line.split_whitespace().collect();
-        let marker = format!("u{user}");
-        let package = parts.windows(2).find_map(|pair| {
-            if pair[0] != marker {
-                return None;
-            }
-            let (pkg, _) = pair[1].split_once('/')?;
-            util::valid_package(pkg).then(|| pkg.to_string())
+        let record_user = parts.iter().find_map(|field| field.strip_prefix('u')?.parse::<u32>().ok());
+        if user.zip(record_user).is_some_and(|(active, record)| active != record) { continue; }
+        let package = parts.iter().find_map(|field| {
+            let (package, _) = field.split_once('/')?;
+            util::valid_package(package).then(|| package.to_string())
         });
         if let Some(package) = package {
-            if line.contains("topResumedActivity") || line.contains("mTopResumedActivity") {
-                return Some(package);
-            }
-            resumed.insert(package);
+            if top || focus { return Some(package); }
+            if line.contains("mFocusedApp=") { focused_app = Some(package); }
+            else { resumed.insert(package); }
         }
     }
-    if resumed.len() == 1 {
-        resumed.into_iter().next()
-    } else {
-        None
-    }
+    focused_app.or_else(|| if resumed.len() == 1 { resumed.into_iter().next() } else { None })
 }
 
 fn read_top_app_pids() -> BTreeSet<i32> {
-    let path = [
-        "/dev/cpuset/top-app/cgroup.procs",
-        "/dev/cpuset/top-app/tasks",
-        "/sys/fs/cgroup/top-app/cgroup.procs",
-        "/sys/fs/cgroup/top-app/tasks",
-    ]
-    .iter()
-    .find(|path| Path::new(path).exists())
-    .copied();
-    path.and_then(|path| util::read_text(Path::new(path)).ok())
-        .unwrap_or_default()
-        .split_whitespace()
-        .filter_map(|value| value.parse().ok())
-        .filter(|pid| *pid > 0)
-        .collect()
+    ["/dev/cpuset/top-app/cgroup.procs", "/dev/cpuset/top-app/tasks",
+        "/sys/fs/cgroup/top-app/cgroup.procs", "/sys/fs/cgroup/top-app/tasks",
+        "/sys/fs/cgroup/cpuset/top-app/cgroup.procs", "/dev/stune/top-app/cgroup.procs"]
+        .iter().filter_map(|path| util::read_text(Path::new(path)).ok())
+        .flat_map(|text| text.split_whitespace().filter_map(|value| value.parse::<i32>().ok())
+            .filter(|pid| *pid > 0).collect::<Vec<_>>()).collect()
+}
+
+fn unambiguous_top_app(processes: &[(i32, String)]) -> Option<String> {
+    let packages: BTreeSet<_> = processes.iter().filter_map(|(_, name)| {
+        if name.contains(':') || !util::valid_package(name) { None } else { Some(name.clone()) }
+    }).collect();
+    if packages.len() == 1 { packages.into_iter().next() } else { None }
 }
 
 fn read_process(pid: i32) -> Option<String> {
@@ -1162,5 +1158,34 @@ mod automatic_foreground_tests {
         assert_eq!(resumed_package(text, 0), None);
         assert_eq!(resumed_package("Error: service unavailable", 0), None);
         assert_eq!(AppKind::Unknown.mode(), "powersave");
+    }
+}
+
+#[cfg(test)]
+mod scene_and_foreground_regressions {
+    use super::*;
+    #[test]
+    fn scene_callback_keeps_ownership_with_saved_automatic_preference() {
+        let mut state = scene::SceneState::default();
+        assert!(local_automatic_enabled(true, &state));
+        state.provider = scene::ProviderKind::Own;
+        assert!(!local_automatic_enabled(true, &state));
+        state.provider = scene::ProviderKind::Foreign;
+        assert!(!local_automatic_enabled(true, &state));
+        state.provider = scene::ProviderKind::None;
+        assert!(local_automatic_enabled(true, &state));
+    }
+    #[test]
+    fn window_focus_and_activity_top_cover_rom_output_variants() {
+        assert_eq!(activity_package("mCurrentFocus=Window{cc u0 com.omarea.vtools/com.omarea.vtools.MainActivity}", Some(0)), Some("com.omarea.vtools".into()));
+        assert_eq!(activity_package("mFocusedApp=ActivityRecord{cc u10 com.example.work/.Main t2}", Some(10)), Some("com.example.work".into()));
+        assert_eq!(activity_package("ACTIVITY com.example.chat/.Main 123 pid=12", Some(0)), Some("com.example.chat".into()));
+        assert_eq!(activity_package("topResumedActivity=ActivityRecord{cc u0 com.example.chat/.Main t1}", None), Some("com.example.chat".into()));
+        assert_eq!(activity_package("mCurrentFocus=Window{cc u10 com.example.work/.Main}", Some(0)), None);
+    }
+    #[test]
+    fn ambiguous_cpuset_does_not_promote_background_games() {
+        assert_eq!(unambiguous_top_app(&[(1,"com.example.game".into()),(2,"com.android.launcher3".into())]), None);
+        assert_eq!(unambiguous_top_app(&[(1,"com.example.game".into()),(2,"com.example.game:render".into())]), Some("com.example.game".into()));
     }
 }

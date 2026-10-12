@@ -11,10 +11,7 @@ use crate::util::{self, Result};
 
 pub const OWN_PROVIDER_MODULE: &str = "NovaSched_Zen_Edition";
 pub const SCENE_PACKAGE: &str = "com.omarea.vtools";
-/// Scene N1 era builds may ship under a renamed application id. Scene has
-/// always published inside the com.omarea namespace, so presence is probed
-/// with a namespace filter and accepted for known family prefixes instead
-/// of one exact package that a new major version can abandon.
+/// Keep the classic package first; accept the Scene namespace as a fallback.
 pub const SCENE_PACKAGE_FAMILY: &str = "com.omarea.scene";
 pub const SCENE_NAMESPACE_FILTER: &str = "com.omarea";
 pub const PRESENCE_INTERVAL: Duration = Duration::from_secs(10);
@@ -56,9 +53,10 @@ pub fn presence() -> ScenePresence {
             }
         }
     }
-    let state = probe_presence(util::current_android_user(), |program, args| {
-        util::query_command(program, args, Duration::from_secs(4))
-    });
+    let user = util::current_android_user();
+    let state = probe_presence(user.clone(), |program, args| {
+        util::query_command(program, args, Duration::from_secs(2))
+    }).with_registry_fallback(user.ok());
     if let Ok(mut cached) = cache.lock() {
         *cached = Some((Instant::now(), state.clone()));
     }
@@ -79,6 +77,7 @@ fn probe_presence(
         }
     };
     let mut failures = Vec::new();
+    let mut absent = 0;
     for (program, args) in [
         (
             "/system/bin/cmd",
@@ -95,9 +94,11 @@ fn probe_presence(
             "/system/bin/pm",
             vec!["list", "packages", "--user", &user, SCENE_NAMESPACE_FILTER],
         ),
+        ("/system/bin/cmd", vec!["package", "path", "--user", &user, SCENE_PACKAGE]),
+        ("/system/bin/pm", vec!["path", "--user", &user, SCENE_PACKAGE]),
     ] {
         match query(program, &args) {
-            Ok(text) => match parse_package_query(&text) {
+            Ok(text) => match if args.contains(&"path") { parse_package_path(&text) } else { parse_package_query(&text) } {
                 SceneAvailability::Available => {
                     return ScenePresence {
                         availability: SceneAvailability::Available,
@@ -106,20 +107,19 @@ fn probe_presence(
                         ),
                     }
                 }
-                SceneAvailability::Absent => {
-                    return ScenePresence {
-                        availability: SceneAvailability::Absent,
-                        evidence: format!(
-                            "当前用户 {user} 未安装 Scene（com.omarea 命名空间无 Scene 系包名）；忽略全局包记录、旧回调和数据目录"
-                        ),
-                    }
-                }
+                SceneAvailability::Absent => absent += 1,
                 SceneAvailability::Unknown => {
                     failures.push(format!("{program} 返回无法识别的结果"))
                 }
             },
             Err(error) => failures.push(error),
         }
+    }
+    if absent >= 2 {
+        return ScenePresence {
+            availability: SceneAvailability::Absent,
+            evidence: format!("包管理器多次确认用户 {user} 未安装 {SCENE_PACKAGE} 或 Scene 系应用"),
+        };
     }
     ScenePresence {
         availability: SceneAvailability::Unknown,
@@ -128,45 +128,65 @@ fn probe_presence(
             failures.join("；")
         ),
     }
-    .with_global_fallback()
 }
 
-/// Hard floor for detection: on some ROMs `cmd`/`pm` are slow to answer or
-/// refuse the query entirely, which used to leave presence Unknown forever
-/// even though Scene N1 was installed (package id com.omarea.vtools).
-/// /data/system/packages.list is world-parseable for root in milliseconds;
-/// a family hit upgrades Unknown to Available with an honest note, and a
-/// miss is authoritative absence (nothing of the family exists at all).
-fn global_package_record_fallback() -> ScenePresence {
-    const GLOBAL_LIST: &str = "/data/system/packages.list";
-    let Ok(text) = util::read_text(Path::new(GLOBAL_LIST)) else {
+/// PackageManager can be unavailable during installation. Its registry is
+/// independent evidence; per-user restrictions still override global records.
+fn registry_presence(global: &str, restrictions: Option<&str>, user: Option<u32>) -> ScenePresence {
+    let packages: Vec<_> = global.lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|name| is_scene_package(name))
+        .collect();
+    if packages.is_empty() {
         return ScenePresence {
-            availability: SceneAvailability::Unknown,
-            evidence: "包管理器查询失败，且全局包记录 /data/system/packages.list 不可读".into(),
-        };
-    };
-    let found = text.lines().any(|line| {
-        is_scene_package(line.split_whitespace().next().unwrap_or(""))
-    });
-    if found {
-        ScenePresence {
-            availability: SceneAvailability::Available,
-            evidence: "全局包记录 /data/system/packages.list 中发现 Scene 系包名（包管理器逐用户查询不可用，按已安装处理）".into(),
-        }
-    } else {
-        ScenePresence {
             availability: SceneAvailability::Absent,
-            evidence: "全局包记录 /data/system/packages.list 中无任何 Scene 系包名；按未安装处理".into(),
+            evidence: "系统包记录中未安装 Scene".into(),
+        };
+    }
+    if let Some(xml) = restrictions {
+        if !xml.contains("<package-restrictions") || !xml.contains("</package-restrictions>") {
+            return ScenePresence {
+                availability: SceneAvailability::Unknown,
+                evidence: "当前用户的包记录尚未完整写入".into(),
+            };
         }
+        let installed = packages.iter().any(|package| {
+            !xml.split("<pkg ").skip(1).any(|part| {
+                let tag = part.split('>').next().unwrap_or("");
+                xml_attribute(tag, "name").as_deref() == Some(*package)
+                    && (xml_attribute(tag, "installed").as_deref() == Some("false")
+                        || xml_attribute(tag, "hidden").as_deref() == Some("true"))
+            })
+        });
+        return ScenePresence {
+            availability: if installed { SceneAvailability::Available } else { SceneAvailability::Absent },
+            evidence: format!("系统包记录与用户 {} 安装记录确认 Scene {}", user.unwrap_or(0), if installed { "已安装" } else { "未安装" }),
+        };
+    }
+    ScenePresence {
+        availability: SceneAvailability::Available,
+        evidence: "系统包记录确认 Scene 已安装；当前用户安装状态暂不可查询".into(),
     }
 }
 
+fn xml_attribute(tag: &str, name: &str) -> Option<String> {
+    let needle = format!("{name}=\"");
+    let value = tag.split_once(&needle)?.1.split('"').next()?;
+    Some(value.to_string())
+}
+
 impl ScenePresence {
-    fn with_global_fallback(self) -> Self {
+    fn with_registry_fallback(self, user: Option<u32>) -> Self {
         if self.availability != SceneAvailability::Unknown {
             return self;
         }
-        let fallback = global_package_record_fallback();
+        let Ok(global) = util::read_text(Path::new("/data/system/packages.list")) else {
+            return self;
+        };
+        let restrictions = user.and_then(|user| util::read_text(Path::new(
+            &format!("/data/system/users/{user}/package-restrictions.xml")
+        )).ok());
+        let fallback = registry_presence(&global, restrictions.as_deref(), user);
         ScenePresence {
             availability: fallback.availability,
             evidence: format!("{}；{}", self.evidence, fallback.evidence),
@@ -174,8 +194,20 @@ impl ScenePresence {
     }
 }
 
+fn parse_package_path(text: &str) -> SceneAvailability {
+    if text.trim().is_empty() {
+        return SceneAvailability::Absent;
+    }
+    if text.lines().all(|line| line.trim().strip_prefix("package:")
+        .is_some_and(|path| path.starts_with('/') && path.ends_with(".apk"))) {
+        SceneAvailability::Available
+    } else {
+        SceneAvailability::Unknown
+    }
+}
+
 fn is_scene_package(name: &str) -> bool {
-    name == SCENE_PACKAGE || name.starts_with(SCENE_PACKAGE_FAMILY)
+    name == SCENE_PACKAGE || name == SCENE_PACKAGE_FAMILY || name.starts_with("com.omarea.scene.")
 }
 
 /// The query filters on the com.omarea namespace, so the reply may contain
@@ -236,7 +268,7 @@ fn vtools_xml_candidates(user: u32) -> Vec<PathBuf> {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name == SCENE_PACKAGE || name.starts_with(SCENE_PACKAGE_FAMILY) {
+            if name == SCENE_PACKAGE || name == SCENE_PACKAGE_FAMILY || name.starts_with("com.omarea.scene.") {
                 let path = base.join(name.as_ref()).join("shared_prefs").join("powercfg.xml");
                 if !paths.contains(&path) {
                     paths.push(path);
@@ -1111,7 +1143,7 @@ mod tests {
             assert!(!args.contains(&"-u") && !args.contains(&"-e"));
             Ok(String::new())
         });
-        assert_eq!(calls, 1);
+        assert_eq!(calls, 4);
         assert_eq!(p.availability, SceneAvailability::Absent);
         assert_eq!(
             active_provider(ProviderKind::Own, p.availability),
@@ -1172,6 +1204,34 @@ mod tests {
             ..installed.clone()
         };
         assert!(!registration_needed(&foreign, &foreign));
+    }
+
+    #[test]
+    fn empty_primary_reply_does_not_hide_an_installed_scene() {
+        let mut calls = 0;
+        let found = probe_presence(Ok(0), |program, _| {
+            calls += 1;
+            Ok(if program.ends_with("/cmd") { "".into() } else { "package:com.omarea.vtools\n".into() })
+        });
+        assert_eq!(calls, 2);
+        assert_eq!(found.availability, SceneAvailability::Available);
+        let found = probe_presence(Ok(0), |_, args| {
+            if args.contains(&"path") { Ok("package:/data/app/Scene/base.apk".into()) }
+            else { Err("list unavailable".into()) }
+        });
+        assert_eq!(found.availability, SceneAvailability::Available);
+    }
+
+    #[test]
+    fn registry_fallback_respects_per_user_uninstall_and_disabled_apps() {
+        let global = "com.omarea.vtools 10234 0 /data/user/0/com.omarea.vtools default none\n";
+        assert_eq!(registry_presence(global, None, None).availability, SceneAvailability::Available);
+        let xml = "<package-restrictions><pkg name=\"com.omarea.vtools\" installed=\"false\" /></package-restrictions>";
+        assert_eq!(registry_presence(global, Some(xml), Some(10)).availability, SceneAvailability::Absent);
+        let xml = "<package-restrictions><pkg name=\"com.omarea.vtools\" enabled=\"3\" /></package-restrictions>";
+        assert_eq!(registry_presence(global, Some(xml), Some(0)).availability, SceneAvailability::Available);
+        assert_eq!(registry_presence(global, Some("<package-restrictions>"), Some(0)).availability, SceneAvailability::Unknown);
+        assert_eq!(parse_package_query("package:com.omarea.sceneFake"), SceneAvailability::Absent);
     }
 
     struct Fixture(ProviderPaths);

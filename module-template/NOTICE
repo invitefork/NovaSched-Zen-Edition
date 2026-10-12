@@ -4,6 +4,4 @@
 
 现有调度核心与 Scene 联动设计源于 LittleYouran/LittleYouran_CTS_3，上游作者 LittleYouran，基线提交 3ecd526b72a08d97429376e519869aa464d50a39。相关代码沿用 GPL-3.0-only 许可证，原文见 LICENSE。
 
-本版本重新定义配置格式与默认策略，并修改硬件识别、配置迁移和 WebUI。来源署名用于说明许可证归属。
-
-WebUI 中的 Google Material rounded SVG 图标采用 Apache-2.0 许可证，原文位于模块的 webroot/licenses/Material-Icons.txt，源码包对应 module-template/webroot/licenses/Material-Icons.txt。
+本版本重新定义配置格式与默认策略，并修改硬件识别、配置迁移和 WebUI 的玻璃引擎、四层组件与参考页面样式来自 XiaoP Liquid Glass，作者 XiaoP，MIT 许可。上游提交 b771c861225189c808dabb2f73f6f83ad1df0194。原始源码与许可位于 webroot/vendor/xiaop-liquid-glass，宿主适配位于 assets/glass.js。模块作者为 ZenJooo。

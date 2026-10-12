@@ -17,7 +17,7 @@ pub fn scene_callback(mode: &str) -> Result<()> {
         return Ok(());
     }
     if !scene::detect().linked() {
-        return Err("Scene 当前回调不属于 CTS，未修改档位".into());
+        return Err("Scene 当前回调不属于 NovaSched，未修改档位".into());
     }
     let result = (|| {
         let boot = util::read_trimmed("/proc/sys/kernel/random/boot_id")?;
@@ -280,6 +280,11 @@ impl AppModes {
         mutate(&mut candidate);
         if candidate == *guard {
             return Ok(false);
+        }
+        // 与 automatic 分类覆盖相同的 256 条上限：无界增长会让状态载荷膨胀，
+        // 拖慢每次心跳广播并逼近传输上限。
+        if candidate.len() - usize::from(candidate.contains_key("*")) > 256 {
+            return Err("应用规则最多 256 条".into());
         }
         if let Err(error) = self.save_rules(&candidate, update_mode) {
             if let Err(rollback) = self.save_rules(&guard, false) {

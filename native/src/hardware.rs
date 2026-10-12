@@ -677,6 +677,7 @@ mod tests {
         )
         .unwrap();
         config.modes.get_mut("fast").unwrap().clusters[1].min_freq = "25%".into();
+        config.modes.get_mut("powersave").unwrap().clusters[1].max_freq = "55%".into();
         hardware.adapt_config(&mut config).unwrap();
         assert_eq!(config.policy, [0, 3, 7, 5]);
         assert_eq!(

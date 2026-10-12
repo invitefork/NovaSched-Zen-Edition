@@ -48,9 +48,19 @@ struct RuntimeData {
     automatic_active: bool,
     fas_available: bool,
     scene_installed: bool,
+    scene_presence: String,
 }
 
 impl RuntimeState {
+    pub fn set_scene_presence(&self, presence: crate::scene::SceneAvailability) {
+        if let Ok(mut data) = self.inner.lock() {
+            data.scene_presence = match presence {
+                crate::scene::SceneAvailability::Available => "available",
+                crate::scene::SceneAvailability::Absent => "absent",
+                crate::scene::SceneAvailability::Unknown => "unknown",
+            }.into();
+        }
+    }
     pub fn set_automatic_active(&self, active: bool) {
         if let Ok(mut data) = self.inner.lock() {
             data.automatic_active = active;
@@ -388,7 +398,13 @@ fn websocket_handshake_allow(
         stream
             .write_all(response.as_bytes())
             .map_err(|e| e.to_string())?;
-        return Err(format!("握手校验失败，路径={path}"));
+        // 路径来自请求行原文，只回写白名单字符，避免原样进入持久日志（单行日志注入）。
+        let shown: String = path
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '/' || *c == '-' || *c == '_')
+            .take(64)
+            .collect();
+        return Err(format!("握手校验失败，路径={shown}"));
     }
     let accept = base64(&sha1(format!("{key}{WS_GUID}").as_bytes()));
     let response = format!(
@@ -423,8 +439,17 @@ fn handle_logs(mut stream: TcpStream, logger: &Logger, stop: Arc<AtomicBool>) ->
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
         if !bytes.is_empty() {
-            position += bytes.len() as u64;
-            send_text(&mut stream, &String::from_utf8_lossy(&bytes))?;
+            // 与 root_bridge::log_chunk 相同的边界处理：不要把 UTF-8 字符拆到两帧，
+            // 未收尾的字节留在原偏移，下次轮询从同一位置续读。
+            let consumed = match std::str::from_utf8(&bytes) {
+                Ok(_) => bytes.len(),
+                Err(e) if e.error_len().is_none() => e.valid_up_to(),
+                Err(_) => bytes.len(),
+            };
+            if consumed > 0 {
+                position += consumed as u64;
+                send_text(&mut stream, &String::from_utf8_lossy(&bytes[..consumed]))?;
+            }
         }
         let frame = read_frame(&mut stream)?;
         if !matches!(frame, Frame::Timeout) {
@@ -520,7 +545,7 @@ fn payload(state: &WebState, app_endpoint: bool) -> String {
     };
     if !app_endpoint {
         return format!(
-            "mode:{},effective:{},package:{},controller:{},sceneActive:{},sceneLinked:{},phase:{},heartbeatMs:{},port:{},powerSaveProfile:{},socName:{},socId:{},configProfile:{},automaticEnabled:{},appKind:{},classificationSource:{},automaticActive:{},fasAvailable:{},sceneInstalled:{}",
+            "mode:{},effective:{},package:{},controller:{},sceneActive:{},sceneLinked:{},phase:{},heartbeatMs:{},port:{},powerSaveProfile:{},socName:{},socId:{},configProfile:{},automaticEnabled:{},appKind:{},classificationSource:{},automaticActive:{},fasAvailable:{},sceneInstalled:{},scenePresence:{}",
             default,
             runtime.effective_mode,
             runtime.package,
@@ -532,7 +557,7 @@ fn payload(state: &WebState, app_endpoint: bool) -> String {
             runtime.power_profile,
             runtime.soc, runtime.soc_id, runtime.config_profile,
             state.automatic.enabled(), runtime.app_kind, runtime.classification_source, runtime.automatic_active,
-            runtime.fas_available, runtime.scene_installed,
+            runtime.fas_available, runtime.scene_installed, runtime.scene_presence,
         );
     }
     let mut rules = String::new();
@@ -632,15 +657,21 @@ fn send_text(stream: &mut TcpStream, text: &str) -> Result<()> {
 }
 
 fn send_frame(stream: &mut TcpStream, data: &[u8]) -> Result<()> {
-    if data.len() > 65_535 {
+    // 服务端→客户端帧不掩码，允许 RFC 6455 的 64 位长度编码。
+    // 应用规则数量没有上限，/app-modes 状态载荷不能被 16 位长度的 64 KiB 上限卡死，
+    // 否则规则一旦超限所有客户端会永久握手后即断。上限对齐 read_frame 的 1 MiB。
+    if data.len() > 1024 * 1024 {
         return Err("WebSocket 单帧过大".to_string());
     }
     let mut header = vec![0x81];
     if data.len() < 126 {
         header.push(data.len() as u8);
-    } else {
+    } else if data.len() <= 65_535 {
         header.push(126);
         header.extend_from_slice(&(data.len() as u16).to_be_bytes());
+    } else {
+        header.push(127);
+        header.extend_from_slice(&(data.len() as u64).to_be_bytes());
     }
     stream
         .write_all(&header)

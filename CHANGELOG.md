@@ -1,12 +1,36 @@
-# 更新记录
+## v2.2.8（未发布）
+
+### WebUI 重构（性能与布局）
+
+- 渲染引擎整体替换：移除 XiaoP Liquid Glass 的逐元素 SVG 滤镜方案（每张卡片一个滤镜实例 + 全 body MutationObserver 重扫 + 每次心跳强制回流，是卡顿主因），改用移植自 LiquidGlassView（用户自备文件，基于 QmDeve/AndroidLiquidGlassView，MIT）的 WebGL 液态玻璃渲染器。单一全屏画布渲染全部玻璃表面：着色器内程序化光斑背景、圆角矩形 SDF 边缘折射、深度渐变、光谱色散、线性 sRGB 饱和度与边缘高光全部保留；零纹理上传，帧率 30fps、画布像素预算 2.3MP、页面隐藏自动暂停、prefers-reduced-motion 静止。无 WebGL 时自动退回 CSS 毛玻璃。
+- 布局借鉴 SleepDown-Schedule（xiaomanjun233，Jetpack Compose 液态玻璃课程表）的设计语言：胶囊悬浮 dock（弹簧指示器、按压 1.12 缩放）、透明顶栏 + 状态胶囊、日期主视觉、16px 页边距与 12–14px 分区节奏；触控高光（指针跟随 sheen）同样移植自它的 InteractiveHighlight。
+- 修复旧版错位问题：`.stats-grid`、`.hero-badges`、`.hero-actions` 缺少 `display:flex/grid`，间距与栅格从未生效。
+- 心跳渲染不再产生 DOM 变更风暴：全部文本写入走变更检测，档位卡属性写入去重；日志改为增量追加渲染（级别切换或裁剪时才整体重建），长时间日志不再每行重建整表。
+- 深浅主题与玻璃渲染器实时同步（此前渲染器只在加载时读一次主题，浅色系统会得到“暗玻璃配暗字”的不可读组合）；强调色同时驱动背景光斑配色。
+- 移除 `webroot/vendor/xiaop-liquid-glass` 与 `assets/glass.js`，脚本入口只剩 `liquid-glass.js` 与 `app.js`。
+
+### 原生修复
+
+- 修复诊断审计永远误报“上限被系统服务占用”：配置普遍使用百分比频率，审计未先按策略物理上限换算就与实际值比较，现在经由 `resolve_param_frequency` 解析后再判定。
+- 修复 `/logs` WebSocket 流在 16 KiB 帧边界拆散多字节 UTF-8 字符的问题（中文日志每个边界出现两个 U+FFFD），采用与 root_bridge::log_chunk 相同的字符边界续读。
+- `/app-modes` 状态载荷不再被 64 KiB 发送帧上限永久卡死：服务端→客户端帧启用 RFC 6455 的 64 位长度编码（上限对齐读取侧 1 MiB），同时应用规则数量上限设为 256 条（与自动调度分类覆盖一致），防止载荷无界增长。
+- 修复游戏识别 `parse_game_command` 在单行格式不符时提前返回函数、跳过“非游戏”证据检查的问题，OEM 变体输出不再导致游戏在自动模式下落到省电档。
+- 握手失败日志不再回显原始请求路径（防止单行日志注入持久日志），只输出白名单字符。
+- 旧格式配置解析补充 `sched_util_clamp_min/max ≤ 1024` 且 min ≤ max 的加载期校验，与 v2 解析一致，避免运行期无限 degraded 重试。
+- 平台查询输出改用字节读取 + UTF-8 边界截断，limit 恰好切断多字节字符时不再把成功查询误报为读取失败。
 
 ## v2.2.7 · 版本代码 327
 
-- WebUI 照抄 [XiaoP Liquid Glass](https://github.com/xiaop-coder/xiaop-liquid-glass) 设计系统：引入其 dist 发行版（零依赖 4 层液态玻璃——SVG feDisplacementMap 边缘折射 + cover 覆盖 + sharp 高光 + reflect 反射），布局类（nav-container / tab-bar / tab-item / tab-pane / stat-card / content-header）与 `--lg-*` 令牌体系逐字沿用；demo 的玻璃 tab 分段控件、stat 图标卡、渐变强调按钮全部照搬。
-- 玻璃为真实折射：每张卡片由库自动生成 Canvas SDF 位移贴图，边缘出现折射形变（可与背景光斑对照观察）。切页采用惰性初始化（库无 refresh API，隐藏页布局完成后实例化，重复调用安全）；弹窗与规则行同样接入。
-- 主题对接 `data-theme`：深浅模式切换玻璃层变量；强调色六选一映射到 `--lg-primary/--lg-secondary` 渐变；玻璃强度滑块实时联动全部玻璃实例的 `--lg-blur`。
-- 修复：库的 `.liquid-glass-content` 包裹层会打断原 flex 布局（inline 元素被挤成一行），组件布局语义下放到包裹层恢复；包裹层自带内边距归零。
-- 版本 v2.2.7 / 327，调度核心不变。
+- Scene 检测不再因当前用户查询失败而直接跳过系统安装记录，也不再把第一次空回复立即判为未安装。`com.omarea.vtools` 的安装列表、APK 路径与系统记录共同参与检测。
+- 平台查询分别捕获 stdout / stderr，系统警告不再污染用户 ID 和包名解析；首次检测不依赖运行时目录已创建。
+- Scene 联动期间暂停本地自动调度，保留原偏好。Scene 回调不再被游戏识别自动分支覆盖；外部调度器接管时继续暂停本地写入。
+- 前台应用读取与自动模式解耦，增加窗口焦点、activity top 和更多 top-app 路径，支持当前用户不可查询时读取系统标记的顶层活动。
+- 修复 WebSocket 发现成功后未开放规则和日志端点的问题。
+- 完整重建 WebUI。直接使用 XiaoP Liquid Glass 的原始分发文件、源码和参考样式，提供五个页面、独立玻璃滤镜、应用名称及包名、Scene 检测详情和重新注册入口。
+- 校正旧的 split-policy 回归用例：显式设置测试频率百分比，不再依赖后来调整过的默认档位表。实际默认频率配置未修改。
+- 新增 Scene / 前台读取回归，以及包含六种服务状态的 DOM 交互检查。像素级渲染与用户设备实测尚未完成，详见验证记录。
+
+# 更新记录
 
 ## v2.2.6 · 版本代码 326
 

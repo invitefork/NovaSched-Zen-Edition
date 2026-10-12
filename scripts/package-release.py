@@ -73,22 +73,14 @@ assert 'session.accepts(item)' in ws, 'Server token verification missing'
 assert 'web_auth::origin_is_allowed' in ws and 'origin_allowed(value)' in ws, 'Exact dynamic Origin validation missing'
 assert 'register_origin(Path::new(STATE_DIR), origin)' in auth, 'Root Origin registration missing'
 assert '--origin ${shellQuote(origin)}' in ui, 'Origin-bound root credential request missing'
-# The SleepDown-derived design language must ship intact; these markers are
-# the visual contract of the liquid-glass single page.
-for marker in ['.liquid-glass-content { padding: 0; }', '.liquid-glass-nav',
-               '.auto-card .liquid-glass-content { display: flex;',
-               '.tab-bar', 'liquid-glass.css', 'xiaop-liquid-glass.js',
-               'id="auto-switch"', 'sceneInstalled', 'fasAvailable', '把性能，']:
-    assert marker in (css + html + ui), f'design/feature marker missing: {marker}'
-for banned in ['assets/zen']:
-    assert banned not in (css + html + ui), f'retired DOM UI leftover: {banned}'
-# XiaoP Liquid Glass ships verbatim: the 4-layer refraction library and its
-# design tokens must stay intact.
-xp_js = (MODULE/'webroot/assets/xiaop-liquid-glass.js').read_text(errors='replace')
-xp_css = (MODULE/'webroot/assets/xiaop-liquid-glass.css').read_text()
-for marker in ['LiquidGlass', 'feDisplacementMap', 'liquid-glass-container', '--lg-blur']:
-    assert marker in (xp_js + xp_css), f'XiaoP liquid glass marker missing: {marker}'
-assert 'cts-v101' not in html
+# The liquid glass renderer is the only glass engine; no vendored third-party
+# distribution ships in the module.
+assert not (MODULE/'webroot/vendor').exists(), 'vendored glass library should be removed'
+assert 'assets/liquid-glass.js' in html
+assert 'assets/glass.js' not in html and 'stat-pkg-raw' in html
+for page in ['overview', 'modes', 'rules', 'logs', 'about']:
+    assert f'id="page-{page}"' in html
+assert 'scenePresence' in ui
 
 # Explicit source roots work both in a checkout and an extracted source archive.
 # Build output, dependencies and runtime state are never part of the source ZIP.

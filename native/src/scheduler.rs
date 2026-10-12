@@ -1323,7 +1323,7 @@ fn is_kgsl_optional_force_node(name: &str) -> bool {
 /// "N%" resolves against the policy's physical maximum and snaps down to the
 /// nearest available OPP. Unreadable nodes keep the raw value; the param
 /// write itself is best-effort anyway.
-fn resolve_param_frequency(value: &str, policy_base: &Path) -> String {
+pub(crate) fn resolve_param_frequency(value: &str, policy_base: &Path) -> String {
     let Some(percent) = value.strip_suffix('%') else {
         return value.to_string();
     };

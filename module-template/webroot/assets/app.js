@@ -1,8 +1,4 @@
-/* NovaSched Zen Edition WebUI v2.2.7.
- * 视觉设计照搬 SleepDown 课程表官网的液态玻璃语言（见 app.css）。
- * 连接协议沿用守护进程的既有契约：认证 WebSocket（/modes /app-modes /logs）
- * 与宿主 root 备用通道；渲染永远反映实际读回，不把“已发送”当“已生效”。
- */
+/* NovaSched WebUI v2.2.7 · ZenJooo. Authenticated local controls and confirmed runtime state. */
 (() => {
   "use strict";
   const $ = (s, root = document) => root.querySelector(s);
@@ -29,13 +25,14 @@
   const THEME_NAMES = { system: "跟随系统", light: "浅色", dark: "深色" };
   const SYSTEM_NAMES = {
     "com.android.systemui": "系统界面", "com.android.settings": "系统设置",
+    "com.omarea.vtools": "Scene", "com.android.launcher3": "系统桌面",
     "com.google.android.webview": "Android 系统 WebView", "com.miui.home": "系统桌面",
   };
 
   const s = {
     page: "overview", online: false, connecting: true, phase: "", error: "", connectionError: "", version: "",
     mode: "", effective: "", pkg: "", controller: "", external: false, linked: false,
-    heartbeat: null, soc: "", socId: "", configProfile: "", fasAvailable: false, sceneInstalled: false,
+    heartbeat: null, soc: "", socId: "", configProfile: "", fasAvailable: false, sceneInstalled: false, scenePresence: "unknown",
     automatic: false, automaticActive: false, appKind: "", classificationSource: "",
     rules: [], rulesLoaded: false, overrides: {},
     pending: null, sockets: {}, suspended: false, retry: 0, epoch: 0, probes: new Set(),
@@ -54,7 +51,6 @@
   const saveUI = () => { try { localStorage.setItem(STORAGE, JSON.stringify(ui)); } catch (_) {} };
 
   const darkQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
-  const motionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)");
 
   /* ---------------- 小工具 ---------------- */
   let snackbarTimer = 0;
@@ -98,9 +94,9 @@
   function appInfo(raw) {
     const pkg = basePackage(raw);
     const info = labels.get(pkg);
-    const name = info?.appLabel || SYSTEM_NAMES[pkg] || "未知应用";
+    const name = info?.appLabel || SYSTEM_NAMES[pkg] || pkg || "无前台应用";
     return { package: String(raw || ""), base: pkg, name,
-      initial: name === "未知应用" ? "?" : Array.from(name)[0] };
+      initial: Array.from(info?.appLabel || SYSTEM_NAMES[pkg] || pkg.split(".").pop() || "—")[0] };
   }
   const avatarColor = (name) => {
     let hue = 7;
@@ -290,7 +286,7 @@
       const name = `nova_exec_${Date.now()}_${++bridgeCounter}`;
       let completed = false;
       const finish = (err, result) => { if (completed) return; completed = true; clearTimeout(timer); delete window[name]; err ? reject(err) : resolve(result); };
-      const timer = setTimeout(() => finish(new Error("只读诊断未在限定时间内完成")), timeout);
+      const timer = setTimeout(() => finish(new Error("宿主命令未在限定时间内完成")), timeout);
       window[name] = (errno, stdout, stderr) => finish(null, { errno:Number(errno), stdout:String(stdout || ""), stderr:String(stderr || "") });
       try { rootRead(command, name, window[name], negotiate); } catch (err) { finish(err); }
     });
@@ -395,6 +391,7 @@
             const status = parseStatus(event.data);
             if (!goodStatus(status)) return fail();
             ended = true; chosen = true; active--; clearTimeout(probe.timer); s.probes.delete(probe); cancelProbes();
+            s.discovered = true;
             bindSocket("modes", ws); receiveModes(status);
             openEndpoint("apps"); if (logsActive()) openEndpoint("logs");
           };
@@ -456,6 +453,7 @@
     s.soc = data.socName || ""; s.socId = data.socId || ""; s.configProfile = data.configProfile || "";
     s.fasAvailable = data.fasAvailable === "true";
     s.sceneInstalled = data.sceneInstalled === "true";
+    s.scenePresence = ["available", "absent", "unknown"].includes(data.scenePresence) ? data.scenePresence : s.sceneInstalled ? "available" : "unknown";
     s.automatic = data.automaticEnabled === "true";
     s.automaticActive = data.automaticActive === "true";
     s.appKind = ["game", "daily", "unknown"].includes(data.appKind) ? data.appKind : "";
@@ -514,6 +512,7 @@
   }
   function beginPending(kind, value, pkg = "") {
     if (s.pending || !["mode", "rule", "delete", "auto"].includes(kind)) return false;
+    if (kind === "auto" && s.linked) { toast("Scene 正在控制档位，请在 Scene 中调整"); return false; }
     const endpoint = ["rule", "delete"].includes(kind) ? "apps" : "modes";
     const message = kind === "mode" ? value : kind === "auto" ? `auto\t${value}` : kind === "rule" ? `set\t${pkg}\t${value}` : `delete\t${pkg}`;
     s.pending = { kind, value, pkg };
@@ -564,14 +563,23 @@
     if (s.linked) return "Scene 联动";
     return "WebUI 接管";
   }
+  function heroDate() {
+    try {
+      const parts = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric" }).format(new Date());
+      const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "long" }).format(new Date());
+      return `${parts} · ${weekday}`;
+    } catch (_) { return ""; }
+  }
+  /* 渲染只写发生变化的文本/属性：心跳每两秒触发一次，也不产生无谓的 DOM 变更 */
   function render() {
-    /* 导航 CTA */
+    /* 顶栏状态胶囊 */
     const cta = $("#nav-cta");
     const ctaState = !s.online ? (s.connecting ? "connecting" : "offline") : s.phase === "degraded" ? "degraded" : s.external ? "external" : "ready";
-    cta.dataset.state = ctaState;
+    if (cta.dataset.state !== ctaState) cta.dataset.state = ctaState;
     present("#nav-cta-text", ctaState === "connecting" ? "连接中" : ctaState === "offline" ? "离线" : ctaState === "degraded" ? "需检查" : ctaState === "external" ? "外部接管" : "已连接");
 
-    /* Hero */
+    /* 概览主视觉 */
+    present("#hero-date", heroDate() || "NovaSched");
     const sub = !s.online
       ? (s.connecting ? "正在寻找本机守护进程，连接成功后这里显示真实调度状态。" : "连接暂时不可用，会自动重试；也可以点下方按钮手动重连。")
       : s.external ? "Scene 当前选用其他调度器，NovaSched 暂停节点写入并保持只读。"
@@ -579,56 +587,47 @@
       : `守护进程心跳正常，当前实际生效「${MODES[s.effective]?.name || "…"}」档。`;
     present("#hero-sub", sub);
     const badges = [];
-    badges.push(`<span data-tone="${!s.online ? (s.connecting ? "brand" : "err") : s.phase === "degraded" ? "warn" : "ok"}"><i class="dot"></i>${stateLabel()}</span>`);
-    if (s.online && Number.isFinite(s.heartbeat)) badges.push(`<span><i class="dot"></i>心跳 ${(Math.round(s.heartbeat / 100) / 10).toFixed(1)}s</span>`);
-    if (s.online && s.soc) badges.push(`<span><i class="dot"></i>${esc(s.soc)}</span>`);
-    if (s.fasAvailable) badges.push(`<span data-tone="ok"><i class="dot"></i>Scene FAS 已就绪</span>`);
-    if (s.external) badges.push(`<span data-tone="warn"><i class="dot"></i>外部调度器接管</span>`);
+    badges.push(`<span class="chip" data-tone="${!s.online ? (s.connecting ? "" : "err") : s.phase === "degraded" ? "warn" : "ok"}"><i class="dot"></i>${stateLabel()}</span>`);
+    if (s.online && s.soc) badges.push(`<span class="chip"><i class="dot"></i>${esc(s.soc)}</span>`);
+    if (s.fasAvailable) badges.push(`<span class="chip" data-tone="ok"><i class="dot"></i>Scene FAS 已就绪</span>`);
+    if (s.external) badges.push(`<span class="chip" data-tone="warn"><i class="dot"></i>外部调度器接管</span>`);
     const badgesNode = $("#hero-badges");
     const badgesKey = badges.join("|");
     if (badgesNode.dataset.key !== badgesKey) { badgesNode.dataset.key = badgesKey; badgesNode.innerHTML = badges.join(""); }
 
     const autoButton = $("#hero-auto");
-    autoButton.disabled = !editable() || !!s.pending;
-    autoButton.textContent = !s.online ? "自动调度 · 等待连接"
-      : (s.pending?.kind === "auto" || s.automatic !== s.automaticActive) ? "自动调度 · 确认中…"
-      : s.automatic ? "自动调度 · 已开启（点按关闭）" : "自动调度 · 已关闭（点按开启）";
+    autoButton.disabled = !editable() || !!s.pending || s.linked;
+    present("#hero-auto", !s.online ? "自动调度 · 等待连接"
+      : s.linked ? "Scene 正在控制档位"
+      : s.pending?.kind === "auto" ? "自动调度 · 确认中…"
+      : s.automatic ? "自动调度 · 已开启" : "开启自动调度");
 
-    const heartbeat = s.online && Number.isFinite(s.heartbeat) ? `${(Math.round(s.heartbeat / 100) / 10).toFixed(1)}s` : "—";
-    present("#hero-compat", `NovaSched ${s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.7"} · 守护心跳 ${heartbeat} · ${sourceLabel()}`);
-
-    /* Shot 卡 1：当前档位 */
-    present("#shot-mode-name", s.online ? (s.external ? "外部控制" : MODES[s.effective]?.name || "待确认") : "待确认");
-    present("#shot-mode-desc", !s.online ? "连接后显示实际生效的调度档位与说明。"
-      : s.external ? "Scene 决定档位，本地策略已暂停。"
-      : MODES[s.effective]?.copy || "等待实际策略反馈");
-    present("#shot-mode-effective", s.online ? (s.external ? "由外部调度器控制" : MODES[s.effective]?.name || "待确认") : "等待心跳");
-    present("#shot-mode-phase", s.online ? ({ ready: "正常", degraded: "部分失败，重试中", suspended: "外部接管" })[s.phase] || s.phase : "—");
-    present("#shot-mode-pkg", s.online && s.pkg ? appInfo(s.pkg).name : "—");
-
-    /* Shot 卡 3：FAS */
-    present("#shot-fas-title", s.fasAvailable ? "FAS 已就绪" : "FAS 未检测到");
-    present("#shot-fas-desc", s.fasAvailable
-      ? "Scene N1 的 FAS（fas-rs）正在运行，档位切换会自动同步到它的模式节点。"
-      : "未检测到 /dev/fas_rs/mode。安装 Scene N1 并启用 FAS 后，档位切换将自动联动。");
-    present("#shot-fas-node", s.fasAvailable ? "已就绪" : "待检测");
-    present("#shot-fas-ctrl", sourceLabel());
-
-    /* 概览三卡 */
+    /* 概览卡片 */
     present("#stat-mode", s.online ? (s.external ? "外部控制" : MODES[s.effective]?.name || "待确认") : "—");
     present("#stat-mode-note", !s.online ? "连接后显示守护进程最后成功下发的档位。"
       : s.external ? "Scene 决定档位，本地策略已暂停。"
       : MODES[s.effective]?.copy || "等待实际策略反馈");
-    const pkgName = s.online && s.pkg ? appInfo(s.pkg).name : "—";
+    present("#foreground-tag", s.online ? "实时" : "待连接");
+
+    const pkgName = s.online && s.pkg ? appInfo(s.pkg).name : s.online ? "无前台应用" : "等待连接";
     present("#stat-pkg", pkgName);
+    present("#stat-pkg-raw", s.online && s.pkg ? s.pkg : s.online ? "锁屏、待机或暂未读取到活动" : "连接后显示应用包名");
+    present("#foreground-avatar", s.online && s.pkg ? appInfo(s.pkg).initial : "—");
     present("#stat-pkg-note", s.online && s.pkg
       ? (s.appKind === "game" ? "识别为游戏 · 自动模式使用极速" : s.appKind === "daily" ? "识别为日用 · 自动模式使用省电" : "暂未识别，自动模式先用省电")
-      : "自动调度依据前台活动实时切换档位。");
+      : "前台活动每两秒刷新一次。");
+
     present("#stat-ctrl", s.online ? s.controller : "—");
     present("#stat-ctrl-note", !s.online ? "NovaSched、Scene 联动或外部调度器接管，这里永远如实显示。"
       : s.external ? "切换档位和修改规则暂不可用，请在 Scene 操作。"
+      : s.linked ? "Scene 的档位与应用规则在本模块执行。"
       : s.automatic ? "自动模式跟随前台：游戏极速，其余省电。"
-      : s.linked ? "档位与应用规则与 Scene 双向同步。" : "本地默认档位与应用规则共同生效。");
+      : "本地默认档位与应用规则共同生效。");
+    const heartbeat = s.online && Number.isFinite(s.heartbeat) ? `${(Math.round(s.heartbeat / 100) / 10).toFixed(1)}s` : "—";
+    present("#stat-heartbeat", heartbeat);
+    present("#stat-heartbeat-note", s.online
+      ? (s.phase === "degraded" ? "守护进程部分策略失败，正在重试。" : s.phase === "suspended" ? "调度已挂起，节点保持只读。" : "守护进程运行正常。")
+      : "连接后显示心跳间隔。");
 
     /* Scene 联动四态：联动中 / 外部接管 / 已安装待接管 / 未安装由 WebUI 接管 */
     let sceneState, sceneNote;
@@ -642,10 +641,13 @@
       sceneNote = "NovaSched 是 Scene 的调度回调：在 Scene 里切换档位由本模块执行下发，应用规则双向同步。";
     } else if (s.sceneInstalled) {
       sceneState = "Scene 已安装 · 待接管";
-      sceneNote = "在 Scene 的「性能调节 → 配置源」里选择 NovaSched Zen Edition，即可把调度交给本模块。";
+      sceneNote = "安装已确认，调度回调尚未注册。可点检测详情重新注册，再重新打开 Scene 查看调度信息。";
+    } else if (s.scenePresence === "unknown") {
+      sceneState = "Scene 检测暂不可用";
+      sceneNote = "系统暂未返回安装状态。调度服务会继续检测，可在检测详情查看原因。";
     } else {
       sceneState = "WebUI 接管";
-      sceneNote = "未检测到 Scene（N1 及以上，识别 com.omarea 全系包名）。本页档位与自动调度直接生效。";
+      sceneNote = "未安装 com.omarea.vtools 或 Scene 系应用，本页管理本地调度。";
     }
     present("#stat-scene", sceneState);
     present("#stat-scene-note", sceneNote);
@@ -655,14 +657,25 @@
       const mode = button.dataset.mode;
       const actual = s.online && !s.external && mode === s.effective;
       const pending = s.pending?.kind === "mode" && s.pending.value === mode;
-      button.dataset.state = pending ? "pending" : actual ? "active" : "";
-      $(".badge", button).hidden = !actual || !!(s.automatic || s.automaticActive);
+      const state = pending ? "pending" : actual ? "active" : "";
+      if (button.dataset.state !== state) button.dataset.state = state;
+      button.setAttribute("aria-pressed", String(actual));
+      button.setAttribute("aria-busy", String(pending));
+      $(".badge", button).hidden = !actual || !!(!s.linked && (s.automatic || s.automaticActive));
       button.disabled = !editable() || !!s.pending;
     });
     const autoSwitch = $("#auto-switch");
-    autoSwitch.disabled = !editable() || !!s.pending;
-    autoSwitch.setAttribute("aria-checked", String(!!s.automatic));
+    autoSwitch.disabled = !editable() || !!s.pending || s.linked;
+    autoSwitch.setAttribute("aria-checked", String(!s.linked && !!s.automatic));
+    present("#auto-note", s.linked ? "Scene 决定档位；本地自动偏好保留，退出联动后恢复。" : "游戏用极速，日用和桌面用省电。");
     autoSwitch.setAttribute("aria-busy", String(s.pending?.kind === "auto"));
+
+    /* FAS 卡 */
+    present("#shot-fas-title", s.fasAvailable ? "FAS 已就绪" : "FAS 未检测到");
+    present("#shot-fas-desc", s.fasAvailable
+      ? "Scene N1 的 FAS（fas-rs）正在运行，档位切换会自动同步到它的模式节点。"
+      : "未检测到 FAS 模式节点。若 Scene 提供 FAS，请先在 Scene 中启用。");
+    present("#shot-fas-node", s.fasAvailable ? "已就绪" : "待检测");
 
     /* 规则区 */
     renderRules();
@@ -683,82 +696,93 @@
     root.dataset.key = key;
     if (!s.rulesLoaded) {
       root.innerHTML = `<div class="rule-empty">等待应用规则<br><small>成功连接后，这里会显示守护进程保存的应用策略。</small></div>`;
-      return;
-    }
-    if (!s.rules.length) {
+    } else if (!s.rules.length) {
       root.innerHTML = `<div class="rule-empty">还没有应用规则<br><small>点下方「添加应用规则」，为游戏或视频应用设定独立档位。</small></div>`;
-      return;
+    } else {
+      root.innerHTML = s.rules.map(rule => {
+        const a = appInfo(rule.package);
+        return `<button class="rule-row g" data-radius="999" type="button" data-edit="${esc(rule.package)}" aria-label="${esc(a.name)}，${esc(MODES[rule.mode]?.name || "未知")}档">
+          <span class="rule-avatar" style="background:${avatarColor(a.name)}">${esc(a.initial)}</span>
+          <span class="rule-copy"><b>${esc(a.name)}</b><small>${esc(rule.package)}</small></span>
+          <span class="mode-badge">${esc(MODES[rule.mode]?.name || "未知")}</span>
+          <svg class="chev" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
+        </button>`;
+      }).join("");
     }
-    root.innerHTML = s.rules.map(rule => {
-      const a = appInfo(rule.package);
-      return `<button class="rule-row liquid-glass" type="button" data-edit="${esc(rule.package)}" aria-label="${esc(a.name)}，${esc(MODES[rule.mode]?.name || "未知")}档">
-        <span class="rule-avatar" style="background:${avatarColor(a.name)}">${esc(a.initial)}</span>
-        <span class="row-copy"><b>${esc(a.name)}</b><small>${esc(rule.package)}</small></span>
-        <span class="mode-badge">${esc(MODES[rule.mode]?.name || "未知")}</span>
-        <svg class="chev" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
-      </button>`;
-    }).join("");
-    ensureGlass(root);
+    /* 新增的玻璃行注册到渲染器 */
+    window.NovaGlass?.scan(root);
   }
+
+  /* ---------------- 日志渲染（增量追加，避免整表重建卡顿） ---------------- */
   const LV_TAG = { error: "错误", warn: "警告", info: "信息", debug: "调试" };
+  const logRender = { level: null, rendered: 0 };
+  const logList = $("#log-list");
+  function logRow(line) {
+    return `<article data-raw="${esc(line.raw)}"><time>${esc(line.time || "本地记录")}</time><span class="lv" data-lv="${line.level}">${LV_TAG[line.level]}</span><span class="msg">${esc(line.message)}</span></article>`;
+  }
+  function rebuildLogs(lines) {
+    logList.innerHTML = lines.length ? lines.map(logRow).join("")
+      : `<div class="log-empty">${s.logReceived ? "暂时没有匹配的记录<br><small>可清除级别筛选，或等待新的日志。</small>" : "进入日志页后按需连接，不在后台持续订阅。<br><small>连接成功后新日志会实时出现在这里。</small>"}</div>`;
+    logRender.level = s.level;
+    logRender.rendered = s.logs.length;
+  }
   function renderLogs() {
     const lines = visibleLogs();
     const errors = s.logs.filter(l => l.level === "error").length;
     present("#log-count", `${lines.length} / ${s.logs.length} 条${errors ? ` · ${errors} 错误` : ""}${s.logConnected ? " · 实时" : s.logConnecting ? " · 连接中" : ""}`);
-    const output = $("#log-list");
+    const output = logList;
     const oldScroll = output.scrollTop;
     const nearBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 60;
-    const key = JSON.stringify([s.level, lines.length, lines[0]?.raw, lines[lines.length - 1]?.raw]);
-    if (key !== output.dataset.key) {
-      output.dataset.key = key;
-      output.innerHTML = lines.length ? lines.map(line =>
-        `<article data-raw="${esc(line.raw)}"><time>${esc(line.time || "本地记录")}</time><span class="lv" data-lv="${line.level}">${LV_TAG[line.level]}</span><span class="msg">${esc(line.message)}</span></article>`
-      ).join("") : `<div class="log-empty">${s.logReceived ? "暂时没有匹配的记录<br><small>可清除级别筛选，或等待新的日志。</small>" : "进入日志页后按需连接，不在后台持续订阅。<br><small>连接成功后新日志会实时出现在这里。</small>"}</div>`;
+    const trimmed = s.logs.length < logRender.rendered;
+    if (logRender.level !== s.level || trimmed) {
+      rebuildLogs(lines);
+    } else if (s.logs.length > logRender.rendered && output.querySelector(".log-empty")) {
+      rebuildLogs(lines);  /* 原来是空态占位，来了新行改用整体重建清掉占位 */
+    } else {
+      /* 日志只会追加或整段裁剪；裁剪已在上面的分支处理，这里只追加新行 */
+      for (let index = logRender.rendered; index < s.logs.length; index++) {
+        const line = s.logs[index];
+        if (s.level === "all" || line.level === s.level) output.insertAdjacentHTML("beforeend", logRow(line));
+      }
+      logRender.rendered = s.logs.length;
+      if (s.level !== "all" && output.getElementsByTagName("article").length > 1100) rebuildLogs(lines);
     }
     if (s.follow || nearBottom) output.scrollTop = output.scrollHeight;
     else output.scrollTop = oldScroll;
   }
   const logsActive = () => s.page === "logs";
 
-  /* ---------------- 页面切换（照抄 XiaoP demo 的 tab-item / tab-pane 机制） ---------------- */
+  /* ---------------- 页面切换（底部胶囊 dock） ---------------- */
   const PAGE_IDS = ["overview", "modes", "rules", "logs", "about"];
   let currentPage = "overview";
-  /* XiaoP 库无 refresh API：位移贴图按初始尺寸生成一次。隐藏 pane 的玻璃
-     尺寸为 0，因此惰性初始化——切到某页后等一帧布局完成再建该页玻璃；
-     LiquidGlass 的 initialized 标志保证重复调用安全。 */
-  function ensureGlass(root) {
-    if (!root || !window.LiquidGlass || typeof window.LiquidGlass.LiquidGlass !== "function") return;
-    requestAnimationFrame(() => {
-      root.querySelectorAll(".liquid-glass:not(.liquid-glass-container)").forEach(el => {
-        try {
-          new window.LiquidGlass.LiquidGlass(el, {
-            mode: "standard",
-            scale: 18,
-            radius: parseFloat(getComputedStyle(el).borderRadius) || 16,
-            blur: 10 + ui.glassLevel * 0.18,
-            enableEffects: false,
-          });
-          el.style.setProperty("--lg-blur", (10 + ui.glassLevel * 0.18).toFixed(1) + "px");
-        } catch (_) { /* 玻璃初始化失败退化为普通卡片，控制功能不受影响 */ }
-      });
-    });
-  }
   function setPage(page) {
     if (!PAGE_IDS.includes(page)) page = "overview";
     const changed = currentPage !== page;
     currentPage = page; s.page = page;
-    $$(".tab-pane").forEach(pane => pane.classList.toggle("active", pane.id === "pane-" + page));
-    $$(".tab-bar .tab-item").forEach(button => button.classList.toggle("active", button.dataset.page === page));
-    $$(".nav-link").forEach(link => link.classList.toggle("active", link.dataset.nav === page));
+    $$(".page").forEach(node => node.classList.toggle("active", node.id === "page-" + page));
+    $$(".dock button").forEach(button => {
+      if (button.dataset.page === page) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+    });
+    $(".dock").style.setProperty("--tab-index", String(PAGE_IDS.indexOf(page)));
     if (changed) window.scrollTo({ top: 0, behavior: "instant" });
-    ensureGlass(document.getElementById("pane-" + page));
+    window.dispatchEvent(new Event("nova:page"));
     /* 日志页按需连接：进入才连，离开即断 */
     if (page === "logs") openEndpoint("logs");
     else { stopSocket("logs"); s.logConnected = false; s.logConnecting = false; renderLogs(); }
   }
-  $$(".tab-bar .tab-item").forEach(button => button.onclick = () => setPage(button.dataset.page));
-  $$(".nav-link").forEach(link => link.onclick = event => { event.preventDefault(); setPage(link.dataset.nav); });
-  if (motionQuery?.matches) document.body.classList.add("no-motion");
+  $$(".dock button").forEach(button => button.onclick = () => setPage(button.dataset.page));
+
+  /* ---------------- 触控高光（借鉴 SleepDown 的 InteractiveHighlight） ---------------- */
+  document.addEventListener("pointerdown", markSheen, { passive: true });
+  document.addEventListener("pointermove", markSheen, { passive: true });
+  function markSheen(event) {
+    const target = event.target instanceof Element ? event.target.closest("[data-sheen]") : null;
+    if (!target) return;
+    const rect = target.getBoundingClientRect();
+    target.style.setProperty("--mx", `${event.clientX - rect.left}px`);
+    target.style.setProperty("--my", `${event.clientY - rect.top}px`);
+  }
 
   /* ---------------- 主题：深浅模式 + 强调色 + 玻璃强度 ---------------- */
   function applyTheme() {
@@ -766,17 +790,17 @@
     const root = document.documentElement;
     root.dataset.theme = dark ? "dark" : "light";
     root.dataset.accent = ui.accent;
-    $("meta[name=theme-color]").content = dark ? "#141a2e" : "#eef4ff";
+    $("meta[name=theme-color]").content = dark ? "#1b2030" : "#eef1f9";
     $$(".theme-picker button").forEach(button => button.classList.toggle("active", button.dataset.themeChoice === ui.theme));
     $$(".swatch-row button").forEach(button => button.classList.toggle("active", button.dataset.accentChoice === ui.accent));
-    /* 玻璃强度联动 XiaoP 的 --lg-blur（0–100 → 10–28px），实时作用于全部玻璃实例 */
-    const level = ui.glassLevel, blur = (10 + level * 0.18).toFixed(1) + "px";
-    root.style.setProperty("--lg-blur", blur);
-    $$(".liquid-glass-container").forEach(el => el.style.setProperty("--lg-blur", blur));
+    /* 玻璃强度同时驱动 WebGL 渲染器与 CSS 降级毛玻璃 */
+    const level = ui.glassLevel;
+    root.style.setProperty("--glass-blur", (12 + level * 0.36).toFixed(1) + "px");
+    window.NovaGlass?.setLevel(level);
+    window.NovaGlass?.setTheme(dark ? "dark" : "light", ui.accent);
     const slider = $("#glass-level");
     if (slider) {
       if (slider.value !== String(level)) slider.value = String(level);
-      slider.style.setProperty("--fill", level + "%");
       present("#glass-value", String(level));
     }
   }
@@ -790,32 +814,52 @@
   });
   {
     const slider = $("#glass-level");
-    if (slider) slider.oninput = event => {
-      const value = Number(event.target.value);
-      if (!Number.isFinite(value)) return;
-      ui.glassLevel = value;
-      /* 拖动实时预览；松手才持久化 */
-      applyTheme();
-    };
-    if (slider) slider.onchange = () => saveUI();
+    if (slider) {
+      slider.oninput = event => {
+        const value = Number(event.target.value);
+        if (!Number.isFinite(value)) return;
+        ui.glassLevel = value;
+        applyTheme();  /* 拖动实时预览 */
+      };
+      slider.onchange = () => saveUI();  /* 松手才持久化 */
+    }
   }
   darkQuery?.addEventListener?.("change", applyTheme);
 
   /* ---------------- 弹窗 ---------------- */
+  let dialogFocus = null;
   function openDialog(bodyHtml) {
-    $("#dialog-body").innerHTML = bodyHtml;
-    $("#dialog-layer").classList.add("open");
-    ensureGlass($("#dialog-layer"));
-    const input = $("#dialog-input");
-    if (input) setTimeout(() => input.focus(), 60);
+    const layer = $("#dialog-layer");
+    if (!layer.classList.contains("open")) dialogFocus = document.activeElement;
+    $("#dialog-body").innerHTML = `<button class="dialog-close" id="dialog-close" type="button" aria-label="关闭弹窗">×</button>` + bodyHtml;
+    layer.classList.add("open"); layer.setAttribute("aria-hidden", "false");
+    $("main").inert = true; $(".dock").inert = true; $(".top-bar").inert = true;
+    document.body.style.overflow = "hidden";
+    $("#dialog-close").onclick = closeDialog;
+    window.NovaGlass?.scan(layer);
+    window.dispatchEvent(new Event("nova:dialog"));
+    requestAnimationFrame(() => { if (layer.classList.contains("open")) ($("#dialog-input") || $("#dialog-close")).focus(); });
   }
   function closeDialog() {
     $("#dialog-layer").classList.remove("open");
+    $("#dialog-layer").setAttribute("aria-hidden", "true");
+    $("main").inert = false; $(".dock").inert = false; $(".top-bar").inert = false;
+    document.body.style.overflow = "";
+    if (dialogFocus?.isConnected) dialogFocus.focus();
+    window.dispatchEvent(new Event("nova:dialog"));
   }
   $("#dialog-layer").addEventListener("click", event => {
     if (event.target === $("#dialog-layer")) closeDialog();
   });
-  document.addEventListener("keydown", event => { if (event.key === "Escape") closeDialog(); });
+  document.addEventListener("keydown", event => {
+    if (!$("#dialog-layer").classList.contains("open")) return;
+    if (event.key === "Escape") { closeDialog(); return; }
+    if (event.key !== "Tab") return;
+    const fields = $$("button:not(:disabled),input:not(:disabled),a[href]", $("#dialog-body")).filter(node => node.getClientRects().length);
+    const first = fields[0], last = fields[fields.length-1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+  });
 
   function showRuleEditor(pkg = "") {
     if (!editable() || s.pending) return;
@@ -826,7 +870,7 @@
     openDialog(`
       <p class="eyebrow">${existing ? "编辑规则" : "新建规则"}</p>
       <h3 id="dialog-title">${existing ? esc(a.name) : "添加应用规则"}</h3>
-      <p class="dialog-sub">关闭自动调度后，应用规则优先于默认档位。</p>
+      <p class="dialog-sub">${s.linked ? "规则会同步到 Scene，并在应用进入前台时执行。" : "本地自动调度关闭时，应用规则优先于默认档位。"}</p>
       <label for="dialog-input">应用包名</label>
       <input type="text" id="dialog-input" value="${esc(pkg)}" placeholder="com.example.app" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="255" ${existing ? "readonly" : ""}>
       <p class="input-error" id="dialog-error" hidden></p>
@@ -835,8 +879,8 @@
         ${Object.entries(MODES).map(([mode, info]) => `<button type="button" data-chip="${mode}" class="${mode === selected ? "active" : ""}">${info.name}</button>`).join("")}
       </div>
       <div class="dialog-actions">
-        <button class="button text-button" type="button" id="dialog-cancel">取消</button>
-        <button class="button primary" type="button" id="dialog-save">保存规则</button>
+        <button class="btn btn-ghost" type="button" id="dialog-cancel">取消</button>
+        <button class="btn btn-accent" type="button" id="dialog-save">保存规则</button>
       </div>
       ${existing ? '<button class="danger-link" type="button" id="dialog-delete">删除这条规则</button>' : ""}
     `);
@@ -866,8 +910,8 @@
       <p class="dialog-sub">删除后，这个应用沿用默认档位。其他应用规则保留。</p>
       <p class="dialog-sub" style="font-family:ui-monospace,monospace;font-size:11px;">${esc(pkg)}</p>
       <div class="dialog-actions">
-        <button class="button text-button" type="button" id="dialog-cancel">返回编辑</button>
-        <button class="button primary" type="button" id="dialog-confirm" style="background:var(--err);box-shadow:0 14px 34px #ff453a55;">删除规则</button>
+        <button class="btn btn-ghost" type="button" id="dialog-cancel">返回编辑</button>
+        <button class="btn btn-accent" type="button" id="dialog-confirm" style="background:var(--err);">删除规则</button>
       </div>
     `);
     $("#dialog-cancel").onclick = () => showRuleEditor(pkg);
@@ -879,36 +923,36 @@
   });
   $("#add-rule").onclick = () => showRuleEditor("");
 
-  async function showDiagnostics() {
-    const diagnostic = s.online ? "game-diagnose" : "diagnose";
-    const diagnosticError = s.connectionError || s.error;
+  function showDiagnostics(sceneOnly = false) {
+    const command = sceneOnly ? "scene-diagnose" : s.online ? "game-diagnose" : "diagnose";
     openDialog(`
-      <p class="eyebrow">诊断信息</p>
-      <h3 id="dialog-title">只读诊断</h3>
-      <p class="dialog-sub">${s.online ? "采样约 10 秒，读取实际节点与温度，仅诊断不改变调度参数。" : "读取开机入口、进程身份与启动失败记录。"}</p>
-      ${diagnosticError ? `<pre class="report">${esc(diagnosticError)}</pre>` : ""}
-      <div class="dialog-actions">
-        <button class="button text-button" type="button" id="dialog-copy">复制命令</button>
-        <button class="button primary" type="button" id="dialog-run" ${typeof bridge()?.exec === "function" ? "" : "disabled"}>读取诊断</button>
-      </div>
+      <p class="eyebrow">${sceneOnly ? "SCENE" : "DIAGNOSTICS"}</p>
+      <h3 id="dialog-title">${sceneOnly ? "Scene 检测详情" : "运行诊断"}</h3>
+      <p class="dialog-sub">${sceneOnly ? "读取包管理器结果、安装记录和调度回调。重新注册会保留现有外部调度器。" : "读取服务与节点状态，采样约 10 秒。"}</p>
+      <div class="dialog-actions"><button class="btn btn-ghost" id="dialog-copy" type="button">复制命令</button><button class="btn btn-accent" id="dialog-run" type="button" ${typeof bridge()?.exec === "function" ? "" : "disabled"}>读取诊断</button></div>
+      ${sceneOnly ? `<button class="btn btn-ghost" id="scene-register" type="button" ${typeof bridge()?.exec === "function" ? "" : "disabled"}>重新检测并注册</button>` : ""}
       <pre class="report" id="dialog-report" hidden></pre>
-      <p class="dialog-sub" style="margin-top:12px;font-family:ui-monospace,monospace;font-size:10.5px;word-break:break-all;">su -c ${esc(MODULE)}/bin/novasched ${diagnostic}</p>
     `);
-    $("#dialog-copy").onclick = () => copyText(`su -c ${MODULE}/bin/novasched ${diagnostic}`, "诊断命令已复制");
-    $("#dialog-run").onclick = async () => {
-      const button = $("#dialog-run");
+    const report = $("#dialog-report");
+    const run = async (button, register) => {
       button.disabled = true; button.textContent = "读取中…";
       try {
-        const result = await rootExec(moduleCommand(diagnostic), 40000);
-        const report = $("#dialog-report");
-        report.hidden = false;
-        report.textContent = result.stdout + (result.stderr ? "\n" + result.stderr : "") || `诊断退出码：${result.errno}`;
+        let output = "";
+        for (const action of register ? ["scene-install", "reload", command] : [command]) {
+          const result = await rootExec(moduleCommand(action), 40000, !["scene-install", "reload"].includes(action));
+          output += (result.stdout || "") + (result.stderr ? "\n" + result.stderr : "") + "\n";
+          if (result.errno !== 0) output += `退出码：${result.errno}\n`;
+        }
+        if (report.isConnected) { report.hidden = false; report.textContent = output.trim() || "诊断未返回内容"; }
       } catch (error) {
-        const report = $("#dialog-report");
-        report.hidden = false;
-        report.textContent = error.message;
-      } finally { button.disabled = false; button.textContent = "重新读取诊断"; }
+        if (report.isConnected) { report.hidden = false; report.textContent = error.message; }
+      } finally {
+        if (button.isConnected) { button.disabled=false; button.textContent=register ? "重新检测并注册" : "重新读取诊断"; }
+      }
     };
+    $("#dialog-copy").onclick = () => copyText(`su -c ${MODULE}/bin/novasched ${command}`);
+    $("#dialog-run").onclick = event => run(event.currentTarget, false);
+    if (sceneOnly) $("#scene-register").onclick = event => run(event.currentTarget, true);
   }
 
   /* ---------------- 控件事件 ---------------- */
@@ -928,7 +972,9 @@
     render();
   };
   $("#hero-reconnect").onclick = () => { if (!s.suspended) { clearTimeout(s.retry); discover(); toast("正在重新发现本地服务"); } };
-  $("#hero-diagnose").onclick = showDiagnostics;
+  $("#hero-diagnose").onclick = () => showDiagnostics();
+  $("#scene-diagnose").onclick = () => showDiagnostics(true);
+  $("#nav-brand").onclick = event => {event.preventDefault(); setPage("overview");};
   $("#about-diagnose").onclick = event => { event.preventDefault(); showDiagnostics(); };
   $("#about-license").onclick = event => { event.preventDefault(); toast("GPL-3.0-only · 许可文本见模块内 LICENSE"); };
   $("#nav-cta").onclick = () => { if (!s.online && !s.connecting) { clearTimeout(s.retry); discover(); } };
@@ -941,10 +987,10 @@
     const on = event.currentTarget.getAttribute("aria-checked") !== "true";
     event.currentTarget.setAttribute("aria-checked", String(on));
     s.follow = on;
-    if (on) { const output = $("#log-list"); output.scrollTop = output.scrollHeight; }
+    if (on) { logList.scrollTop = logList.scrollHeight; }
   };
   $("#log-copy").onclick = () => copyText(visibleLogs().map(l => l.raw).join("\n"), "筛选后的日志已复制");
-  $("#log-list").addEventListener("click", event => {
+  logList.addEventListener("click", event => {
     const row = event.target.closest("article[data-raw]");
     if (!row) return;
     const line = parseLog(row.dataset.raw);
@@ -953,7 +999,7 @@
       <h3 id="dialog-title">${esc(line.time || "本地记录")} · ${LV_TAG[line.level]}</h3>
       <pre class="report">${esc(line.raw)}</pre>
       <div class="dialog-actions">
-        <button class="button primary" type="button" id="dialog-cancel">关闭</button>
+        <button class="btn btn-accent" type="button" id="dialog-cancel">关闭</button>
       </div>
     `);
     $("#dialog-cancel").onclick = closeDialog;

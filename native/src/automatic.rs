@@ -336,8 +336,9 @@ fn parse_game_command(text: &str, package: &str) -> Option<AppKind> {
     let prefix = format!("{package} current mode: ");
     for line in text.lines().map(str::trim) {
         if let Some(rest) = line.strip_prefix(&prefix) {
-            let (mode, list) = rest.split_once(", available game modes: [")?;
-            let list = list.strip_suffix(']')?;
+            // 格式不符的行只跳过本行，不能提前返回：末尾的“非游戏”证据检查必须有机会执行。
+            let Some((mode, list)) = rest.split_once(", available game modes: [") else { continue; };
+            let Some(list) = list.strip_suffix(']') else { continue; };
             if mode.parse::<i32>().is_ok()
                 && (list.is_empty() || list.split(',').all(|n| n.trim().parse::<i32>().is_ok()))
             {

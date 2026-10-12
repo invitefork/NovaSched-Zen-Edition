@@ -71,12 +71,32 @@ fn query_current_user(mut query: impl FnMut(&str, &[&str]) -> Result<String>) ->
         ("/system/bin/am", vec!["get-current-user"]),
     ] {
         if let Ok(text) = query(program, &args) {
-            if let Ok(user) = text.trim().parse::<u32>() {
+            if let Some(user) = parse_current_user(&text) {
                 return Ok(user);
             }
         }
     }
+    if let Ok(text) = query("/system/bin/dumpsys", &["activity", "activities"]) {
+        if let Some(user) = parse_current_user(&text) {
+            return Ok(user);
+        }
+    }
     Err("无法查询 Android 当前用户；未假定用户 0".into())
+}
+
+fn parse_current_user(text: &str) -> Option<u32> {
+    if let Ok(user) = text.trim().parse() {
+        return Some(user);
+    }
+    text.lines().find_map(|line| {
+        let line = line.trim();
+        for prefix in ["mCurrentUser=", "mCurrentUserId=", "Current user: "] {
+            if let Some(value) = line.strip_prefix(prefix) {
+                return value.split_whitespace().next()?.trim_end_matches(',').parse().ok();
+            }
+        }
+        None
+    })
 }
 
 #[cfg(test)]
@@ -99,6 +119,19 @@ mod user_tests {
             Ok(0)
         );
         assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn activity_summary_recovers_user_when_short_commands_fail() {
+        assert_eq!(query_current_user(|program, _| {
+            if program.ends_with("dumpsys") {
+                Ok("ACTIVITY MANAGER ACTIVITIES\n  mCurrentUser=10\n".into())
+            } else {
+                Err("unsupported command".into())
+            }
+        }), Ok(10));
+        assert_eq!(parse_current_user("Current user: 0\n"), Some(0));
+        assert_eq!(parse_current_user("unrelated: 0\n"), None);
     }
 }
 
@@ -337,7 +370,8 @@ pub fn query_command_limited(
     ));
     // Android's generic temp directory may not be writable in a root domain.
     let path = if cfg!(target_os = "android") {
-        Path::new(STATE_DIR).join(path.file_name().ok_or("查询临时路径无效")?)
+        let directory = if Path::new(STATE_DIR).is_dir() { STATE_DIR } else { "/data/local/tmp" };
+        Path::new(directory).join(path.file_name().ok_or("查询临时路径无效")?)
     } else {
         path
     };
@@ -347,9 +381,13 @@ pub fn query_command_limited(
         .mode(0o600)
         .open(&path)
         .map_err(|e| format!("创建查询输出失败: {e}"))?;
+    let error_path = path.with_extension("stderr");
     let result = (|| {
-        let stderr = output
-            .try_clone()
+        let stderr = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&error_path)
             .map_err(|e| format!("创建查询错误输出失败: {e}"))?;
         let mut child = Command::new(program)
             .args(args)
@@ -364,18 +402,27 @@ pub fn query_command_limited(
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    let mut text = String::new();
+                    // 用字节读取再按 UTF-8 边界截断：read_to_string 遇到被
+                    // limit 切断的多字节字符会整体报错，把成功的查询误判为失败。
+                    let mut bytes = Vec::new();
                     File::open(&path)
-                        .and_then(|f| f.take(limit + 1).read_to_string(&mut text))
+                        .and_then(|f| f.take(limit + 1).read_to_end(&mut bytes))
                         .map_err(|e| format!("读取查询输出失败: {e}"))?;
-                    if text.len() as u64 > limit {
+                    let text = String::from_utf8_lossy(&bytes).into_owned();
+                    if bytes.len() as u64 > limit {
                         return Err("平台查询输出超出限制".into());
                     }
                     if !status.success() {
+                        let mut error_bytes = Vec::new();
+                        File::open(&error_path)
+                            .and_then(|f| f.take(limit).read_to_end(&mut error_bytes))
+                            .map_err(|e| format!("读取查询错误输出失败: {e}"))?;
+                        let errors = String::from_utf8_lossy(&error_bytes).into_owned();
                         return Err(format!(
-                            "查询 {program} 退出码 {:?}: {}",
+                            "查询 {program} 退出码 {:?}: {} {}",
                             status.code(),
-                            text.trim()
+                            text.trim(),
+                            errors.trim()
                         ));
                     }
                     return Ok(text.trim().to_string());
@@ -398,6 +445,7 @@ pub fn query_command_limited(
             }
         }
     })();
+    cleanup(&error_path);
     if let Err(error) = fs::remove_file(&path) {
         eprintln!("novasched: 清理查询输出失败: {error}");
     }
@@ -578,5 +626,17 @@ mod regression_tests {
         assert!(!permission_retry_warranted("io (os error 110)"));
         assert!(!permission_retry_warranted("io (os error 95)"));
         assert!(permission_retry_warranted("io (os error 13)"));
+    }
+}
+
+#[cfg(test)]
+mod query_output_regressions {
+    use super::*;
+    #[test]
+    fn successful_android_queries_ignore_stderr_warnings() {
+        let reply = query_command("/bin/sh", &["-c", "printf '10\\n'; printf 'vendor warning\\n' >&2"], Duration::from_secs(2)).unwrap();
+        assert_eq!(reply, "10");
+        let error = query_command("/bin/sh", &["-c", "printf 'binder denied' >&2; exit 1"], Duration::from_secs(2)).unwrap_err();
+        assert!(error.contains("binder denied"));
     }
 }

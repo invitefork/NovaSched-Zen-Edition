@@ -1,0 +1,435 @@
+/* NovaSched liquid glass renderer · ZenJooo.
+ * 移植自 LiquidGlassView（AndroidLiquidGlassView → WebGL 单文件版，基于
+ * QmDeve/AndroidLiquidGlassView，MIT 许可）：
+ * AGSL 圆角矩形折射着色器保留（SDF 折射、深度渐变、光谱色散、线性 sRGB 饱和度），
+ * 改为单一全屏画布渲染所有注册的玻璃表面，背景光斑在着色器内程序化生成，
+ * 无纹理上传、无逐元素滤镜，帧率与分辨率受控以适配手机 WebView。
+ * 无 WebGL 时退回 CSS 毛玻璃（body.glass-flat）。 */
+(() => {
+  "use strict";
+  if (window.NovaGlass) return;
+
+  const MAX_RECTS = 26;
+  const MAX_BLOBS = 7;
+  const PIXEL_BUDGET = 2300000;   // 画布像素上限，约 2.3MP
+  const FPS_CAP = 30;
+  const FRAME_MS = 1000 / FPS_CAP;
+
+  const canvas = document.getElementById("glass-canvas");
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)") ||
+    { matches: false, addEventListener() {} };
+
+  /* ---------------- 主题配色（深浅 + 强调色） ---------------- */
+  const THEMES = {
+    dark: {
+      baseA: [0.055, 0.065, 0.115], baseB: [0.145, 0.100, 0.215],
+      tint: [0.043, 0.047, 0.078], tintAlpha: 0.40,
+      sat: 1.16, rim: 0.52,
+      blobs: [
+        [0.20, 0.44, 0.80], [0.42, 0.24, 0.72], [0.08, 0.46, 0.55],
+        [0.52, 0.20, 0.42], [0.16, 0.28, 0.62], [0.68, 0.72, 0.92], [0.30, 0.55, 0.85],
+      ],
+      blobR: [0.62, 0.55, 0.42, 0.38, 0.50, 0.16, 0.30],
+      blobI: [0.85, 0.80, 0.70, 0.62, 0.66, 0.50, 0.72],
+    },
+    light: {
+      baseA: [0.925, 0.945, 0.985], baseB: [0.845, 0.875, 0.965],
+      tint: [0.988, 0.990, 1.0], tintAlpha: 0.46,
+      sat: 1.06, rim: 0.60,
+      blobs: [
+        [0.58, 0.74, 1.0], [0.96, 0.78, 0.87], [0.70, 0.90, 0.83],
+        [0.80, 0.76, 1.0], [1.0, 0.87, 0.76], [0.70, 0.84, 1.0], [0.86, 0.92, 1.0],
+      ],
+      blobR: [0.60, 0.50, 0.46, 0.42, 0.40, 0.20, 0.34],
+      blobI: [0.90, 0.85, 0.80, 0.78, 0.76, 0.72, 0.68],
+    },
+  };
+  /* 强调色把对应光斑染成主题色，强调色切换时背景跟着变 */
+  const ACCENT_TINTS = {
+    blue:   [0.30, 0.55, 1.00], indigo: [0.45, 0.44, 0.98], purple: [0.68, 0.36, 0.96],
+    rose:   [1.00, 0.36, 0.55], amber:  [1.00, 0.62, 0.20], green:  [0.20, 0.78, 0.42],
+  };
+  /* 光斑初始位置（屏幕比例）与漂移参数 */
+  const BLOB_POS = [
+    [0.18, 0.14], [0.86, 0.20], [0.10, 0.62], [0.90, 0.78], [0.52, 0.46], [0.34, 0.06], [0.70, 0.60],
+  ];
+  const BLOB_DRIFT = [
+    [0.055, 0.043], [0.048, 0.060], [0.040, 0.052], [0.062, 0.038],
+    [0.035, 0.047], [0.070, 0.058], [0.045, 0.036],
+  ];
+
+  let themeName = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+  let accentName = document.documentElement.dataset.accent || "blue";
+  let level = 55;
+
+  /* ---------------- 表面注册表 ---------------- */
+  const surfaces = new Map();   // el -> {x,y,w,h,r,stale,ro}
+  let rectsDirty = true;
+  let staleAll = true;
+  let observer = null;
+  if (typeof ResizeObserver === "function") {
+    observer = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        const record = surfaces.get(entry.target);
+        if (record) record.stale = true;
+      }
+      rectsDirty = true;
+    });
+  }
+  function measure(el, record) {
+    let rect;
+    try { rect = el.getBoundingClientRect(); } catch (_) { return; }
+    const scrollX = window.scrollX || window.pageXOffset || 0;
+    const scrollY = window.scrollY || window.pageYOffset || 0;
+    record.x = Math.round((rect.left + scrollX) * dpr);
+    record.y = Math.round((rect.top + scrollY) * dpr);
+    record.w = Math.round(rect.width * dpr);
+    record.h = Math.round(rect.height * dpr);
+    const requested = Number(el.dataset.radius ?? record.radius ?? 24);
+    record.r = Math.min(requested * dpr, Math.min(record.w, record.h) / 2);
+    record.stale = false;
+  }
+  function scan(root) {
+    const scope = root || document;
+    for (const el of scope.querySelectorAll(".g")) {
+      if (surfaces.has(el)) continue;
+      const record = { x: 0, y: 0, w: 0, h: 0, r: 0, stale: true, radius: Number(el.dataset.radius ?? 24), ro: null };
+      surfaces.set(el, record);
+      if (observer) { try { record.ro = observer.observe(el); } catch (_) {} }
+      rectsDirty = true;
+    }
+    for (const [el, record] of surfaces) {
+      if (!el.isConnected || !el.classList.contains("g")) {
+        if (record.ro) { try { observer.unobserve(el); } catch (_) {} }
+        surfaces.delete(el);
+        rectsDirty = true;
+      }
+    }
+  }
+  function refresh() {
+    for (const [el, record] of surfaces) {
+      if (record.stale || staleAll) measure(el, record);
+    }
+    staleAll = false;
+    rectsDirty = true;
+  }
+
+  /* ---------------- 可调参数（玻璃强度滑杆） ---------------- */
+  const params = { refH: 20, refO: 58, disp: 0.55 };
+  function setLevel(value) {
+    level = Math.max(0, Math.min(100, Number(value) || 0));
+    params.refH = 16 + level * 0.07;
+    params.refO = 34 + level * 0.30;
+    params.disp = 0.35 + level * 0.004;
+    paramsDirty = true;
+  }
+  let paramsDirty = true;
+
+  /* ---------------- WebGL ---------------- */
+  let gl = null, prog = null, uni = null, failed = false;
+
+  const VERT_SRC =
+    "attribute vec2 aPos;" +
+    "void main() { gl_Position = vec4(aPos, 0.0, 1.0); }";
+
+  /* 与原版逐行对应的折射着色器，扩展为多表面循环 + 程序化背景 */
+  const FRAG_SRC = [
+    "#ifdef GL_FRAGMENT_PRECISION_HIGH", "precision highp float;",
+    "#else", "precision mediump float;", "#endif",
+    "uniform vec2 uRes;",
+    "uniform vec3 uBaseA;",
+    "uniform vec3 uBaseB;",
+    "uniform vec4 uBlobs[" + MAX_BLOBS + "];",
+    "uniform vec3 uBlobCol[" + MAX_BLOBS + "];",
+    "uniform vec4 uRects[" + MAX_RECTS + "];",
+    "uniform float uRadii[" + MAX_RECTS + "];",
+    "uniform float uCount;",
+    "uniform float uRefH;",
+    "uniform float uRefO;",
+    "uniform float uDisp;",
+    "uniform vec4 uTint;",
+    "uniform vec3 uAccent;",
+    "uniform float uSat;",
+    "uniform float uRim;",
+    "const vec3 rgbToY = vec3(0.2126, 0.7152, 0.0722);",
+    "vec3 toLinearSrgb(vec3 c) {",
+    "  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));",
+    "}",
+    "vec3 fromLinearSrgb(vec3 c) {",
+    "  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));",
+    "}",
+    "vec3 saturateColor(vec3 c, float amount) {",
+    "  vec3 lin = toLinearSrgb(c);",
+    "  float y = dot(lin, rgbToY);",
+    "  return fromLinearSrgb(mix(vec3(y), lin, amount));",
+    "}",
+    "float sdRoundedRect(vec2 cd, vec2 halfSize, float radius) {",
+    "  vec2 cornerCoord = abs(cd) - (halfSize - vec2(radius));",
+    "  float outside = length(max(cornerCoord, 0.0)) - radius;",
+    "  float inside = min(max(cornerCoord.x, cornerCoord.y), 0.0);",
+    "  return outside + inside;",
+    "}",
+    "vec2 gradSdRoundedRect(vec2 cd, vec2 halfSize, float radius) {",
+    "  vec2 cornerCoord = abs(cd) - (halfSize - vec2(radius));",
+    "  if (cornerCoord.x >= 0.0 || cornerCoord.y >= 0.0) {",
+    "    vec2 outv = max(cornerCoord, 0.0);",
+    "    float outLen = length(outv);",
+    "    if (outLen > 0.001) return sign(cd) * (outv / outLen);",
+    "    float useX = step(cornerCoord.y, cornerCoord.x);",
+    "    return vec2(useX * sign(cd.x), (1.0 - useX) * sign(cd.y));",
+    "  } else {",
+    "    float gradX = step(cornerCoord.y, cornerCoord.x);",
+    "    return sign(cd) * vec2(gradX, 1.0 - gradX);",
+    "  }",
+    "}",
+    "float circleMap(float x) { return 1.0 - sqrt(max(1.0 - x * x, 0.0)); }",
+    "vec2 safeNormalize(vec2 value, vec2 fallback) {",
+    "  float len = length(value);",
+    "  if (len > 0.001) return value / len;",
+    "  return fallback;",
+    "}",
+    "vec3 background(vec2 p) {",
+    "  vec2 uv = p / uRes;",
+    "  vec3 col = mix(uBaseA, uBaseB, clamp(uv.y * 0.85 + uv.x * 0.30, 0.0, 1.0));",
+    "  for (int i = 0; i < " + MAX_BLOBS + "; i++) {",
+    "    vec4 b = uBlobs[i];",
+    "    if (b.z <= 0.5) continue;",
+    "    float d = distance(p, b.xy);",
+    "    float fall = 1.0 - smoothstep(b.z * 0.22, b.z, d);",
+    "    col = mix(col, uBlobCol[i], fall * fall * b.w);",
+    "  }",
+    "  return col;",
+    "}",
+    "void main() {",
+    "  vec2 coord = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);",
+    "  vec4 bestRect = vec4(0.0);",
+    "  float bestSd = 1e9;",
+    "  float bestR = 0.0;",
+    "  for (int i = 0; i < " + MAX_RECTS + "; i++) {",
+    "    if (float(i) >= uCount) break;",
+    "    vec4 rect = uRects[i];",
+    "    if (rect.z < 1.0 || rect.w < 1.0) continue;",
+    "    vec2 halfSize = rect.zw * 0.5;",
+    "    vec2 cd = coord - (rect.xy + halfSize);",
+    "    float sd = sdRoundedRect(cd, halfSize, uRadii[i]);",
+    "    if (sd < bestSd) { bestSd = sd; bestRect = rect; bestR = uRadii[i]; }",
+    "  }",
+    "  vec3 col;",
+    "  if (bestRect.z < 1.0 || bestSd >= 0.0) {",
+    "    col = background(coord);",
+    "  } else {",
+    "    vec2 halfSize = bestRect.zw * 0.5;",
+    "    vec2 centeredCoord = coord - (bestRect.xy + halfSize);",
+    "    vec3 base;",
+    "    if (-bestSd >= uRefH) {",
+    "      base = background(coord);",
+    "    } else {",
+    "      float d = circleMap(1.0 + bestSd / uRefH) * uRefO;",
+    "      float smoothRadius = max(bestR * 1.5, 30.0);",
+    "      float gradRadius = min(smoothRadius, min(halfSize.x, halfSize.y));",
+    "      vec2 shapeGrad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);",
+    "      vec2 depthGrad = safeNormalize(centeredCoord, shapeGrad);",
+    "      vec2 grad = safeNormalize(shapeGrad + 0.3 * depthGrad, shapeGrad);",
+    "      vec2 refracted = coord + d * grad;",
+    "      float dispIntensity = uDisp * ((centeredCoord.x * centeredCoord.y) / (halfSize.x * halfSize.y));",
+    "      vec2 dispVec = d * grad * dispIntensity * 2.0;",
+    "      vec3 refr = vec3(",
+    "        background(refracted + dispVec).r,",
+    "        background(refracted).g,",
+    "        background(refracted - dispVec).b);",
+    "      base = refr;",
+    "      float rimBand = 1.0 - smoothstep(0.0, uRefH, -bestSd);",
+    "      vec2 lightDir = vec2(-0.55, -0.835);",
+    "      float lit = pow(max(dot(grad, lightDir), 0.0), 3.0);",
+    "      float dark = pow(max(dot(grad, -lightDir), 0.0), 3.0);",
+    "      base += mix(vec3(1.0), uAccent, 0.25) * (rimBand * lit * uRim);",
+    "      base *= 1.0 - 0.14 * rimBand * dark;",
+    "    }",
+    "    col = saturateColor(clamp(base, 0.0, 1.0), uSat);",
+    "    col = mix(col, uTint.rgb, uTint.a);",
+    "  }",
+    "  gl_FragColor = vec4(col, 1.0);",
+    "}",
+  ].join("\n");
+
+  function compileShader(type, src) {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+    return sh;
+  }
+  function initGL() {
+    if (failed || !canvas) return false;
+    try {
+      gl = canvas.getContext("webgl", { alpha: false, antialias: false, depth: false, stencil: false, powerPreference: "low-power" }) ||
+           canvas.getContext("experimental-webgl", { alpha: false });
+    } catch (_) { gl = null; }
+    if (!gl || typeof gl.createShader !== "function") { gl = null; return false; }
+    try {
+      prog = gl.createProgram();
+      gl.attachShader(prog, compileShader(gl.VERTEX_SHADER, VERT_SRC));
+      gl.attachShader(prog, compileShader(gl.FRAGMENT_SHADER, FRAG_SRC));
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+      gl.useProgram(prog);
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+      const aPos = gl.getAttribLocation(prog, "aPos");
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+      const names = ["uRes","uBaseA","uBaseB","uBlobs","uBlobCol","uRects","uRadii","uCount",
+        "uRefH","uRefO","uDisp","uTint","uAccent","uSat","uRim"];
+      uni = {};
+      for (const name of names) uni[name] = gl.getUniformLocation(prog, name);
+      canvas.addEventListener("webglcontextlost", event => { event.preventDefault(); gl = null; applyFallback(); }, false);
+      canvas.addEventListener("webglcontextrestored", () => { gl = null; failed = false; if (initGL()) bootGL(); }, false);
+      return true;
+    } catch (_) { gl = null; failed = true; return false; }
+  }
+
+  function applyFallback() {
+    document.body.classList.add("glass-flat");
+    if (canvas && canvas.parentNode) canvas.style.display = "none";
+  }
+
+  /* ---------------- 帧循环 ---------------- */
+  let dpr = 1, cssW = 0, cssH = 0;
+  const rectData = new Float32Array(MAX_RECTS * 4);
+  const radiusData = new Float32Array(MAX_RECTS);
+  const blobData = new Float32Array(MAX_BLOBS * 4);
+  const blobColData = new Float32Array(MAX_BLOBS * 3);
+  let animId = 0, lastFrame = 0, visible = !document.hidden;
+  let motionless = false;
+  const startTime = performance.now();
+
+  function resizeCanvas() {
+    if (!gl || !canvas) return;
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cssW = Math.max(1, window.innerWidth);
+    cssH = Math.max(1, window.innerHeight);
+    const scale = Math.min(1, Math.sqrt(PIXEL_BUDGET / (cssW * cssH * dpr * dpr)));
+    const w = Math.max(1, Math.round(cssW * dpr * scale));
+    const h = Math.max(1, Math.round(cssH * dpr * scale));
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    dpr *= scale;
+    staleAll = true;
+    rectsDirty = true;
+  }
+
+  function pushUniforms(time) {
+    const theme = THEMES[themeName] || THEMES.dark;
+    const accent = ACCENT_TINTS[accentName] || ACCENT_TINTS.blue;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.uniform2f(uni.uRes, canvas.width, canvas.height);
+    gl.uniform3fv(uni.uBaseA, theme.baseA);
+    gl.uniform3fv(uni.uBaseB, theme.baseB);
+    const t = time / 1000;
+    for (let i = 0; i < MAX_BLOBS; i++) {
+      const drift = BLOB_DRIFT[i];
+      const dx = motionless ? 0 : Math.sin(t * drift[0] * 6.283 + i * 1.7) * 0.09;
+      const dy = motionless ? 0 : Math.cos(t * drift[1] * 6.283 + i * 2.3) * 0.09;
+      const pulse = motionless ? 1 : 1 + Math.sin(t * 0.35 + i) * 0.06;
+      const color = i === 5 ? accent : (theme.blobs[i] || theme.blobs[0]);
+      blobData[i * 4] = (BLOB_POS[i][0] + dx) * canvas.width;
+      blobData[i * 4 + 1] = (BLOB_POS[i][1] + dy) * canvas.height;
+      blobData[i * 4 + 2] = Math.max(theme.blobR[i], theme.blobR[i] * pulse) * Math.max(canvas.width, canvas.height);
+      blobData[i * 4 + 3] = theme.blobI[i];
+      blobColData[i * 3] = color[0]; blobColData[i * 3 + 1] = color[1]; blobColData[i * 3 + 2] = color[2];
+    }
+    gl.uniform4fv(uni.uBlobs, blobData);
+    gl.uniform3fv(uni.uBlobCol, blobColData);
+    /* 表面记录的是文档坐标；画布固定于视口，必须减去滚动量才是屏幕位置 */
+    const scrollX = (window.scrollX || window.pageXOffset || 0) * dpr;
+    const scrollY = (window.scrollY || window.pageYOffset || 0) * dpr;
+    let count = 0;
+    for (const record of surfaces.values()) {
+      if (count >= MAX_RECTS || record.w < 2 || record.h < 2) continue;
+      rectData[count * 4] = record.x - scrollX; rectData[count * 4 + 1] = record.y - scrollY;
+      rectData[count * 4 + 2] = record.w; rectData[count * 4 + 3] = record.h;
+      radiusData[count] = record.r;
+      count++;
+    }
+    for (let i = count; i < MAX_RECTS; i++) rectData[i * 4 + 2] = 0;
+    gl.uniform4fv(uni.uRects, rectData);
+    gl.uniform1fv(uni.uRadii, radiusData);
+    gl.uniform1f(uni.uCount, count);
+    gl.uniform1f(uni.uRefH, params.refH * dpr);
+    gl.uniform1f(uni.uRefO, -params.refO * dpr);
+    gl.uniform1f(uni.uDisp, params.disp);
+    gl.uniform4f(uni.uTint, theme.tint[0], theme.tint[1], theme.tint[2],
+      Math.max(0.24, theme.tintAlpha - level * 0.0012));
+    gl.uniform3f(uni.uAccent, accent[0], accent[1], accent[2]);
+    gl.uniform1f(uni.uSat, theme.sat + level * 0.001);
+    gl.uniform1f(uni.uRim, theme.rim);
+  }
+
+  function render(time) {
+    if (!gl) return;
+    if (staleAll || rectsDirty) refresh();
+    pushUniforms(time);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    rectsDirty = false;
+    paramsDirty = false;
+  }
+
+  function tick(now) {
+    animId = 0;
+    if (!gl || !visible) return;
+    if (now - lastFrame >= FRAME_MS - 1) {
+      lastFrame = now;
+      render(now);
+    }
+    if (!motionless) animId = requestAnimationFrame(tick);
+  }
+  function ensureLoop() {
+    if (!animId && gl && visible && !motionless) animId = requestAnimationFrame(tick);
+  }
+  function renderNow() {
+    if (gl && visible) render(performance.now());
+  }
+
+  /* ---------------- 对外接口与事件 ---------------- */
+  window.NovaGlass = {
+    scan,
+    refresh() { staleAll = true; rectsDirty = true; renderNow(); ensureLoop(); },
+    setLevel,
+    setTheme(name, accent) {
+      if (name === "light" || name === "dark") themeName = name;
+      if (accent && ACCENT_TINTS[accent]) accentName = accent;
+      paramsDirty = true;
+      renderNow(); ensureLoop();
+    },
+  };
+
+  window.addEventListener("resize", () => { resizeCanvas(); refresh(); renderNow(); ensureLoop(); });
+  window.addEventListener("orientationchange", () => setTimeout(() => { resizeCanvas(); refresh(); renderNow(); }, 120));
+  /* 滚动只改变视口偏移（渲染时已减去 scroll），文档坐标不变，无需重新测量 */
+  window.addEventListener("scroll", () => renderNow(), { passive: true });
+  window.addEventListener("nova:page", () => { staleAll = true; rectsDirty = true; renderNow(); ensureLoop(); });
+  window.addEventListener("nova:dialog", () => { staleAll = true; rectsDirty = true; renderNow(); });
+  reducedMotion.addEventListener?.("change", event => {
+    motionless = event.matches;
+    if (motionless) { if (animId) cancelAnimationFrame(animId); animId = 0; renderNow(); }
+    else ensureLoop();
+  });
+  document.addEventListener("visibilitychange", () => {
+    visible = !document.hidden;
+    if (visible) { lastFrame = 0; ensureLoop(); }
+    else if (animId) { cancelAnimationFrame(animId); animId = 0; }
+  });
+
+  function bootGL() {
+    motionless = reducedMotion.matches;
+    resizeCanvas();
+    scan(document);
+    refresh();
+    render(performance.now());
+    ensureLoop();
+  }
+
+  setLevel(level);
+  if (initGL()) bootGL();
+  else applyFallback();
+})();

@@ -238,6 +238,18 @@ impl Config {
         };
         let disable_gpu_boost = boolean(function.get("DisableGpuBoost")?, "enable")?;
         let sched = function.get("Scheduler")?;
+        // 与 config_v2 的 clamp 校验保持一致：非法值必须在加载期报错，
+        // 否则每次写入 uclamp 都失败，守护进程陷入无意义的 degraded 重试。
+        let util_clamp_min = numeric_string(sched, "sched_util_clamp_min")?;
+        let util_clamp_max = numeric_string(sched, "sched_util_clamp_max")?;
+        if util_clamp_min.parse::<u64>().unwrap_or(u64::MAX) > 1024
+            || util_clamp_max.parse::<u64>().unwrap_or(u64::MAX) > 1024
+        {
+            return Err("sched_util_clamp_min/max 必须在 0..1024".into());
+        }
+        if util_clamp_min.parse::<u64>().unwrap_or(0) > util_clamp_max.parse::<u64>().unwrap_or(0) {
+            return Err("sched_util_clamp_min 不能大于 sched_util_clamp_max".into());
+        }
         let scheduler = SchedulerConfig {
             enable: boolean(sched, "enable")?,
             energy_aware: boolean(sched, "sched_energy_aware")?,
@@ -247,8 +259,8 @@ impl Config {
             min_granularity_ns: numeric_string(sched, "sched_min_granularity_ns")?,
             wakeup_granularity_ns: numeric_string(sched, "sched_wakeup_granularity_ns")?,
             nr_migrate: numeric_string(sched, "sched_nr_migrate")?,
-            util_clamp_min: numeric_string(sched, "sched_util_clamp_min")?,
-            util_clamp_max: numeric_string(sched, "sched_util_clamp_max")?,
+            util_clamp_min,
+            util_clamp_max,
         };
         let foreground_monitor = optional_field(function, "ForegroundMonitor")
             .map(parse_foreground_monitor)

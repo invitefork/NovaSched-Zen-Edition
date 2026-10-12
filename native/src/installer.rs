@@ -17,11 +17,11 @@ const OUTPUT_LIMIT: u64 = 1_048_576;
 
 pub fn run(module: &Path, phase: &str) -> Result<()> {
     let (seconds, waiting) = match phase {
-        "self-test" => (20, "核心正在自检，先把基本功练稳。"),
-        "probe" => (20, "正在读取芯片与内核能力，专属配置还在配餐。"),
-        "prepare-config" => (30, "正在整理配置和备份，旧习惯也得照顾到。"),
+        "self-test" => (20, "等待核心自检结果。"),
+        "probe" => (20, "正在读取处理器与内核能力。"),
+        "prepare-config" => (30, "正在准备配置和备份。"),
         "prepare-auto" => (10, "正在保存自动调度偏好。"),
-        "scene-status" => (10, "正在等系统回复 Scene 是否到场。"),
+        "scene-status" => (15, "正在查询 Scene 安装状态。"),
         _ => return Err("未知安装检查，拒绝执行".into()),
     };
     let log = module.join(format!("install-{phase}.log"));
@@ -35,15 +35,6 @@ pub fn run(module: &Path, phase: &str) -> Result<()> {
         Duration::from_secs(seconds),
         |elapsed| {
             println!("{waiting} 已等待 {elapsed} 秒。");
-            println!(
-                "{}",
-                match (elapsed / 3) % 4 {
-                    1 => "候场小剧场 · 电池：打完游戏记得放我下班。",
-                    2 => "候场小剧场 · Nova：识别错了也能改，WebUI 里标记就好。",
-                    3 => "候场小剧场 · 手机：别催，系统服务正在翻通讯录。",
-                    _ => "候场小剧场 · ZenJooo：进度是真的，段子是顺手的。",
-                }
-            );
             let _ = std::io::stdout().flush();
         },
     );
