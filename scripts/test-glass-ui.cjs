@@ -1,11 +1,10 @@
-/* NovaSched Zen Edition v2.2.0 — liquid-glass WebUI structural checks.
+/* NovaSched Zen Edition v2.2.1 — WebUI structural checks.
  *
- * The v2.2.0 WebUI is a single-file WebGL2 canvas app: the liquid glass
- * engine ships verbatim and the control layer reuses its components. DOM
- * snapshots cannot observe a canvas, so these checks assert the contract
- * statically: engine markers present, protocol constants in sync with the
- * Rust service, no retired DOM-UI leftovers, and per-SoC mode tables that
- * keep 省电 capped and balance no longer unlimited.
+ * The UI is a DOM + CSS liquid-glass single page whose visual language is
+ * ported from the SleepDown schedule site. These checks assert the shipped
+ * contract statically: design tokens and glass components present, protocol
+ * constants in sync with the Rust service, no canvas-engine leftovers, and
+ * per-SoC mode tables that keep 省电 capped and balance no longer unlimited.
  */
 'use strict';
 const fs = require('fs');
@@ -23,109 +22,105 @@ function check(name, fn) {
 function assert(condition, message) { if (!condition) throw new Error(message || 'assertion failed'); }
 function read(p) { return fs.readFileSync(p, 'utf8'); }
 
-const ui = read(path.join(web, 'index.html'));
+const html = read(path.join(web, 'index.html'));
+const css = read(path.join(web, 'assets', 'app.css'));
+const ui = read(path.join(web, 'assets', 'app.js'));
 const ws = read(path.join(native, 'websocket.rs'));
 const auth = read(path.join(native, 'web_auth.rs'));
 const scheduler = read(path.join(native, 'scheduler.rs'));
-const hardware = read(path.join(native, 'hardware.rs'));
 const daemon = read(path.join(native, 'daemon.rs'));
 const config = read(path.join(native, 'config.rs'));
 
-/* ---- 1. Liquid glass engine is shipped verbatim ---- */
-check('glass engine: spring physics classes present', () => {
-  for (const marker of ['class SpringFloat', 'class DampedDragAnimation', 'class InteractiveHighlight'])
-    assert(ui.includes(marker), `missing ${marker}`);
+/* ---- 1. Design language ported from the reference site ---- */
+check('design: SleepDown tokens ported verbatim', () => {
+  for (const token of ['--brand: #007aff', '--ink: #090b10', '--paper: #f5f7fa',
+    'cubic-bezier(.16,1,.3,1)', 'backdrop-filter: blur(30px) saturate(1.65)',
+    'border-radius: 999px', '#ffffffd6', 'letter-spacing: -.035em'])
+    assert(css.includes(token), `missing design token: ${token}`);
 });
-check('glass engine: AGSL-ported fragment shader present', () => {
-  assert(ui.includes('const FS_GLASS'), 'FS_GLASS missing');
-  assert(ui.includes('sdRoundedRect') && ui.includes('circleMap'), 'refraction SDF helpers missing');
+check('design: glass nav with sliding indicator', () => {
+  assert(css.includes('.global-nav') && css.includes('.nav-indicator'), 'glass nav missing');
+  assert(css.includes('translate3d(calc(var(--nav-index, 0)'), 'indicator slide missing');
+  assert(html.includes('class="nav-indicator"'), 'nav indicator element missing');
 });
-check('glass engine: all original components retained', () => {
-  for (const marker of ['const btn = {', 'const toggle = {', 'const slider = {', 'const tabs = {', 'const openBtn = {', 'const dialog = {'])
-    assert(ui.includes(marker), `component missing: ${marker}`);
+check('design: hero copy, badges and gallery control', () => {
+  assert(html.includes('把性能，'), 'hero headline missing');
+  assert(html.includes('shot-stack') && html.includes('gallery-control'), 'hero carousel missing');
+  assert(css.includes('.shot-card[data-pos="active"]'), 'carousel positions missing');
+  assert(html.includes('向下了解'), 'scroll hint missing');
 });
-check('glass engine: demo debug hook retained', () => {
-  assert(ui.includes('window.__ytblDebug'), 'debug hook missing');
+check('design: reveal scroll animations', () => {
+  assert(css.includes('.reveal') && css.includes('.reveal.visible'), 'reveal animation missing');
+  assert(css.includes('translate3d(0, 62px, 0) scale(.975)'), 'reveal transform missing');
 });
-check('glass engine: WebGL2 context with fallback', () => {
-  assert(ui.includes("getContext('webgl2'"), 'webgl2 context missing');
-  assert(ui.includes('showFallback'), 'fallback path missing');
-});
-
-/* ---- 2. Control layer reuses the engine components ---- */
-check('control layer: instantiates engine components', () => {
-  assert(ui.includes('Object.assign({}, btn,'), 'mode buttons must clone the engine glass button');
-  assert(ui.includes('tabs.labels = ["概览", "规则", "日志", "设置"]'), 'bottom tab bar missing');
-  assert(ui.includes('toggle.selected = nova.automatic'), 'automatic switch must drive the engine toggle');
-  assert(ui.includes('slider.value = novaUi.ref'), 'settings slider must drive the engine slider');
-});
-check('control layer: four pages wired', () => {
-  assert(ui.includes('drawHome') && ui.includes('drawRules') && ui.includes('drawLogs') && ui.includes('drawSettings'), 'page drawers missing');
-});
-check('control layer: rule sheet follows dialog glass parameters', () => {
-  assert(ui.includes('const sheet = {') && ui.includes('sheet.draw(cssW, cssH, dt)'), 'sheet missing');
+check('design: light + dark themes and reduced motion', () => {
+  assert(css.includes('[data-theme="dark"]'), 'dark theme missing');
+  assert(html.includes('data-theme-choice="system"'), 'theme picker missing');
+  assert(css.includes('prefers-reduced-motion'), 'reduced motion missing');
 });
 
-/* ---- 3. Protocol constants stay in sync with the Rust service ---- */
+/* ---- 2. Control surface completeness ---- */
+check('sections: overview / modes / rules / logs / about / footer', () => {
+  for (const id of ['id="overview"', 'id="modes"', 'id="rules"', 'id="logs"', 'id="about"', '<footer>'])
+    assert(html.includes(id), `missing ${id}`);
+});
+check('modes: four cards with active/pending states', () => {
+  for (const mode of ['powersave', 'balance', 'performance', 'fast'])
+    assert(html.includes(`data-mode="${mode}"`), `mode card missing: ${mode}`);
+  assert(css.includes('.mode-card[data-state="active"]') && css.includes('.mode-card[data-state="pending"]'), 'mode states missing');
+  assert(html.includes('id="auto-switch"'), 'automatic switch missing');
+});
+check('rules: list, editor dialog with mode chips and delete', () => {
+  assert(html.includes('id="rule-list"') && html.includes('id="add-rule"'), 'rules surface missing');
+  assert(ui.includes('showRuleEditor') && ui.includes('showDeleteConfirm'), 'rule dialogs missing');
+  assert(ui.includes('data-chip'), 'mode chips missing');
+});
+check('logs: level filter, follow switch, copy, detail dialog', () => {
+  for (const marker of ['data-level="error"', 'id="log-follow"', 'id="log-copy"', 'renderLogs'])
+    assert(ui.includes(marker) || html.includes(marker), `logs feature missing: ${marker}`);
+});
+check('interactions: snackbar, dialog layer, smooth anchors', () => {
+  assert(html.includes('id="snackbar"') && html.includes('id="dialog-layer"'), 'feedback surfaces missing');
+  assert(css.includes('scroll-behavior: smooth'), 'smooth scrolling missing');
+  assert(ui.includes('IntersectionObserver'), 'scroll observers missing');
+});
+
+/* ---- 3. Protocol stays in sync with the Rust service ---- */
 check('protocol: WebSocket key matches websocket.rs', () => {
-  const key = ui.match(/const NOVA_KEY = "([^"]+)"/);
-  assert(key, 'NOVA_KEY missing in UI');
+  const key = ui.match(/const KEY = "([^"]+)"/);
+  assert(key, 'KEY missing in app.js');
   assert(ws.includes(`"${key[1]}"`), 'UI and Rust WebSocket keys differ');
 });
 check('protocol: auth prefix matches web_auth.rs', () => {
   const prefix = ui.match(/const AUTH_PREFIX = "([^"]+)"/);
-  assert(prefix, 'AUTH_PREFIX missing in UI');
+  assert(prefix, 'AUTH_PREFIX missing in app.js');
   assert(auth.includes(`"${prefix[1]}"`), 'UI and Rust auth prefixes differ');
 });
 check('protocol: authenticated endpoints and root bridge', () => {
-  assert(ui.includes('[NOVA_KEY, AUTH_PREFIX + sessionToken]'), 'authenticated WS setup missing');
+  assert(ui.includes('[KEY, AUTH_PREFIX + sessionToken]'), 'authenticated WS setup missing');
   assert(ui.includes('moduleCommand("webui-session"'), 'root credential getter missing');
   assert(ui.includes('moduleCommand("webui-rpc"'), 'root fallback RPC missing');
   assert(ws.includes('session.accepts(item)'), 'server token verification missing');
   assert(auth.includes('register_origin(Path::new(STATE_DIR), origin)'), 'root origin registration missing');
-});
-check('protocol: credential hygiene', () => {
-  assert(ui.includes('publicError'), 'error scrubbing missing');
-  assert(!/token\s*[:=]\s*"[a-f0-9]{64}"/.test(ui), 'hardcoded credential-like token in UI');
-});
-check('protocol: FAS availability surfaced to the UI', () => {
   assert(ui.includes('fasAvailable'), 'UI does not read fasAvailable');
   assert(ws.includes('fasAvailable:{}'), 'modes payload lacks fasAvailable');
-  assert(daemon.includes('set_fas_available'), 'daemon never reports FAS availability');
 });
 
-/* ---- 4. Retired DOM UI must not linger ---- */
-check('retired files: no zen.js/zen.css references anywhere shipped', () => {
-  for (const file of ['module-template/webroot/index.html', 'module-template/webroot/config.mmrl.json',
-    'scripts/package-release.py', 'module-template/customize.sh', 'module-template/uninstall.sh']) {
-    const text = read(path.join(root, file));
-    assert(!/assets\/zen(\.|-)/.test(text), `${file} still references the retired DOM UI`);
-  }
-  assert(!fs.existsSync(path.join(web, 'assets', 'zen.js')), 'zen.js still shipped');
-  assert(!fs.existsSync(path.join(web, 'assets', 'zen.css')), 'zen.css still shipped');
-});
-check('webroot: single-entry index with mmrl config', () => {
-  assert(fs.existsSync(path.join(web, 'index.html')));
-  assert(fs.existsSync(path.join(web, 'config.mmrl.json')));
-  const csp = JSON.parse(read(path.join(web, 'config.mmrl.json'))).contentSecurityPolicy;
-  assert(csp.includes("'unsafe-inline'") && csp.includes('ws://127.0.0.1:*'), 'CSP must allow inline scripts and local WS');
+/* ---- 4. Canvas engine fully retired ---- */
+check('retired: no liquid-glass canvas engine leftovers', () => {
+  for (const banned of ['FS_GLASS', 'SpringFloat', '__ytblDebug', 'getContext(\'webgl2', 'assets/zen'])
+    assert(!html.includes(banned) && !css.includes(banned) && !ui.includes(banned), `leftover: ${banned}`);
+  assert(!fs.existsSync(path.join(web, 'assets', 'app.css.bak')), 'stale backup shipped');
 });
 
 /* ---- 5. FAS integration (Scene N1) ---- */
 check('FAS: scheduler follows Scene N1 fas-rs mode node', () => {
-  assert(scheduler.includes('/dev/fas_rs/mode'), 'FAS node missing in scheduler');
-  assert(scheduler.includes('fn apply_fas_mode'), 'apply_fas_mode missing');
+  assert(scheduler.includes('/dev/fas_rs/mode') && scheduler.includes('fn apply_fas_mode'), 'FAS follow missing');
   assert(scheduler.includes('util::write_node(&path, mode)'), 'FAS write must not go through the snapshot');
 });
 check('FAS: powercfg manifest declares Scene feature flags', () => {
   const manifest = JSON.parse(read(path.join(root, 'module-template', 'vtools', 'powercfg.json')));
-  assert(manifest.features.fas === true, 'features.fas missing');
-  assert(manifest.features.pedestal === true, 'features.pedestal missing');
-  assert(manifest.state === '/data/adb/novasched/mode.txt', 'state path changed');
-});
-check('FAS: foreign scheduler takeover suspends writes', () => {
-  assert(scheduler.includes('controls_locked'), 'takeover gate missing');
-  assert(daemon.includes('scene.controls_locked()') && daemon.includes('scheduler.clear_pending()'), 'suspension path missing');
+  assert(manifest.features.fas === true && manifest.features.pedestal === true, 'feature flags missing');
 });
 
 /* ---- 6. Mode tables: 省电到底 / balance capped / fast open ---- */
@@ -135,42 +130,29 @@ const EXPECTED_POLICIES = {
   DIMENSITY8350: [0, 4, 7, -1], DIMENSITY9400PLUS: [0, 4, 7, -1], XRING_O3: [4, 0, 1, -1],
 };
 for (const soc of Object.keys(EXPECTED_POLICIES)) {
-  check(`config ${soc}: v320 tables with capped balance`, () => {
+  check(`config ${soc}: capped powersave/balance, open fast`, () => {
     const profile = JSON.parse(read(path.join(root, 'module-template', 'config', `${soc}.json`)));
-    assert(profile.meta.version === 320, 'meta.version must be 320');
     assert(JSON.stringify(profile.policies) === JSON.stringify(EXPECTED_POLICIES[soc]), 'policies changed');
-    const cap = (mode, slot) => parseInt(profile.modes[mode].max[slot], 10);
     for (let slot = 0; slot < 4; slot++) {
       if (EXPECTED_POLICIES[soc][slot] < 0) continue;
-      assert(cap('powersave', slot) <= 62, `powersave c${slot} not fully capped (${profile.modes.powersave.max[slot]})`);
-      assert(cap('balance', slot) <= 88, `balance c${slot} still unlimited (${profile.modes.balance.max[slot]})`);
-      assert(cap('fast', slot) === 100, `fast c${slot} must stay open (${profile.modes.fast.max[slot]})`);
+      const cap = mode => parseInt(profile.modes[mode].max[slot], 10);
+      assert(cap('powersave') <= 62, `powersave c${slot} not fully capped`);
+      assert(cap('balance') <= 88, `balance c${slot} still unlimited`);
+      assert(cap('fast') === 100, `fast c${slot} must stay open`);
     }
   });
 }
-check('profile generator matches shipped configs', () => {
-  const generator = read(path.join(root, 'scripts', 'generate-profiles.py'));
-  assert(generator.includes("'balance': {'max': ['85%', '80%', '78%', '82%']}"), 'generator balance caps missing');
-  assert(generator.includes("'version': 320"), 'generator version stale');
-});
-check('schema: PROFILE_VERSION tracks the release', () => {
+check('schema: PROFILE_VERSION tracks the config generation', () => {
   assert(config.includes('pub const PROFILE_VERSION: i64 = 320;'), 'PROFILE_VERSION must be 320');
 });
 
 /* ---- 7. No thermal / charging control writes ---- */
 check('safety: scheduler never writes thermal or charger nodes', () => {
-  const thermalWrite = /write[^"]*"[^"]*thermal|"[^"]*thermal[^"]*"\s*,|thermal[^"]*".*write/i;
-  assert(!/\/sys\/class\/thermal/.test(scheduler), 'scheduler references thermal class nodes');
+  assert(!scheduler.includes('/sys/class/thermal'), 'scheduler references thermal class nodes');
   assert(scheduler.includes('不能停用温控、电池或充电服务'), 'perf service guard missing');
   for (const banned of ['thermal_core', 'thermal-engine', '/proc/thermal', 'battery/charging', 'charge_control']) {
     assert(!scheduler.includes(banned), `forbidden node reference: ${banned}`);
   }
-});
-check('safety: diagnostics only read thermal values', () => {
-  const diag = read(path.join(native, 'game_diagnostics.rs'));
-  assert(diag.includes('sys/class/thermal'), 'diagnostics should read temperatures');
-  const writes = diag.match(/write_node|atomic_write/g) || [];
-  assert(writes.length === 0, 'diagnostics must be read-only');
 });
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

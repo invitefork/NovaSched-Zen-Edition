@@ -17,8 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / 'module-template'
 DIST = ROOT / 'dist'
 DIST.mkdir(exist_ok=True)
-VERSION = '2.2.0'
-VERSION_CODE = 320
+VERSION = '2.2.1'
+VERSION_CODE = 321
+CONFIG_VERSION = 320  # config schema generation; PROFILE_VERSION in config.rs must match
 parser = argparse.ArgumentParser()
 parser.add_argument('--source-only', action='store_true', help='Package source without requiring an Android binary')
 args = parser.parse_args()
@@ -47,7 +48,7 @@ for soc in SUPPORTED:
     profile=json.loads((MODULE/'config'/(soc+'.json')).read_text())
     assert set(profile['modes']) == {'powersave','balance','performance','fast'}
     assert profile['schema'] == 'novasched/2' and profile['module'] == 'NovaSched_Zen_Edition'
-    assert profile['meta']['author'] == 'ZenJooo' and profile['meta']['version'] == VERSION_CODE
+    assert profile['meta']['author'] == 'ZenJooo' and profile['meta']['version'] == CONFIG_VERSION
     assert profile['meta']['soc'] == soc
     assert not {'smooth','extreme'} & profile['features'].keys()
 assert len(list((MODULE/'config').glob('*.json'))) == len(SUPPORTED)
@@ -57,24 +58,30 @@ assert json.loads((MODULE/'vtools/powercfg.json').read_text())['versionCode'] ==
 assert json.loads((MODULE/'vtools/powercfg.json').read_text())['version'] == f'v{VERSION}', 'powercfg.json version string must track VERSION'
 assert f'version = "{VERSION}"' in (ROOT/'native/Cargo.toml').read_text()
 
-ui = (MODULE/'webroot/index.html').read_text()
+ui = (MODULE/'webroot/assets/app.js').read_text()
+html = (MODULE/'webroot/index.html').read_text()
+css = (MODULE/'webroot/assets/app.css').read_text()
 ws = (ROOT/'native/src/websocket.rs').read_text()
-key = re.search(r'const NOVA_KEY = "([^"]+)"', ui).group(1)
+key = re.search(r'const KEY = "([^"]+)"', ui).group(1)
 assert f'"{key}"' in ws, 'UI and Rust WebSocket keys do not match'
 auth = (ROOT/'native/src/web_auth.rs').read_text()
 prefix = re.search(r'const AUTH_PREFIX = "([^"]+)"', ui).group(1)
 assert f'"{prefix}"' in auth, 'UI and Rust authentication prefixes do not match'
-assert '[NOVA_KEY, AUTH_PREFIX + sessionToken]' in ui, 'Authenticated WebSocket setup missing'
+assert '[KEY, AUTH_PREFIX + sessionToken]' in ui, 'Authenticated WebSocket setup missing'
 assert 'moduleCommand("webui-session"' in ui, 'Root credential getter missing'
 assert 'session.accepts(item)' in ws, 'Server token verification missing'
 assert 'web_auth::origin_is_allowed' in ws and 'origin_allowed(value)' in ws, 'Exact dynamic Origin validation missing'
 assert 'register_origin(Path::new(STATE_DIR), origin)' in auth, 'Root Origin registration missing'
 assert '--origin ${shellQuote(origin)}' in ui, 'Origin-bound root credential request missing'
-# The liquid-glass engine is shipped verbatim; these markers must survive edits.
-for marker in ['class SpringFloat', 'class DampedDragAnimation', 'class InteractiveHighlight',
-               'const FS_GLASS', 'function buildFrame', 'window.__ytblDebug']:
-    assert marker in ui, f'Liquid glass engine marker missing: {marker}'
-assert 'cts-v101' not in ui
+# The SleepDown-derived design language must ship intact; these markers are
+# the visual contract of the liquid-glass single page.
+for marker in ['--brand: #007aff', 'backdrop-filter: blur(30px) saturate(1.65)',
+               '.shot-card[data-pos="active"]', '.reveal.visible', '[data-theme="dark"]',
+               '把性能，', 'gallery-control', 'id="auto-switch"', 'fasAvailable']:
+    assert marker in (css + html + ui), f'design/feature marker missing: {marker}'
+for banned in ['FS_GLASS', 'SpringFloat', '__ytblDebug', 'assets/zen']:
+    assert banned not in (css + html + ui), f'retired canvas engine leftover: {banned}'
+assert 'cts-v101' not in html
 
 # Explicit source roots work both in a checkout and an extracted source archive.
 # Build output, dependencies and runtime state are never part of the source ZIP.
