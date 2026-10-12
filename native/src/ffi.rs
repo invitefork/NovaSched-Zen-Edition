@@ -6,9 +6,12 @@ pub const SIGHUP: c_int = 1;
 pub const SIGINT: c_int = 2;
 pub const SIGPIPE: c_int = 13;
 pub const SIGTERM: c_int = 15;
+pub const SIGKILL: c_int = 9;
 pub const SIG_IGN: usize = 1;
-pub const IN_NONBLOCK: c_int = 0o0004000;
-pub const IN_CLOEXEC: c_int = 0o2000000;
+pub const O_NONBLOCK: c_int = 0o0004000;
+pub const O_CLOEXEC: c_int = 0o2000000;
+pub const IN_NONBLOCK: c_int = O_NONBLOCK;
+pub const IN_CLOEXEC: c_int = O_CLOEXEC;
 pub const IN_MODIFY: c_uint = 0x0000_0002;
 pub const IN_ATTRIB: c_uint = 0x0000_0004;
 pub const IN_CLOSE_WRITE: c_uint = 0x0000_0008;
@@ -47,6 +50,7 @@ pub struct Tm {
 }
 
 extern "C" {
+    pub fn kill(pid: c_int, signal: c_int) -> c_int;
     pub fn flock(fd: c_int, operation: c_int) -> c_int;
     pub fn geteuid() -> c_uint;
     pub fn getpid() -> c_int;

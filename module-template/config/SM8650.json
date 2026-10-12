@@ -4,7 +4,7 @@
   "meta": {
     "name": "NovaSched Zen Edition",
     "author": "ZenJooo",
-    "version": 237,
+    "version": 320,
     "soc": "SM8650",
     "loglevel": "INFO"
   },
@@ -23,6 +23,14 @@
       "restricted": "0-3",
       "system_background": "0-3",
       "background": "0-1"
+    },
+    "cpuctl": {
+      "enabled": false
+    },
+    "input_boost": {
+      "enabled": false,
+      "top_app_min": "30",
+      "duration_ms": "300"
     },
     "launch_boost": {
       "enabled": false,
@@ -48,29 +56,6 @@
       "util_clamp_max": "1024"
     },
     "foreground_ignore": [],
-    "extreme": {
-      "enabled": false,
-      "max": [
-        "50%",
-        "50%",
-        "50%",
-        "50%"
-      ],
-      "uclamp_max": "1024"
-    },
-    "smooth": {
-      "enabled": false,
-      "max": [
-        "70%",
-        "70%",
-        "70%",
-        "70%"
-      ],
-      "uclamp_max": "1024",
-      "uclamp_min_limit": "1024",
-      "up_rate_limit_us": "0",
-      "restore_stock_response": true
-    },
     "perf_lock": {
       "enabled": false,
       "services": []
@@ -85,10 +70,10 @@
         "0%"
       ],
       "max": [
-        "62%",
-        "55%",
-        "52%",
-        "58%"
+        "58%",
+        "50%",
+        "48%",
+        "54%"
       ],
       "governors": [
         "auto",
@@ -121,10 +106,10 @@
         "0%"
       ],
       "max": [
-        "100%",
-        "100%",
-        "100%",
-        "100%"
+        "85%",
+        "80%",
+        "78%",
+        "82%"
       ],
       "governors": [
         "auto",

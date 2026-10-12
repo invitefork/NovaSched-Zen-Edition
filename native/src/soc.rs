@@ -7,14 +7,20 @@ pub enum Soc {
     Gen3,
     Elite,
     Elite5,
+    Dimensity8350,
+    Dimensity9400Plus,
+    XringO3,
 }
-pub const SUPPORTED: [Soc; 6] = [
+pub const SUPPORTED: [Soc; 9] = [
     Soc::Gen1,
     Soc::Gen1Plus,
     Soc::Gen2,
     Soc::Gen3,
     Soc::Elite,
     Soc::Elite5,
+    Soc::Dimensity8350,
+    Soc::Dimensity9400Plus,
+    Soc::XringO3,
 ];
 impl Soc {
     pub fn id(self) -> &'static str {
@@ -25,6 +31,9 @@ impl Soc {
             Self::Gen3 => "SM8650",
             Self::Elite => "SM8750",
             Self::Elite5 => "SM8850",
+            Self::Dimensity8350 => "DIMENSITY8350",
+            Self::Dimensity9400Plus => "DIMENSITY9400PLUS",
+            Self::XringO3 => "XRING_O3",
         }
     }
     pub fn name(self) -> &'static str {
@@ -35,6 +44,9 @@ impl Soc {
             Self::Gen3 => "Snapdragon 8 Gen 3",
             Self::Elite => "Snapdragon 8 Elite",
             Self::Elite5 => "Snapdragon 8 Elite Gen 5",
+            Self::Dimensity8350 => "MediaTek Dimensity 8350",
+            Self::Dimensity9400Plus => "MediaTek Dimensity 9400+",
+            Self::XringO3 => "Xiaomi Xring O3",
         }
     }
     pub fn file(self) -> &'static str {
@@ -45,6 +57,9 @@ impl Soc {
             Self::Gen3 => "SM8650.json",
             Self::Elite => "SM8750.json",
             Self::Elite5 => "SM8850.json",
+            Self::Dimensity8350 => "DIMENSITY8350.json",
+            Self::Dimensity9400Plus => "DIMENSITY9400PLUS.json",
+            Self::XringO3 => "XRING_O3.json",
         }
     }
     pub fn anchors(self) -> [i32; 4] {
@@ -53,6 +68,10 @@ impl Soc {
             Self::Gen2 => [0, 3, 7, -1],
             Self::Gen3 => [0, 2, 5, 7],
             Self::Elite | Self::Elite5 => [0, 6, -1, -1],
+            Self::Dimensity8350 => [0, 4, 7, -1],
+            Self::Dimensity9400Plus => [0, 4, 7, -1],
+            // The supplied O3 dump numbers A715 first, X3 next, A510 last.
+            Self::XringO3 => [4, 0, 1, -1],
         }
     }
     pub fn from_id(id: &str) -> Option<Self> {
@@ -66,9 +85,20 @@ impl Soc {
 }
 pub fn marketing_model(value: &str) -> Option<Soc> {
     let lower = value.to_ascii_lowercase().replace('+', "plus");
-    let mut compact: String = lower.chars().filter(char::is_ascii_alphanumeric).collect();
-    if let Some(rest) = compact.strip_prefix("qualcomm") {
-        compact = rest.into();
+    let mut compact: String = lower.chars().filter(|c| c.is_alphanumeric()).collect();
+    for manufacturer in [
+        "qualcomm",
+        "mediatek",
+        "mtk",
+        "xiaomi",
+        "小米",
+        "联发科",
+        "高通",
+    ] {
+        if let Some(rest) = compact.strip_prefix(manufacturer) {
+            compact = rest.into();
+            break;
+        }
     }
     for _ in 0..2 {
         if let Some(rest) = compact
@@ -85,6 +115,9 @@ pub fn marketing_model(value: &str) -> Option<Soc> {
         "snapdragon8gen3" => Some(Soc::Gen3),
         "snapdragon8elite" => Some(Soc::Elite),
         "snapdragon8elitegen5" => Some(Soc::Elite5),
+        "dimensity8350" | "天玑8350" => Some(Soc::Dimensity8350),
+        "dimensity9400plus" | "天玑9400plus" => Some(Soc::Dimensity9400Plus),
+        "xringo3" | "玄戒o3" => Some(Soc::XringO3),
         _ => None,
     }
 }

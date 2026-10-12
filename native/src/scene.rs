@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -40,9 +39,8 @@ pub fn availability() -> SceneAvailability {
     presence().availability
 }
 
-/// Android regenerates packages.list from its installed package registry.
-/// Unlike an app data directory or our callback, it is installation evidence.
-/// Do not filter enabled apps or user 0: Scene need not currently be running.
+/// Query the active Android user. Global registries also contain packages
+/// retained for other users or after uninstall, so they cannot prove presence.
 pub fn presence() -> ScenePresence {
     let cache = AVAILABILITY.get_or_init(|| Mutex::new(None));
     if let Ok(cached) = cache.lock() {
@@ -52,143 +50,64 @@ pub fn presence() -> ScenePresence {
             }
         }
     }
-    let registry = read_package_registry(Path::new("/data/system/packages.list"));
-    let xml = crate::package_registry::installed_at(
-        Path::new("/data/system/packages.xml"),
-        SCENE_PACKAGE,
-    );
-    let state = resolve_presence(
-        registry,
-        xml,
-        || crate::package_registry::process_running_at(Path::new("/proc"), SCENE_PACKAGE),
-        |program, args| util::query_command(program, args, Duration::from_secs(2)),
-    );
+    let state = probe_presence(util::current_android_user(), |program, args| {
+        util::query_command(program, args, Duration::from_secs(2))
+    });
     if let Ok(mut cached) = cache.lock() {
         *cached = Some((Instant::now(), state.clone()));
     }
     state
 }
 
-fn resolve_presence(
-    registry: Result<String>,
-    xml: Result<bool>,
-    process: impl FnOnce() -> Result<bool>,
-    query: impl FnMut(&str, &[&str]) -> Result<String>,
-) -> ScenePresence {
-    let listed = registry
-        .as_ref()
-        .map(|text| parse_package_registry(text))
-        .unwrap_or(SceneAvailability::Unknown);
-    if listed == SceneAvailability::Available || xml == Ok(true) {
-        return ScenePresence {
-            availability: SceneAvailability::Available,
-            evidence: if listed == SceneAvailability::Available {
-                "系统 packages.list 已登记 Scene".into()
-            } else {
-                "系统 packages.xml 已登记 Scene（文本/ABX）".into()
-            },
-        };
-    }
-    // Complete, readable registries also provide authoritative absence.
-    // A still-exiting process must not keep Scene ownership after uninstall.
-    if listed == SceneAvailability::Absent || xml == Ok(false) {
-        return ScenePresence {
-            availability: SceneAvailability::Absent,
-            evidence: "完整系统安装注册表中没有 Scene；忽略旧回调和数据目录".into(),
-        };
-    }
-    let process = process();
-    if process == Ok(true) {
-        return ScenePresence {
-            availability: SceneAvailability::Available,
-            evidence: "安装注册表不可读；检测到正在运行的 Scene 本体/子进程".into(),
-        };
-    }
-    let mut result = probe_presence(registry, query);
-    if result.availability == SceneAvailability::Unknown {
-        if let Err(error) = xml {
-            result.evidence.push_str(&format!("；{error}"));
-        }
-        if let Err(error) = process {
-            result.evidence.push_str(&format!("；{error}"));
-        }
-    }
-    result
-}
-
-fn read_package_registry(path: &Path) -> Result<String> {
-    let mut text = String::new();
-    fs::File::open(path)
-        .and_then(|file| file.take(2_097_153).read_to_string(&mut text))
-        .map_err(|error| format!("读取系统安装记录失败: {error}"))?;
-    if text.len() > 2_097_152 {
-        return Err("系统安装记录超出限制".into());
-    }
-    Ok(text)
-}
-
-fn parse_package_registry(text: &str) -> SceneAvailability {
-    let mut found = false;
-    let mut rows = 0;
-    for line in text.lines().filter(|line| !line.trim().is_empty()) {
-        let mut fields = line.split_whitespace();
-        let (Some(name), Some(uid), Some(debug), Some(data), Some(_seinfo), Some(_gids)) = (
-            fields.next(),
-            fields.next(),
-            fields.next(),
-            fields.next(),
-            fields.next(),
-            fields.next(),
-        ) else {
-            return SceneAvailability::Unknown;
-        };
-        if uid.parse::<u32>().is_err() || !matches!(debug, "0" | "1") || !data.starts_with('/') {
-            return SceneAvailability::Unknown;
-        }
-        found |= name == SCENE_PACKAGE;
-        rows += 1;
-    }
-    if found {
-        SceneAvailability::Available
-    } else if rows > 0 {
-        SceneAvailability::Absent
-    } else {
-        SceneAvailability::Unknown
-    }
-}
-
 fn probe_presence(
-    registry: Result<String>,
+    user: Result<u32>,
     mut query: impl FnMut(&str, &[&str]) -> Result<String>,
 ) -> ScenePresence {
-    let registry_state = registry
-        .as_ref()
-        .map(|text| parse_package_registry(text))
-        .unwrap_or(SceneAvailability::Unknown);
-    if registry_state == SceneAvailability::Available {
-        return ScenePresence {
-            availability: registry_state,
-            evidence: "系统 packages.list 已登记 Scene".into(),
-        };
-    }
-    let mut absent_queries = 0;
+    let user = match user {
+        Ok(user) => user.to_string(),
+        Err(error) => {
+            return ScenePresence {
+                availability: SceneAvailability::Unknown,
+                evidence: error,
+            }
+        }
+    };
     let mut failures = Vec::new();
     for (program, args) in [
         (
             "/system/bin/cmd",
-            vec!["package", "list", "packages", SCENE_PACKAGE],
+            vec![
+                "package",
+                "list",
+                "packages",
+                "--user",
+                &user,
+                SCENE_PACKAGE,
+            ],
         ),
-        ("/system/bin/pm", vec!["list", "packages", SCENE_PACKAGE]),
+        (
+            "/system/bin/pm",
+            vec!["list", "packages", "--user", &user, SCENE_PACKAGE],
+        ),
     ] {
         match query(program, &args) {
             Ok(text) => match parse_package_query(&text) {
                 SceneAvailability::Available => {
                     return ScenePresence {
                         availability: SceneAvailability::Available,
-                        evidence: format!("{program} 已登记 Scene（不限制启用状态或用户 0）"),
+                        evidence: format!(
+                            "{program} 确认当前用户 {user} 已安装 Scene（包含停用应用）"
+                        ),
                     }
                 }
-                SceneAvailability::Absent => absent_queries += 1,
+                SceneAvailability::Absent => {
+                    return ScenePresence {
+                        availability: SceneAvailability::Absent,
+                        evidence: format!(
+                            "当前用户 {user} 未安装 Scene；忽略全局包记录、旧回调和数据目录"
+                        ),
+                    }
+                }
                 SceneAvailability::Unknown => {
                     failures.push(format!("{program} 返回无法识别的结果"))
                 }
@@ -196,22 +115,22 @@ fn probe_presence(
             Err(error) => failures.push(error),
         }
     }
-    if registry_state == SceneAvailability::Absent || absent_queries == 2 {
-        return ScenePresence {
-            availability: SceneAvailability::Absent,
-            evidence: "系统安装记录中没有 Scene；未使用残留回调或数据目录判断".into(),
-        };
-    }
-    if let Err(error) = registry {
-        failures.push(error);
-    }
     ScenePresence {
         availability: SceneAvailability::Unknown,
-        evidence: format!("Scene 安装状态查询失败: {}", failures.join("；")),
+        evidence: format!(
+            "当前用户 {user} 的 Scene 安装状态查询失败: {}",
+            failures.join("；")
+        ),
     }
 }
 
 fn parse_package_query(text: &str) -> SceneAvailability {
+    if !text
+        .lines()
+        .all(|line| line.trim().is_empty() || line.trim().starts_with("package:"))
+    {
+        return SceneAvailability::Unknown;
+    }
     if text
         .lines()
         .any(|line| line.trim() == format!("package:{SCENE_PACKAGE}"))
@@ -232,10 +151,13 @@ const NATIVE_SCRIPT: &str = "/data/powercfg.sh";
 const OWN_SCRIPT_MAGIC: &str = "NovaSched_Zen_Edition_Scene_Provider";
 const PROVIDER_STATE_DIR: &str = "/data/adb/novasched/scene-provider";
 const PROVIDER_STATE_HEADER: &str = "NOVASCHED_ZEN_SCENE_PROVIDER_V1";
-const VTOOLS_XML: [&str; 2] = [
-    "/data/user/0/com.omarea.vtools/shared_prefs/powercfg.xml",
-    "/data/user_de/0/com.omarea.vtools/shared_prefs/powercfg.xml",
-];
+fn vtools_xml(user: u32) -> [PathBuf; 2] {
+    ["user", "user_de"].map(|root| {
+        PathBuf::from(format!(
+            "/data/{root}/{user}/com.omarea.vtools/shared_prefs/powercfg.xml"
+        ))
+    })
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ProviderKind {
@@ -281,15 +203,23 @@ impl SceneState {
     }
 }
 
-pub fn watched_paths() -> Vec<&'static str> {
-    let mut paths = vec![
+pub fn watched_paths() -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = [
         NATIVE_JSON,
         NATIVE_SCRIPT,
         "/data/system/packages.list",
         "/data/system/users/0/package-restrictions.xml",
         "/data/system/packages.xml",
-    ];
-    paths.extend(VTOOLS_XML);
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .collect();
+    if let Ok(user) = util::current_android_user() {
+        paths.extend(vtools_xml(user));
+        paths.push(PathBuf::from(format!(
+            "/data/system/users/{user}/package-restrictions.xml"
+        )));
+    }
     paths
 }
 
@@ -428,6 +358,85 @@ pub fn restore_provider() -> Result<ProviderRestoreOutcome> {
     restore_locked(&paths)
 }
 
+/// Uninstall also removes orphaned callbacks left without a backup marker.
+/// Inspect each file separately: another provider may have replaced only half
+/// of our registration, and that provider must survive the cleanup.
+pub fn uninstall_provider() -> Result<Vec<String>> {
+    let paths = ProviderPaths::new();
+    let _lock = util::acquire_flock(&paths.lock)?;
+    uninstall_provider_at(&paths)
+}
+
+fn uninstall_provider_at(paths: &ProviderPaths) -> Result<Vec<String>> {
+    let mut warnings = Vec::new();
+    let backup = match util::read_text(&paths.backup_state) {
+        Ok(text) => match BackupState::parse(&text) {
+            Ok(backup) => Some(backup),
+            Err(error) => {
+                warnings.push(format!("Scene 备份记录无效：{error}"));
+                None
+            }
+        },
+        Err(error) if paths.marker.exists() => {
+            warnings.push(error);
+            None
+        }
+        Err(_) => None,
+    };
+    let mut failures = Vec::new();
+    for (target, saved, slot, own) in [
+        (
+            &paths.native_json,
+            &paths.backup_json,
+            backup.as_ref().map(|b| b.json),
+            is_own_json as fn(&str) -> bool,
+        ),
+        (
+            &paths.native_script,
+            &paths.backup_script,
+            backup.as_ref().map(|b| b.script),
+            is_own_script as fn(&str) -> bool,
+        ),
+    ] {
+        let current = match util::read_text(target) {
+            Ok(text) => text,
+            Err(_) if !target.exists() => continue,
+            Err(error) => {
+                failures.push(error);
+                continue;
+            }
+        };
+        if !own(&current) {
+            continue;
+        }
+        if let Some(BackupSlot::Present(mode)) = slot {
+            match util::read_bytes(saved).and_then(|bytes| {
+                // An earlier incomplete registration may have backed up our
+                // own fragment. Do not restore a callback to a removed module.
+                if std::str::from_utf8(&bytes).is_ok_and(own) {
+                    util::remove_if_exists(target)
+                } else {
+                    util::atomic_write(target, &bytes, mode)
+                }
+            }) {
+                Ok(()) => continue,
+                Err(error) => warnings.push(format!("Scene 原回调无法恢复：{error}")),
+            }
+        }
+        if let Err(error) = fs::remove_file(target) {
+            failures.push(format!(
+                "删除 NovaSched 回调 {} 失败：{error}",
+                target.display()
+            ));
+        }
+    }
+    if failures.is_empty() {
+        Ok(warnings)
+    } else {
+        Err(failures.join("；"))
+    }
+}
+
 /// Keep Scene's `powercfg.xml` aligned with CTS's local rule file, as the
 /// original module does. It is deliberately limited to CTS's own provider;
 /// another installed provider is never edited.
@@ -504,9 +513,8 @@ fn detect_provider_at(paths: &ProviderPaths) -> ProviderKind {
 }
 
 fn scene_config_path() -> Option<PathBuf> {
-    VTOOLS_XML
-        .iter()
-        .map(PathBuf::from)
+    vtools_xml(util::current_android_user().ok()?)
+        .into_iter()
         .find(|path| path.exists())
 }
 
@@ -521,7 +529,11 @@ fn is_own_json(text: &str) -> bool {
 }
 
 fn is_own_script(text: &str) -> bool {
-    text.contains(OWN_SCRIPT_MAGIC)
+    text.lines().any(|line| {
+        line.trim()
+            .strip_prefix('#')
+            .is_some_and(|comment| comment.trim() == OWN_SCRIPT_MAGIC)
+    })
 }
 
 fn parse_json_mode(text: &str) -> Option<String> {
@@ -988,80 +1000,56 @@ mod tests {
         );
     }
 
-    fn registry(package: &str) -> String {
-        format!("{package} 10123 0 /data/user/0/{package} default:targetSdkVersion=35 none 0 100 0 @null\n")
-    }
-
     #[test]
-    fn installed_registry_does_not_depend_on_app_running_or_enabled_query() {
-        let presence = probe_presence(Ok(registry(SCENE_PACKAGE)), |_, _| {
-            panic!("installed record needs no binder query")
-        });
-        assert_eq!(presence.availability, SceneAvailability::Available);
-        assert!(presence.evidence.contains("packages.list"));
-        assert_eq!(
-            parse_package_registry(&registry("com.omarea.vtools.fake")),
-            SceneAvailability::Absent
-        );
-        assert_eq!(parse_package_registry(""), SceneAvailability::Unknown);
-        assert_eq!(
-            parse_package_registry("com.omarea.vtools malformed"),
-            SceneAvailability::Unknown
-        );
-    }
-
-    #[test]
-    fn empty_first_query_cannot_skip_a_successful_fallback() {
+    fn current_user_uninstall_is_authoritative_without_global_records() {
         let mut calls = 0;
-        let presence = probe_presence(Err("registry denied".into()), |program, args| {
+        let p = probe_presence(Ok(10), |_, args| {
             calls += 1;
-            assert!(!args.contains(&"-e") && !args.contains(&"-u") && !args.contains(&"--user"));
-            Ok(if program.ends_with("/cmd") {
-                String::new()
-            } else {
-                format!("package:{SCENE_PACKAGE}\n")
-            })
+            assert!(args.windows(2).any(|pair| pair == ["--user", "10"]));
+            assert!(!args.contains(&"-u") && !args.contains(&"-e"));
+            Ok(String::new())
         });
-        assert_eq!(calls, 2);
-        assert_eq!(presence.availability, SceneAvailability::Available);
+        assert_eq!(calls, 1);
+        assert_eq!(p.availability, SceneAvailability::Absent);
+        assert_eq!(
+            active_provider(ProviderKind::Own, p.availability),
+            ProviderKind::None
+        );
     }
 
     #[test]
-    fn unknown_first_query_also_uses_the_fallback() {
-        let presence = probe_presence(Err("missing registry".into()), |program, _| {
+    fn malformed_primary_query_uses_current_user_fallback() {
+        let mut calls = 0;
+        let p = probe_presence(Ok(0), |program, args| {
+            calls += 1;
+            assert!(args.windows(2).any(|pair| pair == ["--user", "0"]));
             Ok(if program.ends_with("/cmd") {
                 "Error: package service not ready".into()
             } else {
                 format!("package:{SCENE_PACKAGE}\n")
             })
         });
-        assert_eq!(presence.availability, SceneAvailability::Available);
+        assert_eq!(calls, 2);
+        assert_eq!(p.availability, SceneAvailability::Available);
     }
 
     #[test]
-    fn live_package_query_overrides_a_registry_update_in_progress() {
-        let presence = probe_presence(Ok(registry("com.other.app")), |_, _| {
-            Ok(format!("package:{SCENE_PACKAGE}\n"))
-        });
-        assert_eq!(presence.availability, SceneAvailability::Available);
-    }
-
-    #[test]
-    fn failed_queries_are_unknown_instead_of_uninstalled() {
-        let presence = probe_presence(Err("registry denied".into()), |_, _| {
-            Err("binder denied".into())
-        });
-        assert_eq!(presence.availability, SceneAvailability::Unknown);
-        assert!(
-            presence.evidence.contains("binder denied")
-                && presence.evidence.contains("registry denied")
-        );
-        let absent = probe_presence(Ok(registry("com.other.app")), |_, _| Ok(String::new()));
-        assert_eq!(absent.availability, SceneAvailability::Absent);
+    fn query_failures_remain_unknown_even_with_leftover_provider() {
+        let p = probe_presence(Ok(0), |_, _| Err("binder denied".into()));
+        assert_eq!(p.availability, SceneAvailability::Unknown);
+        assert!(p.evidence.contains("binder denied"));
         assert_eq!(
-            active_provider(ProviderKind::Own, absent.availability),
+            active_provider(ProviderKind::Own, p.availability),
             ProviderKind::None
         );
+        assert_eq!(
+            active_provider(ProviderKind::Foreign, p.availability),
+            ProviderKind::Foreign
+        );
+        let p = probe_presence(Err("user unknown".into()), |_, _| {
+            panic!("must not query user 0")
+        });
+        assert_eq!(p.availability, SceneAvailability::Unknown);
     }
 
     #[test]
@@ -1116,6 +1104,96 @@ mod tests {
         ProviderTemplates {
             json: br#"{"module":"NovaSched_Zen_Edition"}"#.to_vec(),
             script: b"#!/system/bin/sh\n# NovaSched_Zen_Edition_Scene_Provider\n".to_vec(),
+        }
+    }
+
+    #[test]
+    fn uninstall_removes_orphaned_own_callbacks_without_markers() {
+        let fixture = Fixture::new();
+        let paths = &fixture.0;
+        templates().write_to_targets(paths).unwrap();
+        assert!(uninstall_provider_at(paths).unwrap().is_empty());
+        assert!(!paths.native_json.exists() && !paths.native_script.exists());
+        assert!(uninstall_provider_at(paths).unwrap().is_empty());
+    }
+    #[test]
+    fn uninstall_restores_saved_bytes_and_permissions_before_state_cleanup() {
+        let fixture = Fixture::new();
+        let paths = &fixture.0;
+        let original_json = b"original JSON bytes";
+        let original_script = b"original script bytes";
+        fs::write(&paths.backup_json, original_json).unwrap();
+        fs::write(&paths.backup_script, original_script).unwrap();
+        let state = BackupState {
+            json: BackupSlot::Present(0o640),
+            script: BackupSlot::Present(0o750),
+        };
+        fs::write(&paths.backup_state, state.encode()).unwrap();
+        templates().write_to_targets(paths).unwrap();
+        assert!(uninstall_provider_at(paths).unwrap().is_empty());
+        assert_eq!(fs::read(&paths.native_json).unwrap(), original_json);
+        assert_eq!(fs::read(&paths.native_script).unwrap(), original_script);
+        assert_eq!(
+            fs::metadata(&paths.native_json).unwrap().mode() & 0o7777,
+            0o640
+        );
+        assert_eq!(
+            fs::metadata(&paths.native_script).unwrap().mode() & 0o7777,
+            0o750
+        );
+    }
+    #[test]
+    fn uninstall_handles_half_replaced_provider_without_erasing_foreign_files() {
+        let fixture = Fixture::new();
+        let paths = &fixture.0;
+        install_provider_at(paths, &templates()).unwrap();
+        fs::write(&paths.native_script, b"# user's new scheduler\n").unwrap();
+        uninstall_provider_at(paths).unwrap();
+        assert!(!paths.native_json.exists());
+        assert_eq!(
+            fs::read(&paths.native_script).unwrap(),
+            b"# user's new scheduler\n"
+        );
+        fs::write(
+            &paths.native_json,
+            b"{\"module\":\"other\",\"note\":\"NovaSched_Zen_Edition\"}",
+        )
+        .unwrap();
+        uninstall_provider_at(paths).unwrap();
+        assert!(paths.native_json.exists() && paths.native_script.exists());
+    }
+
+    #[test]
+    fn uninstall_does_not_resurrect_our_callback_from_an_old_fragment_backup() {
+        let fixture = Fixture::new();
+        let paths = &fixture.0;
+        fs::write(&paths.native_json, &templates().json).unwrap();
+        install_provider_at(paths, &templates()).unwrap();
+        let state = BackupState::parse(&fs::read_to_string(&paths.backup_state).unwrap()).unwrap();
+        assert!(matches!(state.json, BackupSlot::Present(_)));
+        uninstall_provider_at(paths).unwrap();
+        assert!(!paths.native_json.exists() && !paths.native_script.exists());
+        assert!(!is_own_script(
+            "echo NovaSched_Zen_Edition_Scene_Provider\n"
+        ));
+    }
+    #[test]
+    fn uninstall_cleans_own_callbacks_after_invalid_or_missing_backup() {
+        let fixture = Fixture::new();
+        let paths = &fixture.0;
+        for state in [
+            "broken".to_string(),
+            BackupState {
+                json: BackupSlot::Present(0o644),
+                script: BackupSlot::Absent,
+            }
+            .encode(),
+        ] {
+            templates().write_to_targets(paths).unwrap();
+            fs::write(&paths.backup_state, state).unwrap();
+            let warnings = uninstall_provider_at(paths).unwrap();
+            assert!(!warnings.is_empty());
+            assert!(!paths.native_json.exists() && !paths.native_script.exists());
         }
     }
 
@@ -1189,7 +1267,7 @@ mod tests {
             ("com.other.app", "WebUI"),
             (SCENE_PACKAGE, "Scene（NovaSched Zen Edition）"),
         ] {
-            let presence = probe_presence(Ok(registry(package)), |_, _| Ok(String::new()));
+            let presence = probe_presence(Ok(0), |_, _| Ok(format!("package:{package}\n")));
             let state = SceneState {
                 availability: presence.availability,
                 provider: active_provider(detect_provider_at(paths), presence.availability),
@@ -1250,76 +1328,5 @@ mod tests {
         .expect("backup state");
         assert_eq!(state.json, BackupSlot::Present(0o644));
         assert_eq!(state.script, BackupSlot::Absent);
-    }
-}
-
-#[cfg(test)]
-mod registry_fallback_tests {
-    use super::*;
-    fn denied() -> Result<String> {
-        Err("SELinux denied".into())
-    }
-    #[test]
-    fn running_scene_recovers_from_binder_failure_and_xml_positive_needs_no_process() {
-        let p = resolve_presence(
-            denied(),
-            Err("XML denied".into()),
-            || Ok(true),
-            |_, _| panic!("live process avoids Binder"),
-        );
-        assert_eq!(p.availability, SceneAvailability::Available);
-        let p = resolve_presence(
-            denied(),
-            Ok(true),
-            || panic!("XML is enough"),
-            |_, _| panic!("XML is enough"),
-        );
-        assert_eq!(p.availability, SceneAvailability::Available);
-    }
-    #[test]
-    fn uninstall_overrides_still_exiting_process_and_own_callback() {
-        let p = resolve_presence(
-            denied(),
-            Ok(false),
-            || panic!("absence does not need process"),
-            |_, _| panic!("absence avoids Binder"),
-        );
-        assert_eq!(p.availability, SceneAvailability::Absent);
-        assert_eq!(
-            active_provider(ProviderKind::Own, p.availability),
-            ProviderKind::None
-        );
-    }
-    #[test]
-    fn missing_all_evidence_stays_unknown_and_binder_can_supply_exact_installation() {
-        let p = resolve_presence(
-            denied(),
-            Err("missing".into()),
-            || Ok(false),
-            |_, _| Err("Failed transaction".into()),
-        );
-        assert_eq!(p.availability, SceneAvailability::Unknown);
-        assert!(p.evidence.contains("Failed transaction"));
-        let p = resolve_presence(
-            denied(),
-            Err("missing".into()),
-            || Ok(false),
-            |_, _| Ok(format!("package:{SCENE_PACKAGE}")),
-        );
-        assert_eq!(p.availability, SceneAvailability::Available);
-    }
-    #[test]
-    fn positive_xml_overrides_a_package_list_update_in_progress() {
-        let text = "com.other.app 10000 0 /data/user/0/com.other.app default none".into();
-        assert_eq!(
-            resolve_presence(
-                Ok(text),
-                Ok(true),
-                || Ok(false),
-                |_, _| panic!("registry positive")
-            )
-            .availability,
-            SceneAvailability::Available
-        );
     }
 }

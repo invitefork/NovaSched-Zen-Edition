@@ -6,18 +6,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::app_modes::{self, AppModes};
+use crate::automatic::{Automatic, Classification, Classifier};
 use crate::config::Config;
 use crate::event_loop::{EventLoop, WakeReason};
-use crate::scheduler::CpuctlLive;
 use crate::ffi;
 use crate::logging::Logger;
-use crate::options::Options;
 use crate::scene;
+use crate::scheduler::CpuctlLive;
 use crate::scheduler::{self, Scheduler};
 use crate::snapshot::Snapshot;
 use crate::util::{
-    self, Result, APP_MODES_PATH, CONFIG_PATH, MODE_PATH, OPTIONS_PATH, SCENE_REQUEST_PATH,
-    STATE_DIR,
+    self, Result, APP_MODES_PATH, CONFIG_PATH, MODE_PATH, SCENE_REQUEST_PATH, STATE_DIR,
 };
 use crate::websocket::{self, RuntimeState, WebState};
 use crate::{lifecycle, process_identity};
@@ -96,20 +95,13 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         Ok(value) => value,
         Err(error) => return startup_fail(&logger, state_dir, "初始化应用规则", error),
     };
+    let automatic = match Automatic::initialize(Path::new(util::AUTO_POLICY_PATH)) {
+        Ok(value) => value,
+        Err(error) => return startup_fail(&logger, state_dir, "初始化自动调度", error),
+    };
     let config = match Config::load(Path::new(CONFIG_PATH)) {
         Ok(value) => value,
         Err(error) => return startup_fail(&logger, state_dir, "读取配置", error),
-    };
-    let options = match Options::initialize(
-        config.functions.extreme_powersave.enabled_by_default,
-        config
-            .functions
-            .smooth_powersave
-            .as_ref()
-            .is_some_and(|v| v.limits.enabled_by_default),
-    ) {
-        Ok(value) => value,
-        Err(error) => return startup_fail(&logger, state_dir, "初始化选项", error),
     };
     logger.set_level(&config.meta.loglevel);
     let snapshot = match Snapshot::load(state_dir, logger.clone()) {
@@ -144,6 +136,8 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
             .clone()
             .or_else(app_modes::read_mode_file)
             .unwrap_or_else(|| app_modes.default_mode())
+    } else if automatic.enabled() {
+        "powersave".to_string()
     } else if app_modes::scene_pedestal_active(scene.linked()) {
         "fast".to_string()
     } else {
@@ -162,8 +156,6 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         Ok(value) => value,
         Err(error) => return startup_fail(&logger, state_dir, "内核能力适配", error),
     };
-    scheduler.set_extreme_powersave(options.extreme_powersave());
-    scheduler.set_smooth_powersave(options.smooth_powersave());
     // A failed first dispatch must not kill the daemon. Vendor frequency
     // managers race the first ceiling write at boot, and exiting here turned
     // one rejected write into a dead module once the supervisor gave up.
@@ -187,12 +179,22 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
     }
 
     let runtime = RuntimeState::default();
-    runtime.set_profile(
-        selected_soc,
-        scheduler.supports_extreme(),
-        scheduler.supports_smooth(),
+    runtime.set_profile(selected_soc);
+    // Scene N1 ships FAS (fas-rs) as its own runtime; the dispatcher follows
+    // mode switches through its well-known node whenever the boot exposes it.
+    let fas_available = Path::new("/dev/fas_rs/mode").exists();
+    runtime.set_fas_available(fas_available);
+    if fas_available {
+        logger.info("已检测到 Scene FAS（fas-rs），档位切换将同步写入 /dev/fas_rs/mode");
+    }
+    runtime.set_automatic_active(
+        automatic.enabled() && !scene.controls_locked() && last_apply_error.is_empty(),
     );
     runtime.set_power_profile(scheduler.current_power_profile());
+    runtime.set_classification(&Classification {
+        kind: crate::automatic::AppKind::Daily,
+        source: "idle",
+    });
     runtime.set(
         "",
         scheduler.current_mode(),
@@ -204,7 +206,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
     let web_stop = Arc::new(AtomicBool::new(false));
     let web_state = WebState {
         app_modes: app_modes.clone(),
-        options: options.clone(),
+        automatic: automatic.clone(),
         runtime: runtime.clone(),
         revision: revision.clone(),
     };
@@ -227,7 +229,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
     // Touch-driven transient boost: input thread applies a short uclamp.min
     // pulse on activity and expires back to the dispatcher baseline. Skipped
     // while a foreign scheduler owns the nodes (allowed flag per tick).
-    let _input_thread = if input_boost_cfg.enabled && !scene.controls_locked() {
+    let input_thread = if input_boost_cfg.enabled {
         let node = PathBuf::from("/dev/cpuctl/top-app/cpu.uclamp.min");
         let stock = snapshot
             .original_value(&node)
@@ -260,6 +262,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
     }
 
     let mut monitor = ForegroundMonitor::default();
+    let mut classifier = Classifier::default();
     let mut stamps = FileStamps::new();
     let mut watcher = EventLoop::new(&watch_paths());
     logger.info(watcher.describe());
@@ -283,9 +286,9 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         }
         let config_changed = stamps.changed(Path::new(CONFIG_PATH));
         let rules_changed = stamps.changed(Path::new(APP_MODES_PATH));
+        let automatic_changed = stamps.changed(Path::new(util::AUTO_POLICY_PATH));
         let mode_changed = stamps.changed(Path::new(MODE_PATH));
         let scene_request_changed = stamps.changed(Path::new(SCENE_REQUEST_PATH));
-        let options_changed = stamps.changed(Path::new(OPTIONS_PATH));
         let scene_files_changed = scene::watched_paths().iter().fold(false, |changed, path| {
             stamps.changed(Path::new(path)) || changed
         });
@@ -294,17 +297,21 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
             scene::invalidate_presence();
             scene_probe_at = Instant::now() + scene::PRESENCE_INTERVAL;
         }
+        if scene_files_changed || forced {
+            classifier.invalidate();
+        }
+        if automatic_changed || forced {
+            if let Err(error) = automatic.reload() {
+                logger.error(format!("自动调度偏好无效，保留上次偏好: {error}"));
+            }
+        }
         let mut scene_changed = scene_files_changed;
 
         if forced || config_changed {
             match Config::load(Path::new(CONFIG_PATH)) {
                 Ok(config) => match scheduler.replace_config(config) {
                     Ok(()) => {
-                        runtime.set_profile(
-                            selected_soc,
-                            scheduler.supports_extreme(),
-                            scheduler.supports_smooth(),
-                        );
+                        runtime.set_profile(selected_soc);
                         logger.info("config.json 已重新载入");
                     }
                     Err(error) => {
@@ -379,15 +386,6 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
             }
         }
 
-        if options_changed {
-            match options.reload() {
-                Ok(true) => logger.info("options.txt 已重新载入"),
-                Ok(false) => {}
-                Err(error) => logger.warn(format!("options.txt 无效，保留当前选项: {error}")),
-            }
-        }
-        let option_changed = scheduler.set_extreme_powersave(options.extreme_powersave());
-        let smooth_changed = scheduler.set_smooth_powersave(options.smooth_powersave());
         // The input-boost thread pulses only while no foreign scheduler owns
         // the nodes.
         if let Ok(mut state) = cpuctl_live.inner.lock() {
@@ -399,15 +397,26 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
             revision.fetch_add(1, Ordering::Relaxed);
         }
 
+        let automatic_enabled = automatic.enabled();
         let foreground = monitor.detect(
             &app_modes,
             scheduler.ignored_packages(),
-            forced || config_changed || rules_changed || scene_changed,
+            forced || config_changed || rules_changed || scene_changed || automatic_changed,
+            automatic_enabled && !scene.controls_locked(),
         );
         let package = foreground
             .as_deref()
             .unwrap_or(&monitor.current)
             .to_string();
+        let classification = if automatic_enabled && monitor.activity.is_none() {
+            Classification {
+                kind: crate::automatic::AppKind::Unknown,
+                source: "foreground_unknown",
+            }
+        } else {
+            classifier.classify(&package, &automatic)
+        };
+        runtime.set_classification(&classification);
         let (selected, explicit) = if scene.controls_locked() {
             let retained = if app_modes::supported(scheduler.current_mode()) {
                 scheduler.current_mode().to_string()
@@ -422,6 +431,13 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
                     .unwrap_or(retained),
                 false,
             )
+        } else if automatic_enabled {
+            // Neither mode.txt, pedestal nor a manual daily-app rule can keep
+            // fast selected after the foreground game ends.
+            (
+                classification.kind.mode().to_string(),
+                classification.kind == crate::automatic::AppKind::Game,
+            )
         } else {
             let explicit = app_modes.has_rule(&package);
             let configured = app_modes.resolve(&package);
@@ -434,7 +450,11 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
                 configured,
                 leaving_explicit,
                 app_modes.default_mode(),
-                app_modes::read_mode_file(),
+                if automatic_changed {
+                    None
+                } else {
+                    app_modes::read_mode_file()
+                },
             );
             (selected, explicit && !pedestal)
         };
@@ -446,15 +466,15 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         let force_apply = forced
             || config_changed
             || rules_changed
+            || automatic_changed
             || mode_changed
             || scene_request_changed
-            || scene_changed
-            || option_changed
-            || smooth_changed;
+            || scene_changed;
         if scene.controls_locked() {
             suspended = true;
             scheduler.clear_pending();
             runtime.set(&package, "", scene.controller(), true, false);
+            runtime.set_automatic_active(false);
             runtime.tick("suspended", "其它 Scene 调度器已接管，NovaSched 暂停下发");
         } else if Instant::now() >= retry_at || force_apply {
             let mut result = if suspended {
@@ -492,6 +512,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
             } else {
                 suspended = false;
                 last_apply_error.clear();
+                runtime.set_automatic_active(automatic_enabled);
                 if let Err(error) = app_modes.write_current_mode(scheduler.current_mode()) {
                     logger.error(format!("写入 mode.txt 失败: {error}"));
                     last_apply_error = error;
@@ -540,13 +561,15 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
             scheduler.current_power_profile()
         });
         let status = format!(
-            "pid={}\nmode={}\npackage={}\ncontroller={}\nscene_linked={}\nscene_locked={}\nscene_mode={}\nsnapshot_items={}\npower_profile={}\n",
+            "pid={}\nmode={}\npackage={}\ncontroller={}\nscene_linked={}\nscene_locked={}\nscene_mode={}\nsnapshot_items={}\npower_profile={}\nfasAvailable={}\n",
             util::current_pid(), scheduler.current_mode(), scheduler.current_package(), scene.controller(), scene.linked(), scene.controls_locked(),
             scene.mode.as_deref().unwrap_or(""), snapshot.count(),
-            if scene.controls_locked() { "" } else { scheduler.current_power_profile() }
+            if scene.controls_locked() { "" } else { scheduler.current_power_profile() },
+            fas_available
         );
         let status = format!(
-            "{status}phase={}\nerror={}\n",
+            "{status}automatic_enabled={}\napp_kind={}\nclassification_source={}\nphase={}\nerror={}\n",
+            automatic.enabled(), classification.kind.name(), classification.source,
             if scene.controls_locked() {
                 "suspended"
             } else if last_apply_error.is_empty() {
@@ -570,6 +593,11 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
 
     logger.info("收到停止请求，正在恢复原厂快照");
     web_stop.store(true, Ordering::Relaxed);
+    if let Some(handle) = input_thread {
+        if handle.join().is_err() {
+            logger.error("输入加速线程异常退出");
+        }
+    }
     if let Some(handle) = web_thread {
         if handle.join().is_err() {
             logger.error("WebUI 接入线程异常退出");
@@ -770,6 +798,8 @@ impl Drop for PidCleanup {
 struct ForegroundMonitor {
     pids: BTreeSet<i32>,
     current: String,
+    activity_at: Option<Instant>,
+    activity: Option<String>,
 }
 
 impl ForegroundMonitor {
@@ -778,9 +808,15 @@ impl ForegroundMonitor {
         rules: &AppModes,
         ignored_packages: &BTreeSet<String>,
         refresh: bool,
+        automatic: bool,
     ) -> Option<String> {
         let new_pids = read_top_app_pids();
-        if new_pids == self.pids && !refresh {
+        let activity_due = automatic
+            && self
+                .activity_at
+                .map(|at| at.elapsed() >= Duration::from_secs(2))
+                .unwrap_or(true);
+        if new_pids == self.pids && !refresh && !activity_due {
             return None;
         }
         let added: BTreeSet<i32> = new_pids.difference(&self.pids).copied().collect();
@@ -790,13 +826,33 @@ impl ForegroundMonitor {
             .iter()
             .filter_map(|pid| read_process(*pid).map(|process| (*pid, process)))
             .collect();
-        let Some(found) = select_foreground(
-            &self.current,
-            &processes,
-            &added,
-            ignored_packages,
-            |package| rules.has_rule(package),
-        ) else {
+        if activity_due {
+            self.activity_at = Some(Instant::now());
+            self.activity = util::current_android_user().ok().and_then(|user| {
+                util::query_command_limited(
+                    "/system/bin/dumpsys",
+                    &["activity", "activities"],
+                    Duration::from_millis(750),
+                    262_144,
+                )
+                .ok()
+                .and_then(|text| resumed_package(&text, user))
+            });
+        }
+        let selected = if automatic {
+            // ActivityManager resolves retained top-app processes (PiP,
+            // launchers, overlays). Failed ambiguous scans use powersave.
+            Some(self.activity.clone().unwrap_or_default())
+        } else {
+            select_foreground(
+                &self.current,
+                &processes,
+                &added,
+                ignored_packages,
+                |package| rules.has_rule(package),
+            )
+        };
+        let Some(found) = selected else {
             if !self.current.is_empty() {
                 self.current.clear();
                 return Some(String::new());
@@ -808,6 +864,49 @@ impl ForegroundMonitor {
         }
         self.current = found.clone();
         Some(found)
+    }
+}
+
+/// A top-resumed activity wins over retained/secondary resumed activities.
+/// Sleeping/keyguard summaries represent no interactive application.
+fn resumed_package(text: &str, user: u32) -> Option<String> {
+    let sleeping = text.split_whitespace().any(|field| {
+        matches!(
+            field.trim_end_matches(','),
+            "mSleeping=true" | "mKeyguardShowing=true" | "isKeyguardShowing=true"
+        )
+    });
+    if sleeping {
+        return Some(String::new());
+    }
+    let mut resumed = BTreeSet::new();
+    for line in text.lines() {
+        if !line.contains("ResumedActivity") && !line.contains("resumedActivity") {
+            continue;
+        }
+        if !line.contains("ActivityRecord{") {
+            continue;
+        }
+        let parts: Vec<_> = line.split_whitespace().collect();
+        let marker = format!("u{user}");
+        let package = parts.windows(2).find_map(|pair| {
+            if pair[0] != marker {
+                return None;
+            }
+            let (pkg, _) = pair[1].split_once('/')?;
+            util::valid_package(pkg).then(|| pkg.to_string())
+        });
+        if let Some(package) = package {
+            if line.contains("topResumedActivity") || line.contains("mTopResumedActivity") {
+                return Some(package);
+            }
+            resumed.insert(package);
+        }
+    }
+    if resumed.len() == 1 {
+        resumed.into_iter().next()
+    } else {
+        None
     }
 }
 
@@ -891,9 +990,9 @@ fn watch_paths() -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = [
         CONFIG_PATH,
         APP_MODES_PATH,
+        util::AUTO_POLICY_PATH,
         MODE_PATH,
         SCENE_REQUEST_PATH,
-        OPTIONS_PATH,
         "/dev/cpuset/top-app/cgroup.procs",
         "/dev/cpuset/top-app/tasks",
         "/sys/fs/cgroup/top-app/cgroup.procs",
@@ -997,5 +1096,67 @@ impl FileStamps {
             Some(old) => old != stamp,
             None => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod automatic_foreground_tests {
+    use super::*;
+    use crate::automatic::{AppKind, Classifier};
+    fn activity(package: &str, user: u32) -> String {
+        format!("topResumedActivity=ActivityRecord{{abc u{user} {package}/.Main t3}}\n")
+    }
+    #[test]
+    fn exiting_games_for_home_daily_apps_and_keyguard_always_selects_powersave() {
+        let mut classifier = Classifier::default();
+        let frames = [
+            activity("com.tencent.tmgp.sgame", 0),
+            activity("com.android.launcher3", 0),
+            activity("com.tencent.ig", 0),
+            activity("com.example.chat", 0),
+            "mSleeping=true\n".into(),
+            activity("com.tencent.tmgp.sgame", 0) + "mKeyguardShowing=true\n",
+        ];
+        let modes: Vec<_> = frames
+            .iter()
+            .map(|frame| {
+                let package = resumed_package(frame, 0).unwrap_or_default();
+                // Exact game catalogue does not require a package dump. Other
+                // packages can fail classification without retaining fast.
+                let kind = classifier
+                    .classify_with_for_test(&package, || Err("metadata unavailable".into()));
+                kind.mode()
+            })
+            .collect();
+        assert_eq!(
+            modes,
+            [
+                "fast",
+                "powersave",
+                "fast",
+                "powersave",
+                "powersave",
+                "powersave"
+            ]
+        );
+    }
+    #[test]
+    fn focused_task_outranks_retained_game_and_inactive_user() {
+        let text = "mResumedActivity: ActivityRecord{aa u0 com.tencent.ig/.Main t1}\n".to_string()
+            + &activity("com.android.launcher3", 0)
+            + &activity("com.tencent.ig", 10);
+        assert_eq!(
+            resumed_package(&text, 0),
+            Some("com.android.launcher3".into())
+        );
+        assert_eq!(resumed_package(&text, 10), Some("com.tencent.ig".into()));
+        assert_eq!(resumed_package(&text, 11), None);
+    }
+    #[test]
+    fn missing_or_ambiguous_activity_output_does_not_invent_a_game() {
+        let text = "mResumedActivity: ActivityRecord{aa u0 com.tencent.ig/.Main t1}\nmResumedActivity: ActivityRecord{bb u0 com.example.chat/.Main t2}";
+        assert_eq!(resumed_package(text, 0), None);
+        assert_eq!(resumed_package("Error: service unavailable", 0), None);
+        assert_eq!(AppKind::Unknown.mode(), "powersave");
     }
 }

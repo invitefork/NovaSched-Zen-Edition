@@ -1,4 +1,11 @@
-/* Optional desktop rendering check. This uses mock state, never a phone session. */
+/* Optional desktop rendering check for the liquid-glass WebUI.
+ *
+ * The v2.2.0 UI renders everything on one WebGL2 canvas, so instead of DOM
+ * snapshots this check loads the page in headless Chromium, fails on any
+ * page/console error, exercises the engine debug hook, and captures one
+ * screenshot per width. Mock state only; it never opens a phone session.
+ * Requires CHROME to point at a Chromium/Edge binary.
+ */
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
@@ -13,29 +20,39 @@ async function main() {
     const pathname = new URL(request.url, 'http://localhost').pathname;
     const filename = path.resolve(web, '.' + (pathname === '/' ? '/index.html' : pathname));
     if (!filename.startsWith(web + path.sep)) { response.writeHead(403).end(); return; }
-    const type = {'.html':'text/html','.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml'}[path.extname(filename)];
-    try { response.setHeader('Content-Type',type || 'application/octet-stream'); response.end(fs.readFileSync(filename)); }
+    const type = {'.html':'text/html'}[path.extname(filename)] || 'application/octet-stream';
+    try { response.setHeader('Content-Type',type); response.end(fs.readFileSync(filename)); }
     catch { response.writeHead(404).end(); }
   });
   await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
   let browser;
   try {
-    browser = await chromium.launch({executablePath:process.env.CHROME,headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
+    browser = await chromium.launch({executablePath:process.env.CHROME,headless:true,
+      args:['--no-sandbox','--disable-dev-shm-usage','--use-gl=swiftshader','--enable-unsafe-swiftshader']});
     for (const width of [320,393,768]) {
       const page = await browser.newPage({viewport:{width,height:852},deviceScaleFactor:1});
+      const problems = [];
+      page.on('pageerror', error => problems.push(`pageerror: ${error.message}`));
+      page.on('console', message => { if (message.type() === 'error') problems.push(`console: ${message.text()}`); });
       await page.goto(`http://127.0.0.1:${server.address().port}/`);
-      for (const theme of ['light','dark']) {
-        await page.evaluate(theme => document.documentElement.dataset.theme=theme,theme);
-        for (const section of ['home','apps','logs','settings']) {
-          await page.locator(`.nav-item[data-page=${section}]`).click();
-          await page.screenshot({path:path.join(output,`${width}-${theme}-${section}.png`),fullPage:true});
-          const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
-          if (overflow) throw new Error(`Horizontal overflow: ${width} ${theme} ${section}`);
-        }
-      }
+      await page.waitForTimeout(1500);
+      const state = await page.evaluate(() => {
+        const canvas = document.querySelector('#cv');
+        if (!canvas) throw new Error('liquid glass canvas missing');
+        if (!window.__ytblDebug) throw new Error('engine debug hook missing');
+        if (document.querySelector('#fallback').style.display === 'flex')
+          throw new Error('WebGL2 fallback engaged: ' + document.querySelector('#fallback').textContent);
+        return window.__ytblDebug();
+      });
+      if (typeof state.dialogVisible !== 'boolean') throw new Error(`debug hook shape changed: ${JSON.stringify(state)}`);
+      // Connection probes fail on a desktop host; page must stay honest, not crash.
+      await page.screenshot({path:path.join(output,`glass-${width}.png`)});
+      const fatal = problems.filter(text => !/WebSocket|net::|Failed to (load|fetch)|favicon/.test(text));
+      if (fatal.length) throw new Error(`${width}px: ${fatal.join('; ')}`);
       await page.close();
+      console.log(`ok ${width}px — canvas live, no JS errors`);
     }
-    console.log('PASS: desktop offline rendering at 320/393/768px; no horizontal overflow');
+    console.log('PASS: liquid-glass WebUI renders headlessly at 320/393/768px');
   } finally {
     await browser?.close();
     await new Promise(resolve => server.close(resolve));

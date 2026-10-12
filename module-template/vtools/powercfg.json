@@ -1,11 +1,12 @@
 {
   "name": "NovaSched Zen Edition",
   "author": "ZenJooo",
-  "version": "v1.5.1",
-  "versionCode": 237,
+  "version": "v2.2.0",
+  "versionCode": 320,
   "features": {
     "strict": true,
-    "pedestal": true
+    "pedestal": true,
+    "fas": true
   },
   "module": "NovaSched_Zen_Edition",
   "state": "/data/adb/novasched/mode.txt",

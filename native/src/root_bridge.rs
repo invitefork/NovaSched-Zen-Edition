@@ -72,10 +72,7 @@ fn parse_request(text: &str) -> Result<Request> {
 
 fn validate_message(endpoint: &str, message: &str) -> Result<()> {
     let valid = match endpoint {
-        "modes" => {
-            app_modes::supported(message)
-                || ["smooth\t0", "smooth\t1", "extreme\t0", "extreme\t1"].contains(&message)
-        }
+        "modes" => app_modes::supported(message) || matches!(message, "auto\ton" | "auto\toff"),
         "apps" => {
             message
                 .strip_prefix("set\t")
@@ -86,6 +83,12 @@ fn validate_message(endpoint: &str, message: &str) -> Result<()> {
                 || message
                     .strip_prefix("delete\t")
                     .is_some_and(|package| package != "*" && util::valid_package(package))
+                || message
+                    .strip_prefix("classify\t")
+                    .and_then(|s| s.split_once('\t'))
+                    .is_some_and(|(package, kind)| {
+                        crate::automatic::valid_classification(package, kind)
+                    })
         }
         _ => false,
     };
@@ -226,6 +229,20 @@ mod tests {
     fn fixed_rpc_surface_rejects_paths_commands_and_unknown_fields() {
         assert!(parse_request(r#"{"endpoint":"snapshot","logs":true,"cursor":"12:34"}"#).is_ok());
         assert!(parse_request(r#"{"endpoint":"modes","message":"fast"}"#).is_ok());
+        for command in ["auto\ton", "auto\toff"] {
+            assert!(validate_message("modes", command).is_ok());
+        }
+        assert!(validate_message("apps", "classify\tcom.example.game\tgame").is_ok());
+        assert!(validate_message("apps", "classify\tcom.example.game\tdaily").is_ok());
+        assert!(validate_message("apps", "classify\tcom.example.game\tauto").is_ok());
+        for command in [
+            "classify\t*\tgame",
+            "classify\tcom.example;reboot\tgame",
+            "classify\tcom.example.app\tfast",
+            "classify\tcom.example.app:worker\tgame",
+        ] {
+            assert!(validate_message("apps", command).is_err());
+        }
         assert!(
             parse_request(r#"{"endpoint":"apps","message":"set\torg.example.game\tfast"}"#).is_ok()
         );

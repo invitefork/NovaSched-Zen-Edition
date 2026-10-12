@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::config::{Config, ExtremePowerSave, ModeProfile};
+use crate::config::{Config, ModeProfile};
 use crate::hardware::{self, Hardware};
 use crate::logging::Logger;
 use crate::snapshot::Snapshot;
@@ -41,9 +41,6 @@ pub struct Scheduler {
     current_mode: String,
     current_package: String,
     last_explicit: bool,
-    extreme_powersave: bool,
-    smooth_powersave: bool,
-    current_power_kind: PowerSaveKind,
     hardware: Hardware,
     pending_note: String,
     /// Ceilings the kernel or a vendor service refused; re-written every tick
@@ -51,23 +48,8 @@ pub struct Scheduler {
     pending_enforcement: Vec<(PathBuf, String)>,
     cpuctl_live: Arc<CpuctlLive>,
     open_drift: Option<Vec<String>>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PowerSaveKind {
-    Standard,
-    Extreme,
-    Smooth,
-}
-
-impl PowerSaveKind {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Standard => "standard",
-            Self::Extreme => "extreme",
-            Self::Smooth => "smooth",
-        }
-    }
+    /// Last mode pushed to Scene N1's FAS node, for change-only logging.
+    fas_mode: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -117,14 +99,12 @@ impl Scheduler {
             current_mode: String::new(),
             current_package: String::new(),
             last_explicit: false,
-            extreme_powersave: false,
-            smooth_powersave: false,
-            current_power_kind: PowerSaveKind::Standard,
             hardware,
             pending_note: String::new(),
             pending_enforcement: Vec::new(),
             cpuctl_live,
             open_drift: None,
+            fas_mode: None,
         })
     }
 
@@ -139,20 +119,20 @@ impl Scheduler {
                 != config.modes.values().any(|m| !m.online[cpu])
         });
         if old.cpuset != new.cpuset
+            || old.cpuctl != new.cpuctl
+            || old.input_boost != new.input_boost
             || old.scheduler != new.scheduler
             || old.perf_service_lock != new.perf_service_lock
             || old.disable_gpu_boost != new.disable_gpu_boost
             || hotplug_changed
         {
             return Err(
-                "CPUSet、CFS、GPU、性能服务或热插拔控制范围发生变化，请重启模块；当前运行配置保留"
+                "CPUSet、uclamp、输入加速、CFS、GPU、性能服务或热插拔控制范围发生变化，请重启模块；当前运行配置保留"
                     .into(),
             );
         }
         self.logger.set_level(&config.meta.loglevel);
         self.config = config;
-        self.extreme_powersave &= self.supports_extreme();
-        self.smooth_powersave &= self.supports_smooth();
         Ok(())
     }
 
@@ -160,39 +140,15 @@ impl Scheduler {
         &self.config.functions.foreground_monitor.ignored_packages
     }
 
-    pub fn set_extreme_powersave(&mut self, enabled: bool) -> bool {
-        let enabled = enabled && self.supports_extreme();
-        let changed = self.extreme_powersave != enabled;
-        self.extreme_powersave = enabled;
-        changed
-    }
-
     pub fn current_mode(&self) -> &str {
         &self.current_mode
     }
-    pub fn set_smooth_powersave(&mut self, enabled: bool) -> bool {
-        let enabled = enabled && self.supports_smooth();
-        let changed = self.smooth_powersave != enabled;
-        self.smooth_powersave = enabled;
-        changed
-    }
     pub fn current_power_profile(&self) -> &str {
         if self.current_mode == "powersave" {
-            self.current_power_kind.name()
+            "standard"
         } else {
             ""
         }
-    }
-    pub fn supports_extreme(&self) -> bool {
-        self.config
-            .functions
-            .extreme_powersave
-            .max_frequencies
-            .iter()
-            .any(|value| value != "0")
-    }
-    pub fn supports_smooth(&self) -> bool {
-        self.config.functions.smooth_powersave.is_some()
     }
     pub fn current_package(&self) -> &str {
         &self.current_package
@@ -250,27 +206,25 @@ impl Scheduler {
         explicit: bool,
         preserve_lower_caps: bool,
     ) -> Result<()> {
-        if !force && package == self.current_package && mode == self.current_mode {
+        if !force
+            && package == self.current_package
+            && mode == self.current_mode
+            && explicit == self.last_explicit
+        {
             return Ok(());
         }
-        let (mut profile, power_kind) = prepare_profile(
-            &self.config,
-            mode,
-            self.extreme_powersave,
-            self.smooth_powersave,
-        )?;
+        let mut profile = self.config.profile(mode)?.clone();
         let package_changed = package != self.current_package;
         let mode_changed = mode != self.current_mode;
         let boost = launch_boost
             && package_changed
             && !package.is_empty()
-            && self.config.functions.launch_boost.enable
-            && power_kind == PowerSaveKind::Standard;
+            && self.config.functions.launch_boost.enable;
 
         if !force
             && !mode_changed
             && !self.current_mode.is_empty()
-            && power_kind == self.current_power_kind
+            && explicit == self.last_explicit
             && !boost
         {
             self.current_package = package.to_string();
@@ -278,7 +232,7 @@ impl Scheduler {
             return Ok(());
         }
 
-        let expected = self.mode_controls(mode, explicit, &profile, power_kind)?;
+        let expected = self.mode_controls(mode, explicit, &profile)?;
         if preserve_lower_caps {
             for cluster in 0..4 {
                 let policy = self.config.policy[cluster];
@@ -316,9 +270,9 @@ impl Scheduler {
         self.apply_frequency(&profile)?;
         self.apply_sched_params(&profile)?;
         self.apply_online(&profile)?;
-        self.apply_mode_cpuset(mode, explicit, power_kind)?;
+        self.apply_mode_cpuset(mode, explicit)?;
         self.apply_mode_cpuctl(mode, explicit)?;
-        self.apply_mode_power_limits(power_kind)?;
+        self.apply_mode_uclamp()?;
         let drift = mismatched_controls(&expected)?;
         // The per-cluster readbacks and this final sweep are separate reads:
         // a vendor service rewriting a ceiling in between used to fail the
@@ -327,7 +281,8 @@ impl Scheduler {
         // non-frequency drift stay hard errors.
         let mut hard = Vec::new();
         for item in drift {
-            let ceiling = item.path.file_name().and_then(|v| v.to_str()) == Some("scaling_max_freq");
+            let ceiling =
+                item.path.file_name().and_then(|v| v.to_str()) == Some("scaling_max_freq");
             if ceiling {
                 if !self
                     .pending_enforcement
@@ -348,17 +303,48 @@ impl Scheduler {
         self.open_drift = None;
         self.expected_controls = expected;
         self.current_mode = mode.to_string();
-        self.current_power_kind = power_kind;
         self.current_package = package.to_string();
         self.last_explicit = explicit;
+        self.apply_fas_mode(mode);
         if package_changed || mode_changed || force {
             self.logger.info(format!("情景模式: {mode} 已启用"));
-            if mode == "powersave" {
-                self.logger
-                    .info(format!("省电子策略: {}", power_kind.name()));
-            }
         }
         Ok(())
+    }
+
+    /// Drive Scene N1's FAS (fas-rs) to follow the dispatched mode. NovaSched
+    /// never implements frame-aware scheduling itself — it writes the four
+    /// mode names to Scene's well-known node so the bundled FAS engine (its
+    /// own margin/温控配置) tracks 档位切换, whether the switch came from the
+    /// WebUI, Scene, or automatic scheduling. The node is foreign runtime
+    /// state: never captured for restore, written best-effort without
+    /// failing the dispatch, and skipped entirely while a foreign scheduler
+    /// owns this module's controls (apply_inner does not run then).
+    fn apply_fas_mode(&mut self, mode: &str) {
+        if !matches!(mode, "powersave" | "balance" | "performance" | "fast") {
+            return;
+        }
+        let path = self.node("/dev/fas_rs/mode");
+        if !path.exists() {
+            return;
+        }
+        if let Ok(current) = util::read_trimmed(&path) {
+            if current == mode && self.fas_mode.as_deref() == Some(mode) {
+                return;
+            }
+        }
+        match util::write_node(&path, mode) {
+            Ok(()) => {
+                if self.fas_mode.as_deref() != Some(mode) {
+                    self.logger
+                        .info(format!("FAS 模式已跟随档位（Scene N1）: {mode}"));
+                }
+                self.fas_mode = Some(mode.to_string());
+            }
+            Err(error) => self
+                .logger
+                .debug(format!("FAS 模式节点写入失败，保持 FAS 当前模式: {error}")),
+        }
     }
 
     /// The daemon calls this on a separate 60-second deadline. A healthy
@@ -407,7 +393,11 @@ impl Scheduler {
         } else {
             self.logger.warn(format!(
                 "部分节点仍未生效，持续重试: {}",
-                remaining.iter().map(|item| item.describe()).collect::<Vec<_>>().join("；")
+                remaining
+                    .iter()
+                    .map(|item| item.describe())
+                    .collect::<Vec<_>>()
+                    .join("；")
             ));
             Some(remaining.iter().map(|item| item.describe()).collect())
         };
@@ -430,10 +420,8 @@ impl Scheduler {
                 resolved = true;
             } else {
                 if let Err(error) = outcome {
-                    self.logger.debug(format!(
-                        "重申上限暂未写入: {} ({error})",
-                        path.display()
-                    ));
+                    self.logger
+                        .debug(format!("重申上限暂未写入: {} ({error})", path.display()));
                 }
                 still.push((path, value));
             }
@@ -478,8 +466,9 @@ impl Scheduler {
             .join("；");
         if self.pending_note != note {
             self.pending_note = note.clone();
-            self.logger
-                .info(format!("部分频率上限被系统服务占用，守护将每 2 秒自动重写直至生效: {note}"));
+            self.logger.info(format!(
+                "部分频率上限被系统服务占用，守护将每 2 秒自动重写直至生效: {note}"
+            ));
         }
     }
 
@@ -503,7 +492,6 @@ impl Scheduler {
         mode: &str,
         explicit: bool,
         profile: &ModeProfile,
-        kind: PowerSaveKind,
     ) -> Result<Vec<ExpectedControl>> {
         let mut controls = Vec::new();
         let mut add = |path: PathBuf, value: String, comparison: ControlKind, required: bool| {
@@ -537,31 +525,24 @@ impl Scheduler {
                 true,
             );
         }
-        let limits = power_limits(&self.config, kind);
         let cpuset = &self.config.functions.cpuset;
         // Must mirror apply_mode_cpuset's precedence: the per-app rule (only
-        // while an explicitly ruled app is foreground), then power-kind
-        // limits, then the per-mode override, then the static values.
+        // while an explicitly ruled app is foreground), then the per-mode override, then the static values.
         let rule = if explicit {
             cpuset.app_rule.as_ref()
         } else {
             None
         };
-        for (group, normal, cap, mode_override) in [
+        for (group, normal, mode_override) in [
             (
                 "top-app",
                 &cpuset.top_app,
-                limits.and_then(|v| v.cpuset_top_app.as_ref()),
                 cpuset.modes.get(mode).and_then(|o| o.top_app.as_ref()),
             ),
             (
                 "foreground",
                 &cpuset.foreground,
-                limits.and_then(|v| v.cpuset_foreground.as_ref()),
-                cpuset
-                    .modes
-                    .get(mode)
-                    .and_then(|o| o.foreground.as_ref()),
+                cpuset.modes.get(mode).and_then(|o| o.foreground.as_ref()),
             ),
         ] {
             let path = self.cpuset_path(group);
@@ -570,13 +551,7 @@ impl Scheduler {
                     "top-app" => r.top_app.as_ref(),
                     _ => r.foreground.as_ref(),
                 });
-                Some(
-                    rule_value
-                        .or(cap)
-                        .or(mode_override)
-                        .unwrap_or(normal)
-                        .clone(),
-                )
+                Some(rule_value.or(mode_override).unwrap_or(normal).clone())
             } else {
                 self.snapshot.original_value(&path)?
             };
@@ -592,19 +567,6 @@ impl Scheduler {
             let path = self.node(format!("/proc/sys/kernel/{name}"));
             let value = if !sched.enable {
                 self.snapshot.original_value(&path)?
-            } else if name.ends_with("max") {
-                Some(
-                    limits
-                        .and_then(|v| v.util_clamp_max.as_ref())
-                        .unwrap_or(normal)
-                        .clone(),
-                )
-            } else if kind == PowerSaveKind::Smooth {
-                self.config
-                    .functions
-                    .smooth_powersave
-                    .as_ref()
-                    .map(|v| v.util_clamp_min_limit.clone())
             } else {
                 Some(normal.clone())
             };
@@ -656,9 +618,7 @@ impl Scheduler {
         if self.config.functions.cpuctl.enable || self.config.functions.input_boost.enabled {
             for group in ["top-app", "background"] {
                 for field in ["cpu.uclamp.min", "cpu.uclamp.max"] {
-                    paths.insert(
-                        self.node(format!("/dev/cpuctl/{group}/{field}")),
-                    );
+                    paths.insert(self.node(format!("/dev/cpuctl/{group}/{field}")));
                 }
             }
         }
@@ -678,20 +638,7 @@ impl Scheduler {
             }
         }
         let gpu = self.node("/sys/class/kgsl/kgsl-3d0");
-        if self.config.functions.disable_gpu_boost
-            || self
-                .config
-                .functions
-                .extreme_powersave
-                .gpu_max_pwrlevel
-                .is_some()
-            || self
-                .config
-                .functions
-                .smooth_powersave
-                .as_ref()
-                .is_some_and(|v| v.limits.gpu_max_pwrlevel.is_some())
-        {
+        if self.config.functions.disable_gpu_boost {
             paths.insert(gpu.join("max_pwrlevel"));
         }
         if self.config.functions.disable_gpu_boost {
@@ -733,17 +680,15 @@ impl Scheduler {
         Ok(())
     }
 
-    fn apply_mode_cpuset(&mut self, mode: &str, explicit: bool, kind: PowerSaveKind) -> Result<()> {
+    fn apply_mode_cpuset(&mut self, mode: &str, explicit: bool) -> Result<()> {
         let cpuset = &self.config.functions.cpuset;
         if !cpuset.enable {
             // Stock was never captured for a disabled feature and the enable
             // flag cannot change at runtime; nothing to write or audit.
             return Ok(());
         }
-        let limits = power_limits(&self.config, kind);
         // Precedence: the per-app game placement (only while an explicitly
-        // ruled app is foreground), then power-kind limits (extreme/smooth),
-        // then the mode override, then the static values.
+        // ruled app is foreground), then the mode override, then the static values.
         let rule = if explicit {
             cpuset.app_rule.as_ref()
         } else {
@@ -751,12 +696,10 @@ impl Scheduler {
         };
         let top_app = rule
             .and_then(|r| r.top_app.as_deref())
-            .or_else(|| limits.and_then(|v| v.cpuset_top_app.as_deref()))
             .or_else(|| cpuset.modes.get(mode).and_then(|o| o.top_app.as_deref()))
             .unwrap_or(&cpuset.top_app);
         let foreground = rule
             .and_then(|r| r.foreground.as_deref())
-            .or_else(|| limits.and_then(|v| v.cpuset_foreground.as_deref()))
             .or_else(|| cpuset.modes.get(mode).and_then(|o| o.foreground.as_deref()))
             .unwrap_or(&cpuset.foreground);
         for (group, value) in [("top-app", top_app), ("foreground", foreground)] {
@@ -779,54 +722,58 @@ impl Scheduler {
     /// with the input-boost thread for pulse expiry.
     fn apply_mode_cpuctl(&mut self, mode: &str, explicit: bool) -> Result<()> {
         let cpuctl = &self.config.functions.cpuctl;
-        if !cpuctl.enable {
-            return Ok(());
-        }
         let entry = cpuctl.modes.get(mode);
-        let mut top_app_baseline = String::from("0");
-        for (group, knob, field) in [
-            ("top-app", "top_app_min", "min"),
-            ("background", "background_max", "max"),
-        ] {
-            let requested = entry.and_then(|entry| match knob {
-                "top_app_min" => {
-                    if explicit {
-                        entry
-                            .top_app_min_rule
-                            .as_deref()
-                            .or(entry.top_app_min.as_deref())
-                    } else {
-                        entry.top_app_min.as_deref()
+        let mut top_app_baseline = self
+            .snapshot
+            .original_value(&self.node("/dev/cpuctl/top-app/cpu.uclamp.min"))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "0".into());
+        if cpuctl.enable {
+            for (group, knob, field) in [
+                ("top-app", "top_app_min", "min"),
+                ("background", "background_max", "max"),
+            ] {
+                let requested = entry.and_then(|entry| match knob {
+                    "top_app_min" => {
+                        if explicit {
+                            entry
+                                .top_app_min_rule
+                                .as_deref()
+                                .or(entry.top_app_min.as_deref())
+                        } else {
+                            entry.top_app_min.as_deref()
+                        }
                     }
+                    _ => entry.background_max.as_deref(),
+                });
+                let path = self.node(format!("/dev/cpuctl/{group}/cpu.uclamp.{field}"));
+                let stock = if requested.is_none() {
+                    self.snapshot.original_value(&path).ok().flatten()
+                } else {
+                    None
+                };
+                let Some(value) = requested.or(stock.as_deref()) else {
+                    continue;
+                };
+                if group == "top-app" {
+                    top_app_baseline = value.to_string();
                 }
-                _ => entry.background_max.as_deref(),
-            });
-            let path = self.node(format!("/dev/cpuctl/{group}/cpu.uclamp.{field}"));
-            let stock = if requested.is_none() {
-                self.snapshot.original_value(&path).ok().flatten()
-            } else {
-                None
-            };
-            let Some(value) = requested.or(stock.as_deref()) else {
-                continue;
-            };
-            if group == "top-app" {
-                top_app_baseline = value.to_string();
-            }
-            if !path.exists() {
-                continue;
-            }
-            if util::read_trimmed(&path).ok().as_deref() == Some(value.trim()) {
-                continue;
-            }
-            match self.snapshot.write(&path, value.trim()) {
-                Ok(()) => self
-                    .logger
-                    .debug(format!("cpuctl 钳制已写入: {} = {value}", path.display())),
-                Err(error) => self.logger.warn(format!(
-                    "cpuctl 钳制写入失败，保持当前值: {} ({error})",
-                    path.display()
-                )),
+                if !path.exists() {
+                    continue;
+                }
+                if util::read_trimmed(&path).ok().as_deref() == Some(value.trim()) {
+                    continue;
+                }
+                match self.snapshot.write(&path, value.trim()) {
+                    Ok(()) => self
+                        .logger
+                        .debug(format!("cpuctl 钳制已写入: {} = {value}", path.display())),
+                    Err(error) => self.logger.warn(format!(
+                        "cpuctl 钳制写入失败，保持当前值: {} ({error})",
+                        path.display()
+                    )),
+                }
             }
         }
         if let Ok(mut state) = self.cpuctl_live.inner.lock() {
@@ -859,24 +806,12 @@ impl Scheduler {
         Ok(())
     }
 
-    fn apply_mode_power_limits(&self, kind: PowerSaveKind) -> Result<()> {
-        let limits = power_limits(&self.config, kind);
+    fn apply_mode_uclamp(&self) -> Result<()> {
         let minimum = &self.node("/proc/sys/kernel/sched_util_clamp_min");
         let maximum = &self.node("/proc/sys/kernel/sched_util_clamp_max");
         if self.config.functions.scheduler.enable {
-            let max = limits
-                .and_then(|v| v.util_clamp_max.as_deref())
-                .unwrap_or(&self.config.functions.scheduler.util_clamp_max);
-            let min = if kind == PowerSaveKind::Smooth {
-                self.config
-                    .functions
-                    .smooth_powersave
-                    .as_ref()
-                    .map(|v| v.util_clamp_min_limit.as_str())
-                    .unwrap_or(&self.config.functions.scheduler.util_clamp_min)
-            } else {
-                &self.config.functions.scheduler.util_clamp_min
-            };
+            let min = &self.config.functions.scheduler.util_clamp_min;
+            let max = &self.config.functions.scheduler.util_clamp_max;
             write_uclamp_range(&self.snapshot, minimum, maximum, min, max)?;
         } else {
             let min_stock = self.snapshot.original_value(minimum)?;
@@ -893,50 +828,6 @@ impl Scheduler {
                     None => "1024".into(),
                 };
                 write_uclamp_range(&self.snapshot, minimum, maximum, min.trim(), max.trim())?;
-            }
-        }
-        let base = self.node("/sys/class/kgsl/kgsl-3d0");
-        let path = base.join("max_pwrlevel");
-        if path.exists() {
-            let stock = self.snapshot.original_value(&path)?;
-            let configured_cap = limits.and_then(|v| v.gpu_max_pwrlevel);
-            let target = if limits.is_some() {
-                match configured_cap {
-                    Some(configured) => {
-                        let levels = util::read_trimmed(base.join("num_pwrlevels"))?
-                            .parse::<u32>()
-                            .map_err(|error| format!("KGSL 档位数无效: {error}"))?;
-                        if levels == 0 {
-                            return Err("KGSL 档位数为 0，无法下发省电 GPU 上限".into());
-                        }
-                        Some(configured.min(levels - 1).to_string())
-                    }
-                    None => stock,
-                }
-            } else if self
-                .config
-                .functions
-                .extreme_powersave
-                .gpu_max_pwrlevel
-                .is_some()
-                || self
-                    .config
-                    .functions
-                    .smooth_powersave
-                    .as_ref()
-                    .is_some_and(|v| v.limits.gpu_max_pwrlevel.is_some())
-                || stock.is_some()
-            {
-                if self.config.functions.disable_gpu_boost {
-                    Some("0".into())
-                } else {
-                    stock
-                }
-            } else {
-                None
-            };
-            if let Some(value) = target {
-                write_mode_control(&self.snapshot, &path, value.trim(), ControlKind::Number)?;
             }
         }
         Ok(())
@@ -1008,8 +899,7 @@ impl Scheduler {
                 continue;
             }
             let data = &profile.clusters[cluster];
-            let policy_base =
-                self.node(format!("/sys/devices/system/cpu/cpufreq/policy{policy}"));
+            let policy_base = self.node(format!("/sys/devices/system/cpu/cpufreq/policy{policy}"));
             let base = policy_base.join(&data.governor);
             // Governor knobs accept raw kHz, but percent values resolve against
             // this policy's own maximum and snap to its frequency table — the
@@ -1017,12 +907,7 @@ impl Scheduler {
             let resolved: Vec<(String, String)> = data
                 .sched_params
                 .iter()
-                .map(|(key, value)| {
-                    (
-                        key.clone(),
-                        resolve_param_frequency(value, &policy_base),
-                    )
-                })
+                .map(|(key, value)| (key.clone(), resolve_param_frequency(value, &policy_base)))
                 .collect();
             apply_governor_params(&self.snapshot, &self.logger, &base, &resolved)?;
         }
@@ -1218,88 +1103,6 @@ impl Scheduler {
             }
         }
     }
-}
-
-fn power_limits(config: &Config, kind: PowerSaveKind) -> Option<&ExtremePowerSave> {
-    match kind {
-        PowerSaveKind::Standard => None,
-        PowerSaveKind::Extreme => Some(&config.functions.extreme_powersave),
-        PowerSaveKind::Smooth => config
-            .functions
-            .smooth_powersave
-            .as_ref()
-            .map(|v| &v.limits),
-    }
-}
-
-fn prepare_profile(
-    config: &Config,
-    mode: &str,
-    extreme: bool,
-    smooth: bool,
-) -> Result<(ModeProfile, PowerSaveKind)> {
-    let mut profile = config.profile(mode)?.clone();
-    let kind = if mode != "powersave" {
-        PowerSaveKind::Standard
-    } else if smooth {
-        if config.functions.smooth_powersave.is_none() {
-            return Err("当前配置缺少流畅省电参数".into());
-        }
-        PowerSaveKind::Smooth
-    } else if extreme {
-        PowerSaveKind::Extreme
-    } else {
-        PowerSaveKind::Standard
-    };
-    if let Some(limits) = power_limits(config, kind) {
-        for cluster in 0..4 {
-            let cap = limits.max_frequencies[cluster]
-                .parse::<u64>()
-                .map_err(|e| e.to_string())?;
-            let normal = profile.clusters[cluster]
-                .max_freq
-                .parse::<u64>()
-                .map_err(|e| e.to_string())?;
-            let minimum = profile.clusters[cluster]
-                .min_freq
-                .parse::<u64>()
-                .map_err(|e| e.to_string())?;
-            if cap > 0 {
-                profile.clusters[cluster].max_freq = cap.min(normal).max(minimum).to_string();
-            }
-        }
-    }
-    if kind == PowerSaveKind::Smooth {
-        let smooth = config
-            .functions
-            .smooth_powersave
-            .as_ref()
-            .ok_or_else(|| "缺少流畅省电参数".to_string())?;
-        for cluster in &mut profile.clusters {
-            if smooth.restore_stock_response {
-                // OEM WALT target_loads syntax varies. Restore its captured
-                // table rather than assuming it is a simple percentage.
-                cluster.sched_params.retain(|(key, _)| {
-                    !matches!(
-                        key.as_str(),
-                        "hispeed_freq" | "rtg_boost_freq" | "target_loads"
-                    )
-                });
-            }
-            if let Some((_, value)) = cluster
-                .sched_params
-                .iter_mut()
-                .find(|(key, _)| key == "up_rate_limit_us")
-            {
-                *value = smooth.up_rate_limit_us.clone();
-            } else {
-                cluster
-                    .sched_params
-                    .push(("up_rate_limit_us".into(), smooth.up_rate_limit_us.clone()));
-            }
-        }
-    }
-    Ok((profile, kind))
 }
 
 fn uclamp_max_first(target_min: u64, current_max: u64) -> bool {
@@ -1584,6 +1387,14 @@ pub(crate) fn normalize_frequency(base: &Path, requested: &str, minimum: bool) -
                     .unwrap_or(*values.last().unwrap_or(&target))
                     .to_string();
             }
+            // A ceiling above every listed OPP is a boost frequency the
+            // driver omits from the OPP table. Pass it through unchanged and
+            // let the kernel clamp to the highest OPP it actually accepts —
+            // the ceiling readback comparison tolerates a lower accepted
+            // value. Snapping down here would cap 极速 one OPP short forever.
+            if target > *values.last().unwrap() {
+                return target.to_string();
+            }
             return values
                 .iter()
                 .rev()
@@ -1691,80 +1502,6 @@ mod regression_tests {
 
     fn shipping_config() -> Config {
         crate::profiles::test_config(crate::soc::Soc::Gen3)
-    }
-
-    #[test]
-    fn smooth_is_opt_in_and_other_modes_remain_identical() {
-        let config = shipping_config();
-        assert!(
-            !config
-                .functions
-                .smooth_powersave
-                .as_ref()
-                .expect("smooth config")
-                .limits
-                .enabled_by_default
-        );
-        for mode in ["balance", "performance", "fast"] {
-            let (profile, kind) = prepare_profile(&config, mode, true, true).expect("prepare");
-            assert_eq!(
-                format!("{profile:?}"),
-                format!("{:?}", config.profile(mode).expect("mode"))
-            );
-            assert_eq!(kind, PowerSaveKind::Standard);
-        }
-        let (profile, kind) = prepare_profile(&config, "powersave", true, false).expect("extreme");
-        assert_eq!(kind, PowerSaveKind::Extreme);
-        for cluster in 0..4 {
-            assert_eq!(
-                profile.clusters[cluster].max_freq,
-                config.functions.extreme_powersave.max_frequencies[cluster]
-            );
-            assert_eq!(
-                profile.clusters[cluster].sched_params,
-                config.profile("powersave").expect("mode").clusters[cluster].sched_params
-            );
-        }
-    }
-
-    #[test]
-    fn smooth_responds_faster_without_pinning_minimum_frequency() {
-        let config = shipping_config();
-        let (profile, kind) = prepare_profile(&config, "powersave", true, true).expect("smooth");
-        assert_eq!(kind, PowerSaveKind::Smooth);
-        let limits = power_limits(&config, kind).expect("limits");
-        assert_eq!(limits.cpuset_top_app.as_deref(), None);
-        assert_eq!(limits.util_clamp_max.as_deref(), Some("1024"));
-        assert_eq!(limits.gpu_max_pwrlevel, None);
-        for (index, cluster) in profile.clusters.iter().enumerate() {
-            assert_eq!(cluster.min_freq, "300000");
-            assert!(
-                cluster.max_freq.parse::<u64>().expect("cap")
-                    <= config.profile("powersave").expect("mode").clusters[index]
-                        .max_freq
-                        .parse::<u64>()
-                        .expect("base cap")
-            );
-            assert!(cluster
-                .sched_params
-                .iter()
-                .any(|(key, value)| key == "up_rate_limit_us" && value == "0"));
-            assert!(!cluster.sched_params.iter().any(|(key, _)| matches!(
-                key.as_str(),
-                "hispeed_freq" | "rtg_boost_freq" | "target_loads"
-            )));
-        }
-        let (standard, _) = prepare_profile(&config, "powersave", false, false).expect("standard");
-        assert_eq!(standard.clusters[0].governor, "schedutil");
-        assert!(standard.clusters[0].sched_params.is_empty());
-    }
-
-    #[test]
-    fn missing_smooth_configuration_reports_error_instead_of_silently_uncapping() {
-        let mut config = shipping_config();
-        config.functions.smooth_powersave = None;
-        assert!(prepare_profile(&config, "powersave", true, true).is_err());
-        assert!(prepare_profile(&config, "powersave", true, false).is_ok());
     }
 
     #[test]
@@ -1915,7 +1652,7 @@ mod daemon_policy_tests {
                 .unwrap()
                 .as_nanos();
             let root = std::env::temp_dir().join(format!(
-                "nova-six-{}-{}-{stamp}",
+                "nova-soc-{}-{}-{stamp}",
                 soc.id(),
                 std::process::id()
             ));
@@ -1968,10 +1705,15 @@ mod daemon_policy_tests {
                 evidence: "fake sysfs".into(),
                 policies,
             };
-            let mut scheduler = Scheduler::new(config.clone(), snapshot, logger, hardware).unwrap();
+            let mut scheduler = Scheduler::new(
+                config.clone(),
+                snapshot,
+                logger,
+                hardware,
+                Arc::new(CpuctlLive::default()),
+            )
+            .unwrap();
             scheduler.kernel_root = root.clone();
-            assert!(scheduler.supports_extreme() && scheduler.supports_smooth());
-            assert!(!scheduler.extreme_powersave && !scheduler.smooth_powersave);
             scheduler.initialize("balance").unwrap();
             for mode in crate::config::MODES {
                 // sysfs buffers are not regular files: shorten the fixture buffer
@@ -2092,7 +1834,14 @@ mod daemon_policy_tests {
                 evidence: "fake node tree".into(),
                 policies,
             };
-            let mut scheduler = Scheduler::new(config, snapshot, logger, hardware).unwrap();
+            let mut scheduler = Scheduler::new(
+                config,
+                snapshot,
+                logger,
+                hardware,
+                Arc::new(CpuctlLive::default()),
+            )
+            .unwrap();
             scheduler.kernel_root = root.clone();
             scheduler.initialize("balance").unwrap();
             scheduler
@@ -2157,27 +1906,6 @@ mod daemon_policy_tests {
             Some("1000000")
         );
         assert_eq!(util::read_trimmed(&max).unwrap(), "2000000");
-    }
-
-    #[test]
-    fn optional_extreme_profile_does_not_gain_launch_boost_from_gate_fix() {
-        let mut f = Fixture::new();
-        f.scheduler.config.functions.scheduler.util_clamp_min = "0000".into();
-        f.scheduler
-            .config
-            .functions
-            .extreme_powersave
-            .util_clamp_max = Some("0512".into());
-        f.scheduler.set_extreme_powersave(true);
-        f.scheduler
-            .apply("org.example.a", "powersave", false, true, false)
-            .unwrap();
-        let before = f.count();
-        f.scheduler
-            .apply("org.example.b", "powersave", true, false, false)
-            .unwrap();
-        assert_eq!(f.count(), before);
-        assert_eq!(f.scheduler.current_power_profile(), "extreme");
     }
 
     #[test]
@@ -2478,5 +2206,109 @@ mod daemon_policy_tests {
                 .contains("不能停用"));
             assert_eq!(before, f.count());
         }
+    }
+    #[test]
+    fn same_mode_rule_changes_apply_and_restore_placement_without_launch_boost() {
+        let mut fixture = Fixture::new();
+        fixture.scheduler.config.functions.launch_boost.enable = false;
+        fixture.scheduler.config.functions.cpuset.app_rule = Some(crate::config::CpusetMode {
+            top_app: Some("2-7".into()),
+            foreground: Some("2-7".into()),
+        });
+        fixture
+            .scheduler
+            .apply("org.example.a", "balance", false, false, true)
+            .unwrap();
+        let node = fixture.root.join("dev/cpuset/top-app/cpus");
+        assert_eq!(util::read_trimmed(&node).unwrap(), "2-7");
+        fixture
+            .scheduler
+            .apply("org.example.b", "balance", false, false, false)
+            .unwrap();
+        assert_eq!(util::read_trimmed(&node).unwrap(), "0-7");
+        fixture
+            .scheduler
+            .apply("org.example.b", "balance", false, false, true)
+            .unwrap();
+        assert_eq!(util::read_trimmed(&node).unwrap(), "2-7");
+    }
+
+    #[test]
+    fn automatic_game_exit_lowers_actual_caps_and_restores_cpu_placement() {
+        use crate::automatic::{AppKind, Classifier};
+        let mut fixture = Fixture::new();
+        fixture.scheduler.config.functions.launch_boost.enable = false;
+        fixture.scheduler.config.functions.cpuset.app_rule = Some(crate::config::CpusetMode {
+            top_app: Some("2-7".into()),
+            foreground: Some("2-7".into()),
+        });
+        let mut classifier = Classifier::default();
+        for package in [
+            "com.tencent.tmgp.sgame",
+            "com.android.launcher3",
+            "com.tencent.ig",
+            "com.example.chat",
+            "",
+        ] {
+            let kind =
+                classifier.classify_with_for_test(package, || Err("metadata unavailable".into()));
+            fixture
+                .scheduler
+                .apply(package, kind.mode(), false, false, kind == AppKind::Game)
+                .unwrap();
+            let game = kind == AppKind::Game;
+            for policy in [0, 2, 5, 7] {
+                let node = fixture.root.join(format!(
+                    "sys/devices/system/cpu/cpufreq/policy{policy}/scaling_max_freq"
+                ));
+                assert_eq!(
+                    util::read_trimmed(node).unwrap(),
+                    if game { "2500000" } else { "2000000" }
+                );
+            }
+            assert_eq!(
+                util::read_trimmed(fixture.root.join("dev/cpuset/top-app/cpus")).unwrap(),
+                if game { "2-7" } else { "0-7" }
+            );
+            assert_eq!(fixture.scheduler.current_mode(), kind.mode());
+            assert_eq!(fixture.scheduler.last_explicit(), game);
+        }
+    }
+    #[test]
+    fn live_cpuctl_and_input_configuration_changes_require_a_restart() {
+        let mut fixture = Fixture::new();
+        let mut config = fixture.scheduler.config.clone();
+        config.functions.input_boost.enabled = true;
+        assert!(fixture
+            .scheduler
+            .replace_config(config)
+            .unwrap_err()
+            .contains("重启"));
+        assert!(!fixture.scheduler.config.functions.input_boost.enabled);
+        let mut config = fixture.scheduler.config.clone();
+        config.functions.cpuctl.enable = true;
+        assert!(fixture
+            .scheduler
+            .replace_config(config)
+            .unwrap_err()
+            .contains("重启"));
+        assert!(!fixture.scheduler.config.functions.cpuctl.enable);
+    }
+
+    #[test]
+    fn input_boost_can_use_stock_baseline_without_static_cpuctl_tuning() {
+        let mut fixture = Fixture::new();
+        let path = fixture.root.join("dev/cpuctl/top-app/cpu.uclamp.min");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "12.34").unwrap();
+        fixture.scheduler.snapshot.capture(&path).unwrap();
+        fixture.scheduler.config.functions.cpuctl.enable = false;
+        fixture.scheduler.config.functions.input_boost.enabled = true;
+        fixture.scheduler.apply_mode_cpuctl("fast", true).unwrap();
+        let state = fixture.scheduler.cpuctl_live.inner.lock().unwrap();
+        assert_eq!(state.top_app_min, "12.34");
+        assert_eq!(state.boost_min, "30");
+        assert_eq!(state.duration_ms, 300);
+        assert_eq!(util::read_trimmed(&path).unwrap(), "12.34");
     }
 }

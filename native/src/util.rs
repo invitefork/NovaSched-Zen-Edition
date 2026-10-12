@@ -21,7 +21,7 @@ pub const CONFIG_PATH: &str = "/data/adb/novasched/config.json";
 pub const MODE_PATH: &str = "/data/adb/novasched/mode.txt";
 pub const SCENE_REQUEST_PATH: &str = "/data/adb/novasched/scene-request.txt";
 pub const APP_MODES_PATH: &str = "/data/adb/novasched/app_modes.txt";
-pub const OPTIONS_PATH: &str = "/data/adb/novasched/options.txt";
+pub const AUTO_POLICY_PATH: &str = "/data/adb/novasched/automatic.json";
 
 pub type Result<T> = std::result::Result<T, String>;
 /// The constant is a last-resort fallback, not a root-framework path gate.
@@ -45,6 +45,62 @@ pub fn default_module_dir() -> PathBuf {
     PathBuf::from(MODULE_DIR_DEFAULT)
 }
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+pub fn current_android_user() -> Result<u32> {
+    use std::sync::{Mutex, OnceLock};
+    static USER: OnceLock<Mutex<Option<(Instant, Result<u32>)>>> = OnceLock::new();
+    let cache = USER.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((at, user)) = guard.as_ref() {
+            if at.elapsed() < Duration::from_secs(10) {
+                return user.clone();
+            }
+        }
+    }
+    let result =
+        query_current_user(|program, args| query_command(program, args, Duration::from_secs(1)));
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((Instant::now(), result.clone()));
+    }
+    result
+}
+
+fn query_current_user(mut query: impl FnMut(&str, &[&str]) -> Result<String>) -> Result<u32> {
+    for (program, args) in [
+        ("/system/bin/cmd", vec!["activity", "get-current-user"]),
+        ("/system/bin/am", vec!["get-current-user"]),
+    ] {
+        if let Ok(text) = query(program, &args) {
+            if let Ok(user) = text.trim().parse::<u32>() {
+                return Ok(user);
+            }
+        }
+    }
+    Err("无法查询 Android 当前用户；未假定用户 0".into())
+}
+
+#[cfg(test)]
+mod user_tests {
+    use super::*;
+    #[test]
+    fn current_user_query_is_explicit_and_never_defaults_to_zero() {
+        assert_eq!(query_current_user(|_, _| Ok("10\n".into())), Ok(10));
+        assert!(query_current_user(|_, _| Ok("Error: activity unavailable".into())).is_err());
+        let mut calls = 0;
+        assert_eq!(
+            query_current_user(|_, _| {
+                calls += 1;
+                if calls == 1 {
+                    Err("denied".into())
+                } else {
+                    Ok("0".into())
+                }
+            }),
+            Ok(0)
+        );
+        assert_eq!(calls, 2);
+    }
+}
 
 pub fn create_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(path).map_err(|e| format!("创建目录 {} 失败: {e}", path.display()))
@@ -262,6 +318,18 @@ pub fn run_command(program: &str, args: &[&str]) -> Result<String> {
 /// Small platform queries must not block the scheduling heartbeat indefinitely.
 /// A file avoids pipe backpressure and bounds the amount of captured output.
 pub fn query_command(program: &str, args: &[&str], timeout: Duration) -> Result<String> {
+    query_command_limited(program, args, timeout, 65_536)
+}
+
+pub fn query_command_limited(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+    limit: u64,
+) -> Result<String> {
+    if limit > 1_048_576 {
+        return Err("平台查询限额不能超过 1 MiB".into());
+    }
     let path = std::env::temp_dir().join(format!(
         "novasched-query-{}-{}",
         current_pid(),
@@ -298,9 +366,9 @@ pub fn query_command(program: &str, args: &[&str], timeout: Duration) -> Result<
                 Ok(Some(status)) => {
                     let mut text = String::new();
                     File::open(&path)
-                        .and_then(|f| f.take(65_537).read_to_string(&mut text))
+                        .and_then(|f| f.take(limit + 1).read_to_string(&mut text))
                         .map_err(|e| format!("读取查询输出失败: {e}"))?;
-                    if text.len() > 65_536 {
+                    if text.len() as u64 > limit {
                         return Err("平台查询输出超出限制".into());
                     }
                     if !status.success() {

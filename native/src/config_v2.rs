@@ -93,7 +93,13 @@ fn parse_cpuset_modes(cpuset: &Value) -> Result<BTreeMap<String, CpusetMode>> {
         let foreground = field(value, "foreground")
             .map(|_| cpus(value, "foreground"))
             .transpose()?;
-        modes.insert(name.clone(), CpusetMode { top_app, foreground });
+        modes.insert(
+            name.clone(),
+            CpusetMode {
+                top_app,
+                foreground,
+            },
+        );
     }
     Ok(modes)
 }
@@ -112,11 +118,14 @@ fn parse_cpuset_mode_optional(cpuset: &Value, key: &str) -> Result<Option<Cpuset
     if top_app.is_none() && foreground.is_none() {
         return Err(format!("cpuset.{key} 不能为空"));
     }
-    Ok(Some(CpusetMode { top_app, foreground }))
+    Ok(Some(CpusetMode {
+        top_app,
+        foreground,
+    }))
 }
 
 /// cpu.uclamp values accept "max" or a 0..=100 percent. The strict variant
-/// rejects "max": a max util floor on any group is the reverted power bomb.
+/// rejects the "max" alias for a utilization floor.
 fn clamp_percent_strict(node: &Value, key: &str) -> Result<String> {
     let value = clamp_percent(node, key)?;
     if value == "max" {
@@ -170,32 +179,6 @@ fn parse_cpuctl_modes(cpuctl: &Value) -> Result<BTreeMap<String, CpuctlMode>> {
         );
     }
     Ok(modes)
-}
-
-fn limits(node: &Value) -> Result<ExtremePowerSave> {
-    let gpu = field(node, "gpu_max_pwrlevel")
-        .map(|value| -> Result<u32> {
-            let n = value.as_i64()?;
-            if !(0..=255).contains(&n) {
-                return Err("gpu_max_pwrlevel 必须在 0..255".into());
-            }
-            Ok(n as u32)
-        })
-        .transpose()?;
-    Ok(ExtremePowerSave {
-        enabled_by_default: flag(node, "enabled")?,
-        max_frequencies: frequencies(node, "max")?,
-        cpuset_top_app: field(node, "top_app")
-            .map(|_| cpus(node, "top_app"))
-            .transpose()?,
-        cpuset_foreground: field(node, "foreground")
-            .map(|_| cpus(node, "foreground"))
-            .transpose()?,
-        util_clamp_max: field(node, "uclamp_max")
-            .map(|_| clamp(node, "uclamp_max"))
-            .transpose()?,
-        gpu_max_pwrlevel: gpu,
-    })
 }
 
 pub fn parse(root: &Value) -> Result<Config> {
@@ -268,7 +251,6 @@ pub fn parse(root: &Value) -> Result<Config> {
         }
         ignored_packages.insert(package);
     }
-    let extreme_powersave = limits(features.get("extreme")?)?;
     // cpuctl is optional so older configs keep parsing; absent means the
     // feature stays off until a template that ships it is applied.
     let cpuctl = match field(features, "cpuctl") {
@@ -300,31 +282,6 @@ pub fn parse(root: &Value) -> Result<Config> {
         }
         None => InputBoost::default(),
     };
-    let smooth_powersave = field(features, "smooth")
-        .map(|s| -> Result<SmoothPowerSave> {
-            let limits = limits(s)?;
-            let minimum = clamp(s, "uclamp_min_limit")?;
-            let maximum = limits
-                .util_clamp_max
-                .as_deref()
-                .ok_or("流畅省电缺少 uclamp_max")?;
-            if minimum.parse::<u32>().map_err(|e| e.to_string())?
-                > maximum.parse::<u32>().map_err(|e| e.to_string())?
-            {
-                return Err("流畅省电的 MIN 请求范围超过 MAX 范围".into());
-            }
-            let rate = number(s, "up_rate_limit_us")?;
-            if rate.parse::<u64>().map_err(|e| e.to_string())? > 1000000 {
-                return Err("调速响应间隔超过 1 秒".into());
-            }
-            Ok(SmoothPowerSave {
-                limits,
-                util_clamp_min_limit: minimum,
-                up_rate_limit_us: rate,
-                restore_stock_response: flag(s, "restore_stock_response")?,
-            })
-        })
-        .transpose()?;
     let p = features.get("perf_lock")?;
     let services = strings(p.get("services")?)?;
     if services.len() > 32
@@ -398,8 +355,6 @@ pub fn parse(root: &Value) -> Result<Config> {
             node_watchdog: flag(features, "node_watchdog")?,
             disable_gpu_boost: flag(features, "disable_gpu_boost")?,
             foreground_monitor: ForegroundMonitorConfig { ignored_packages },
-            extreme_powersave,
-            smooth_powersave,
             perf_service_lock: PerfServiceLock {
                 enable: flag(p, "enabled")?,
                 services,
@@ -417,28 +372,6 @@ fn text(value: &str) -> Value {
 fn list<'a>(items: impl IntoIterator<Item = &'a String>) -> Value {
     Value::Array(items.into_iter().map(|v| text(v)).collect())
 }
-fn encode_limits(limits: &ExtremePowerSave) -> Value {
-    let mut out = object([
-        ("enabled", Value::Bool(limits.enabled_by_default)),
-        ("max", list(&limits.max_frequencies)),
-    ]);
-    if let Value::Object(map) = &mut out {
-        for (key, value) in [
-            ("top_app", &limits.cpuset_top_app),
-            ("foreground", &limits.cpuset_foreground),
-            ("uclamp_max", &limits.util_clamp_max),
-        ] {
-            if let Some(value) = value {
-                map.insert(key.into(), text(value));
-            }
-        }
-        if let Some(value) = limits.gpu_max_pwrlevel {
-            map.insert("gpu_max_pwrlevel".into(), Value::Number(value as i64));
-        }
-    }
-    out
-}
-
 pub fn encode(config: &Config, soc: Soc) -> Value {
     let f = &config.functions;
     let c = &f.cpuset;
@@ -487,6 +420,18 @@ pub fn encode(config: &Config, soc: Soc) -> Value {
             );
         }
     }
+    if let Some(rule) = &c.app_rule {
+        let mut entry = BTreeMap::new();
+        if let Some(value) = &rule.top_app {
+            entry.insert("top_app".into(), text(value));
+        }
+        if let Some(value) = &rule.foreground {
+            entry.insert("foreground".into(), text(value));
+        }
+        if let Value::Object(fields) = &mut cpuset {
+            fields.insert("app_rule".into(), Value::Object(entry));
+        }
+    }
     let mut cpuctl_out = object([
         ("enabled", Value::Bool(f.cpuctl.enable)),
         (
@@ -500,6 +445,9 @@ pub fn encode(config: &Config, soc: Soc) -> Value {
                         if let Value::Object(fields) = &mut entry_out {
                             if let Some(value) = &entry.top_app_min {
                                 fields.insert("top_app_min".into(), text(value));
+                            }
+                            if let Some(value) = &entry.top_app_min_rule {
+                                fields.insert("top_app_min_rule".into(), text(value));
                             }
                             if let Some(value) = &entry.background_max {
                                 fields.insert("background_max".into(), text(value));
@@ -516,10 +464,18 @@ pub fn encode(config: &Config, soc: Soc) -> Value {
             map.remove("modes");
         }
     }
-    let mut features = object([
+    let features = object([
         ("node_watchdog", Value::Bool(f.node_watchdog)),
         ("cpuset", cpuset),
         ("cpuctl", cpuctl_out),
+        (
+            "input_boost",
+            object([
+                ("enabled", Value::Bool(f.input_boost.enabled)),
+                ("top_app_min", text(&f.input_boost.top_app_min)),
+                ("duration_ms", text(&f.input_boost.duration_ms.to_string())),
+            ]),
+        ),
         (
             "launch_boost",
             object([
@@ -537,7 +493,6 @@ pub fn encode(config: &Config, soc: Soc) -> Value {
             "foreground_ignore",
             list(&f.foreground_monitor.ignored_packages),
         ),
-        ("extreme", encode_limits(&f.extreme_powersave)),
         (
             "perf_lock",
             object([
@@ -546,20 +501,6 @@ pub fn encode(config: &Config, soc: Soc) -> Value {
             ]),
         ),
     ]);
-    if let Some(s) = &f.smooth_powersave {
-        let mut smooth = encode_limits(&s.limits);
-        if let Value::Object(map) = &mut smooth {
-            map.insert("uclamp_min_limit".into(), text(&s.util_clamp_min_limit));
-            map.insert("up_rate_limit_us".into(), text(&s.up_rate_limit_us));
-            map.insert(
-                "restore_stock_response".into(),
-                Value::Bool(s.restore_stock_response),
-            );
-        }
-        if let Value::Object(map) = &mut features {
-            map.insert("smooth".into(), smooth);
-        }
-    }
     let modes = Value::Object(
         config
             .modes
@@ -643,10 +584,11 @@ pub fn migrate(root: &Value, config: &Config, soc: Soc) -> Result<Value> {
             // blocks from the template so hand-edits survive the upgrade.
             let template = encode(config, soc);
             if let (Value::Object(map), Value::Object(defaults)) = (&mut out, &template) {
-                if let (Some(Value::Object(features)), Some(Value::Object(default_features))) = (
-                    map.get_mut("features"),
-                    defaults.get("features"),
-                ) {
+                if let (Some(Value::Object(features)), Some(Value::Object(default_features))) =
+                    (map.get_mut("features"), defaults.get("features"))
+                {
+                    features.remove("extreme");
+                    features.remove("smooth");
                     if !features.contains_key("cpuctl") {
                         if let Some(cpuctl) = default_features.get("cpuctl") {
                             features.insert("cpuctl".into(), cpuctl.clone());
@@ -730,35 +672,7 @@ pub fn legacy_fixture(soc: Soc) -> String {
                 .collect(),
         )
     };
-    let old_limits = |l: &ExtremePowerSave| {
-        let mut out = object([
-            ("enable", Value::Bool(l.enabled_by_default)),
-            ("MaxFreq", four(&l.max_frequencies)),
-            (
-                "CpuSet",
-                object([
-                    (
-                        "top_app",
-                        text(l.cpuset_top_app.as_deref().unwrap_or("0-7")),
-                    ),
-                    (
-                        "foreground",
-                        text(l.cpuset_foreground.as_deref().unwrap_or("0-7")),
-                    ),
-                ]),
-            ),
-        ]);
-        if let Value::Object(map) = &mut out {
-            if let Some(v) = &l.util_clamp_max {
-                map.insert("UtilClampMax".into(), text(v));
-            }
-            if let Some(v) = l.gpu_max_pwrlevel {
-                map.insert("GpuMaxPwrLevel".into(), Value::Number(v as i64));
-            }
-        }
-        out
-    };
-    let mut functions = object([
+    let functions = object([
         (
             "NodeWatchdog",
             object([("enable", Value::Bool(f.node_watchdog))]),
@@ -814,7 +728,6 @@ pub fn legacy_fixture(soc: Soc) -> String {
                 list(&f.foreground_monitor.ignored_packages),
             )]),
         ),
-        ("ExtremePowerSave", old_limits(&f.extreme_powersave)),
         (
             "PerfServiceLock",
             object([
@@ -823,18 +736,6 @@ pub fn legacy_fixture(soc: Soc) -> String {
             ]),
         ),
     ]);
-    if let (Some(s), Value::Object(map)) = (&f.smooth_powersave, &mut functions) {
-        let mut smooth = old_limits(&s.limits);
-        if let Value::Object(fields) = &mut smooth {
-            fields.insert("UtilClampMinLimit".into(), text(&s.util_clamp_min_limit));
-            fields.insert("UpRateLimitUs".into(), text(&s.up_rate_limit_us));
-            fields.insert(
-                "RestoreStockResponse".into(),
-                Value::Bool(s.restore_stock_response),
-            );
-        }
-        map.insert("SmoothPowerSave".into(), smooth);
-    }
     let switch = Value::Object(
         config
             .modes
@@ -965,5 +866,32 @@ mod tests {
         for value in ["0%", "70%", "100%", "300000", "0"] {
             assert!(validate_frequency(value).is_ok());
         }
+    }
+    #[test]
+    fn conversion_keeps_per_app_placement_clamps_and_input_boost() {
+        let soc = Soc::Gen3;
+        let mut config = crate::profiles::test_config(soc);
+        config.functions.cpuset.app_rule = Some(CpusetMode {
+            top_app: Some("2-7".into()),
+            foreground: Some("2-7".into()),
+        });
+        config.functions.cpuctl.enable = true;
+        config.functions.cpuctl.modes.insert(
+            "fast".into(),
+            CpuctlMode {
+                top_app_min: Some("0".into()),
+                top_app_min_rule: Some("20".into()),
+                background_max: Some("60".into()),
+            },
+        );
+        config.functions.input_boost = InputBoost {
+            enabled: true,
+            top_app_min: "30".into(),
+            duration_ms: 400,
+        };
+        let after = parse(&encode(&config, soc)).unwrap();
+        assert_eq!(after.functions.cpuset, config.functions.cpuset);
+        assert_eq!(after.functions.cpuctl, config.functions.cpuctl);
+        assert_eq!(after.functions.input_boost, config.functions.input_boost);
     }
 }

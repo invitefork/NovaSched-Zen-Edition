@@ -1,5 +1,5 @@
 //! Read-only SoC admission and physical CPU policy mapping.
-use crate::config::{Config, ExtremePowerSave};
+use crate::config::Config;
 use crate::soc::{self, Soc};
 use crate::util::{self, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,6 +26,8 @@ pub fn detect() -> Result<Hardware> {
     let mut properties: Vec<(String, String)> = [
         "ro.soc.model",
         "ro.soc.manufacturer",
+        "ro.vendor.soc.model",
+        "ro.vendor.mediatek.soc.model",
         "ro.vendor.qti.soc_model",
         "ro.boot.soc_model",
         "ro.board.platform",
@@ -35,6 +37,15 @@ pub fn detect() -> Result<Hardware> {
     .iter()
     .map(|key| ((*key).into(), util::getprop(key)))
     .collect();
+    if let Ok(cpuinfo) = fs::read_to_string("/proc/cpuinfo") {
+        for line in cpuinfo.lines() {
+            if let Some((key, value)) = line.split_once(':') {
+                if key.trim().eq_ignore_ascii_case("Hardware") {
+                    properties.push(("cpuinfo.hardware.soc_model".into(), value.trim().into()));
+                }
+            }
+        }
+    }
     for base in ["/sys/devices/soc0", "/sys/devices/system/soc/soc0"] {
         for name in ["machine", "family", "soc_id"] {
             let path = format!("{base}/{name}");
@@ -105,6 +116,18 @@ pub fn identify_soc(
             } else if id.starts_with("sm") && id.as_bytes().get(2).is_some_and(u8::is_ascii_digit) {
                 negative.push(format!("device-tree={value}"));
             }
+        } else if let Some((vendor, model)) = lower.split_once(',') {
+            if ["mediatek", "xring", "xiaomi"].contains(&vendor) {
+                let found = Soc::from_id(model)
+                    .or_else(|| soc::marketing_model(model))
+                    .or_else(|| (vendor == "xring" && model == "o3").then_some(Soc::XringO3));
+                if let Some(soc) = found {
+                    matches
+                        .entry(soc)
+                        .or_default()
+                        .push(format!("device-tree={value}"));
+                }
+            }
         }
     }
     for (key, value) in properties.iter().filter(|(_, v)| !v.trim().is_empty()) {
@@ -116,6 +139,9 @@ pub fn identify_soc(
         }
         if key.ends_with("soc.model") || key.ends_with("soc_model") {
             let lower = value.trim().to_ascii_lowercase();
+            if let Some(soc) = Soc::from_id(value.trim()).or_else(|| soc::marketing_model(value)) {
+                matches.entry(soc).or_default().push(evidence.clone());
+            }
             for token in lower.split(|c: char| !c.is_ascii_alphanumeric() && c != '-') {
                 if token.starts_with("sm")
                     && token.as_bytes().get(2).is_some_and(u8::is_ascii_digit)
@@ -131,7 +157,10 @@ pub fn identify_soc(
                     }
                 }
             }
-            if lower.contains("snapdragon") {
+            if ["snapdragon", "dimensity", "xring"]
+                .iter()
+                .any(|brand| lower.contains(brand))
+            {
                 let marketing = marketing_identity(value);
                 if let Some(soc) = marketing.as_deref().and_then(soc::marketing_model) {
                     matches.entry(soc).or_default().push(evidence.clone());
@@ -162,7 +191,7 @@ pub fn identify_soc(
         .map(|(soc, e)| (soc, e.join(", ")))
         .ok_or_else(|| {
             format!(
-                "未识别到支持的骁龙处理器（SM8450/SM8475/SM8550/SM8650/SM8750/SM8850）；检测值: {}",
+                "未识别到支持的处理器（骁龙 8 系列、天玑 8350 / 9400+、玄戒 O3）；检测值: {}",
                 properties
                     .iter()
                     .filter(|(_, v)| !v.trim().is_empty())
@@ -178,13 +207,17 @@ fn marketing_identity(value: &str) -> Option<String> {
         .replace('®', "")
         .replace('™', "")
         .replace("(tm)", "");
-    let start = lower.find("snapdragon")?;
+    let brand = ["snapdragon", "dimensity", "xring"]
+        .into_iter()
+        .find(|brand| lower.contains(brand))?;
+    let start = lower.find(brand)?;
     let mut words = lower[start..]
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '+')
         .filter(|v| !v.is_empty());
     let mut selected = vec![words.next()?.to_owned()];
     for word in words {
         if word.starts_with("sm")
+            || word.starts_with("mt") && word.as_bytes().get(2).is_some_and(u8::is_ascii_digit)
             || word.starts_with("rev")
             || ["mobile", "platform", "for", "galaxy"].contains(&word)
         {
@@ -194,11 +227,14 @@ fn marketing_identity(value: &str) -> Option<String> {
     }
     // Family labels without a model are not conflicting chip evidence.
     let specific = selected[0]
-        .strip_prefix("snapdragon")
+        .strip_prefix(brand)
         .is_some_and(|v| v.as_bytes().first().is_some_and(u8::is_ascii_digit))
-        || selected
-            .get(1)
-            .is_some_and(|v| v.as_bytes().first().is_some_and(u8::is_ascii_digit));
+        || selected.get(1).is_some_and(|v| {
+            v.as_bytes().first().is_some_and(u8::is_ascii_digit)
+                || brand == "xring"
+                    && v.starts_with('o')
+                    && v.as_bytes().get(1).is_some_and(u8::is_ascii_digit)
+        });
     if !specific {
         None
     } else {
@@ -290,7 +326,18 @@ fn physical_frequency_range(base: &Path) -> Result<(u64, u64)> {
     };
     if let (Some(min), Some(max)) = (read("cpuinfo_min_freq"), read("cpuinfo_max_freq")) {
         if min <= max {
-            return Ok((min, max));
+            // Qualcomm primes expose a boost OPP above cpuinfo_max_freq
+            // (SM8550: 3187 vs 3200 MHz). Without this, 100% resolves one
+            // OPP short and 极速 can never reach the true silicon maximum.
+            let boost = util::read_trimmed(base.join("scaling_boost_frequencies"))
+                .ok()
+                .and_then(|raw| {
+                    raw.split_whitespace()
+                        .filter_map(|v| v.parse::<u64>().ok())
+                        .filter(|v| *v > 0)
+                        .max()
+                });
+            return Ok((min, boost.map(|b| max.max(b)).unwrap_or(max)));
         }
     }
     let mut frequencies: Vec<u64> = util::read_trimmed(base.join("scaling_available_frequencies"))
@@ -350,14 +397,6 @@ fn resolve_cluster(config: &mut Config, cluster: usize, policy: &CpuPolicy) -> R
     }
     config.functions.launch_boost.frequencies[cluster] =
         resolve_frequency(&config.functions.launch_boost.frequencies[cluster], policy)?;
-    config.functions.extreme_powersave.max_frequencies[cluster] = resolve_frequency(
-        &config.functions.extreme_powersave.max_frequencies[cluster],
-        policy,
-    )?;
-    if let Some(s) = config.functions.smooth_powersave.as_mut() {
-        s.limits.max_frequencies[cluster] =
-            resolve_frequency(&s.limits.max_frequencies[cluster], policy)?;
-    }
     Ok(())
 }
 fn select_governor(requested: &str, policy: &CpuPolicy) -> Result<String> {
@@ -470,33 +509,24 @@ impl Hardware {
                     profile.clusters[first].max_freq = tighter(
                         &profile.clusters[first].max_freq,
                         &profile.clusters[cluster].max_freq,
-                        false,
+                        true,
                     )?;
                     let min = tighter(
                         &profile.clusters[first].min_freq,
                         &profile.clusters[cluster].min_freq,
                         false,
                     )?;
-                    profile.clusters[first].min_freq =
-                        tighter(&min, &profile.clusters[first].max_freq, false)?;
+                    profile.clusters[first].min_freq = if profile.clusters[first].max_freq == "0" {
+                        min
+                    } else {
+                        tighter(&min, &profile.clusters[first].max_freq, false)?
+                    };
                 }
                 config.functions.launch_boost.frequencies[first] = tighter(
                     &config.functions.launch_boost.frequencies[first],
                     &config.functions.launch_boost.frequencies[cluster],
                     false,
                 )?;
-                let merge = |limits: &mut ExtremePowerSave| -> Result<()> {
-                    limits.max_frequencies[first] = tighter(
-                        &limits.max_frequencies[first],
-                        &limits.max_frequencies[cluster],
-                        true,
-                    )?;
-                    Ok(())
-                };
-                merge(&mut config.functions.extreme_powersave)?;
-                if let Some(smooth) = config.functions.smooth_powersave.as_mut() {
-                    merge(&mut smooth.limits)?;
-                }
                 changes.push(format!(
                     "c{cluster} 与 c{first} 共用 policy{}，合并下发",
                     config.policy[cluster]
@@ -541,14 +571,6 @@ impl Hardware {
             }
             config.functions.launch_boost.frequencies[free] =
                 original.functions.launch_boost.frequencies[source].clone();
-            config.functions.extreme_powersave.max_frequencies[free] =
-                original.functions.extreme_powersave.max_frequencies[source].clone();
-            if let (Some(smooth), Some(old)) = (
-                config.functions.smooth_powersave.as_mut(),
-                original.functions.smooth_powersave.as_ref(),
-            ) {
-                smooth.limits.max_frequencies[free] = old.limits.max_frequencies[source].clone();
-            }
             resolve_cluster(config, free, policy)?;
             config.policy[free] = policy.id;
             changes.push(format!(
@@ -591,18 +613,13 @@ impl Hardware {
             ] {
                 *raw = convert(raw)?;
             }
-            let limits = |v: &mut ExtremePowerSave| -> Result<()> {
-                for raw in [&mut v.cpuset_top_app, &mut v.cpuset_foreground]
-                    .into_iter()
-                    .flatten()
-                {
+            for placement in c.modes.values_mut().chain(c.app_rule.iter_mut()) {
+                if let Some(raw) = &mut placement.top_app {
                     *raw = convert(raw)?;
                 }
-                Ok(())
-            };
-            limits(&mut config.functions.extreme_powersave)?;
-            if let Some(smooth) = config.functions.smooth_powersave.as_mut() {
-                limits(&mut smooth.limits)?;
+                if let Some(raw) = &mut placement.foreground {
+                    *raw = convert(raw)?;
+                }
             }
             for profile in config.modes.values_mut() {
                 let o = profile.online;
@@ -659,11 +676,12 @@ mod tests {
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../module-template/config/SM8550.json"),
         )
         .unwrap();
+        config.modes.get_mut("fast").unwrap().clusters[1].min_freq = "25%".into();
         hardware.adapt_config(&mut config).unwrap();
         assert_eq!(config.policy, [0, 3, 7, 5]);
         assert_eq!(
             config.profile("powersave").unwrap().clusters[3].max_freq,
-            "1400000"
+            "1100000"
         );
         assert_eq!(
             config.profile("fast").unwrap().clusters[3].min_freq,
@@ -731,7 +749,7 @@ mod tests {
         assert_eq!(select_governor("unavailable", &policy).unwrap(), "walt");
     }
     #[test]
-    fn all_six_reference_layouts_and_split_gen2_policy_keep_original_parameters() {
+    fn all_reference_layouts_and_split_gen2_policy_keep_original_parameters() {
         for soc in crate::soc::SUPPORTED {
             let anchors = soc.anchors();
             let policies = anchors
@@ -771,13 +789,18 @@ mod tests {
             assert!(format!("{config:?}") != before);
             assert_eq!(
                 config.profile("powersave").unwrap().clusters[0].max_freq,
-                "2100000"
+                match soc {
+                    Soc::Gen1 | Soc::Dimensity8350 => "1860000",
+                    Soc::Gen1Plus | Soc::Gen2 | Soc::XringO3 => "1800000",
+                    Soc::Gen3 | Soc::Elite | Soc::Elite5 | Soc::Dimensity9400Plus => "1740000",
+                }
             );
         }
         let mut config = Config::load(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../module-template/config/SM8550.json"),
         )
         .unwrap();
+        config.modes.get_mut("fast").unwrap().clusters[1].min_freq = "25%".into();
         let mut original = config.profile("fast").unwrap().clusters[1].clone();
         original.min_freq = "750000".into();
         original.max_freq = "3000000".into();
@@ -830,8 +853,36 @@ mod tests {
                     })
                     .collect(),
             };
+            config.functions.cpuset.modes.insert(
+                "fast".into(),
+                crate::config::CpusetMode {
+                    top_app: Some("6-7".into()),
+                    foreground: Some("0-5".into()),
+                },
+            );
+            config.functions.cpuset.app_rule = Some(crate::config::CpusetMode {
+                top_app: Some("7".into()),
+                foreground: Some("4-7".into()),
+            });
             hw.adapt_config(&mut config).unwrap();
             assert_eq!(config.policy, [0, 5, -1, -1]);
+            let cpuset = &config.functions.cpuset;
+            assert_eq!(cpuset.modes["fast"].top_app.as_deref(), Some("5,6"));
+            assert_eq!(
+                cpuset.modes["fast"].foreground.as_deref(),
+                Some("0,1,2,3,4")
+            );
+            assert_eq!(
+                cpuset.app_rule.as_ref().unwrap().top_app.as_deref(),
+                Some("6")
+            );
+            assert_eq!(
+                cpuset.app_rule.as_ref().unwrap().foreground.as_deref(),
+                Some("4,5,6")
+            );
+            let before = format!("{config:?}");
+            hw.adapt_config(&mut config).unwrap();
+            assert_eq!(format!("{config:?}"), before);
             assert!(parse_cpu_list(&config.functions.cpuset.top_app)
                 .unwrap()
                 .iter()
@@ -927,7 +978,7 @@ mod tests {
         assert_ne!(before, format!("{config:?}"));
         assert_eq!(
             config.profile("powersave").unwrap().clusters[0].max_freq,
-            "2100000"
+            "1740000"
         );
     }
     #[test]
@@ -946,7 +997,7 @@ mod tests {
             .all(|p| p.clusters[1].governor == "schedutil"));
         assert_eq!(
             config.profile("powersave").expect("mode").clusters[1].max_freq,
-            "2100000"
+            "1440000"
         );
     }
     #[test]
@@ -958,33 +1009,6 @@ mod tests {
         for raw in ["", "7-1", "0-80", "no", "0-1-2"] {
             assert!(parse_cpu_list(raw).is_err(), "{raw}");
         }
-    }
-
-    #[test]
-    fn shared_policy_preserves_the_stricter_smooth_frequency_cap() {
-        let mut config =
-            Config::from_text(include_str!("../../module-template/config/SM8650.json"))
-                .expect("config");
-        config
-            .functions
-            .smooth_powersave
-            .as_mut()
-            .expect("smooth")
-            .limits
-            .max_frequencies[2] = "1209600".into();
-        fixture(true, false)
-            .adapt_config(&mut config)
-            .expect("adapt");
-        assert_eq!(config.policy[2], -1);
-        assert_eq!(
-            config
-                .functions
-                .smooth_powersave
-                .expect("smooth")
-                .limits
-                .max_frequencies[1],
-            "1209600"
-        );
     }
 
     #[test]
@@ -1030,5 +1054,150 @@ mod tests {
         fs::remove_file(root.join("policy7/scaling_governor")).expect("missing required node");
         assert!(inspect_policies(&root).is_err());
         fs::remove_dir_all(root).expect("cleanup");
+    }
+    #[test]
+    fn supplied_processor_dumps_match_named_profiles_and_nonstandard_policy_ids() {
+        let samples = [
+            (
+                Soc::Dimensity8350,
+                include_str!("../tests/fixtures/dimensity8350-cpuinfo.txt"),
+                vec![(10, "0-3"), (14, "4-6"), (17, "7")],
+                [10, 14, 17, -1],
+            ),
+            (
+                Soc::Dimensity9400Plus,
+                include_str!("../tests/fixtures/dimensity9400plus-cpuinfo.txt"),
+                vec![(10, "0-3"), (14, "4-6"), (17, "7")],
+                [10, 14, 17, -1],
+            ),
+            (
+                Soc::XringO3,
+                include_str!("../tests/fixtures/xring-o3-cpuinfo.txt"),
+                vec![(10, "0"), (11, "1-3"), (14, "4-7")],
+                [14, 10, 11, -1],
+            ),
+            (
+                Soc::Elite5,
+                include_str!("../tests/fixtures/sm8850-cpuinfo.txt"),
+                vec![(10, "0-5"), (16, "6-7")],
+                [10, 16, -1, -1],
+            ),
+        ];
+        for (soc, dump, groups, expected) in samples {
+            let normalized = dump.replace("\r\n", "\n");
+            let parts: Vec<String> = normalized
+                .split("\n\n")
+                .filter_map(|section| {
+                    let fields: BTreeMap<_, _> = section
+                        .lines()
+                        .filter_map(|line| line.split_once(':'))
+                        .map(|(k, v)| (k.trim(), v.trim()))
+                        .collect();
+                    fields.get("processor")?;
+                    Some(fields.get("CPU part")?.to_string())
+                })
+                .collect();
+            assert_eq!(parts.len(), 8);
+            match soc {
+                Soc::XringO3 => assert_eq!(
+                    parts,
+                    ["0xd4d", "0xd4e", "0xd4e", "0xd4e", "0xd46", "0xd46", "0xd46", "0xd46"]
+                ),
+                Soc::Dimensity8350 => assert_eq!(
+                    parts,
+                    ["0xd46", "0xd46", "0xd46", "0xd46", "0xd4d", "0xd4d", "0xd4d", "0xd4d"]
+                ),
+                Soc::Dimensity9400Plus => assert_eq!(
+                    parts,
+                    ["0xd81", "0xd81", "0xd81", "0xd81", "0xd82", "0xd82", "0xd82", "0xd85"]
+                ),
+                Soc::Elite5 => assert!(parts.iter().all(|part| part == "0x002")),
+                _ => unreachable!(),
+            }
+            let model = dump
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(key, _)| key.trim() == "Hardware")
+                .map(|(_, v)| v.trim())
+                .unwrap_or(soc.name());
+            assert_eq!(identify_soc(&props(model), &[]).unwrap().0, soc);
+            let hardware = Hardware {
+                soc,
+                device: "fixture".into(),
+                evidence: "provided cpuinfo; simulated policies".into(),
+                policies: groups
+                    .into_iter()
+                    .map(|(id, cpus)| CpuPolicy {
+                        id,
+                        cpus: parse_cpu_list(cpus).unwrap(),
+                        governors: vec!["schedutil".into()],
+                        current_governor: "schedutil".into(),
+                        min_freq: 300000,
+                        max_freq: 3000000,
+                    })
+                    .collect(),
+            };
+            let mut config = Config::load(
+                &Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../module-template/config")
+                    .join(soc.file()),
+            )
+            .unwrap();
+            hardware.adapt_config(&mut config).unwrap();
+            assert_eq!(config.policy, expected);
+            let before = format!("{config:?}");
+            hardware.adapt_config(&mut config).unwrap();
+            assert_eq!(format!("{config:?}"), before);
+            for mode in config.modes.values() {
+                for (slot, id) in config.policy.iter().enumerate().filter(|(_, id)| **id >= 0) {
+                    let data = &mode.clusters[slot];
+                    let policy = hardware.policies.iter().find(|p| p.id == *id).unwrap();
+                    assert!(
+                        data.min_freq.parse::<u64>().unwrap()
+                            <= data.max_freq.parse::<u64>().unwrap()
+                    );
+                    assert!(data.max_freq.parse::<u64>().unwrap() <= policy.max_freq);
+                    assert_eq!(data.governor, "schedutil");
+                    if !soc.elite() {
+                        assert!(data.sched_params.is_empty());
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn processor_names_are_exact_and_shared_arm_parts_do_not_admit_other_models() {
+        for (model, soc) in [
+            ("天玑8350", Soc::Dimensity8350),
+            ("MediaTek Dimensity 9400+", Soc::Dimensity9400Plus),
+            ("天玑9400+", Soc::Dimensity9400Plus),
+            ("玄戒O3", Soc::XringO3),
+            ("Xiaomi Xring O3", Soc::XringO3),
+        ] {
+            assert_eq!(identify_soc(&props(model), &[]).unwrap().0, soc);
+        }
+        for model in [
+            "Dimensity 83500",
+            "Dimensity 9400",
+            "Dimensity 9400 Ultra",
+            "Xring O1",
+            "Xring O30",
+        ] {
+            assert!(identify_soc(&props(model), &[]).is_err());
+        }
+        assert!(identify_soc(&[("ro.board.platform".into(), "MT6991".into())], &[]).is_err());
+        assert!(identify_soc(&props("Dimensity 8350"), &["xring,o3".into()]).is_err());
+    }
+    #[test]
+    fn a_shared_policy_keeps_a_real_cap_when_the_other_slot_is_unlimited() {
+        let mut config = crate::profiles::test_config(Soc::Gen3);
+        config.policy = Soc::Gen3.anchors();
+        config.modes.get_mut("powersave").unwrap().clusters[1].max_freq = "0".into();
+        config.modes.get_mut("powersave").unwrap().clusters[2].max_freq = "1200000".into();
+        fixture(true, false).adapt_config(&mut config).unwrap();
+        assert_eq!(
+            config.profile("powersave").unwrap().clusters[1].max_freq,
+            "1200000"
+        );
     }
 }

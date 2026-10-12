@@ -143,7 +143,7 @@ mod tests {
         std::env::temp_dir().join(format!("nova-config-{}-{n}", util::current_pid()))
     }
     #[test]
-    fn all_six_defaults_initialize_and_manual_edits_survive_repeated_upgrade() {
+    fn all_defaults_initialize_and_manual_edits_survive_repeated_upgrade() {
         for soc in SUPPORTED {
             let state = state();
             let hardware = test_hardware(soc);
@@ -269,6 +269,53 @@ mod tests {
         assert!(!state.join("config.profile").exists());
         fs::remove_dir_all(state).unwrap();
     }
+    #[test]
+    fn release_upgrade_retunes_stock_and_preserves_custom_parameters_with_backup() {
+        for custom in [false, true] {
+            let state = state();
+            let hardware = test_hardware(Soc::Gen3);
+            initialize(&module(), &hardware, &state).unwrap();
+            let mut old =
+                json::parse(&fs::read_to_string(state.join("config.json")).unwrap()).unwrap();
+            if let Value::Object(root) = &mut old {
+                if let Some(Value::Object(meta)) = root.get_mut("meta") {
+                    meta.insert("version".into(), Value::Number(237));
+                }
+                if let Some(Value::Object(features)) = root.get_mut("features") {
+                    features.insert("extreme".into(), Value::Bool(true));
+                    features.insert("smooth".into(), Value::String("retired".into()));
+                }
+            }
+            let default = json::stringify(&old).unwrap();
+            fs::write(state.join("config.default.json"), &default).unwrap();
+            let text = if custom {
+                default.replace("58%", "57%").replace("50%", "49%")
+            } else {
+                default
+            };
+            fs::write(state.join("config.json"), &text).unwrap();
+            let report = initialize(&module(), &hardware, &state).unwrap();
+            let saved = fs::read_to_string(state.join("config.json")).unwrap();
+            let parsed = Config::from_text(&saved).unwrap();
+            assert_eq!(parsed.meta.version, crate::config::PROFILE_VERSION);
+            assert_eq!(
+                parsed.profile("powersave").unwrap().clusters[0].max_freq,
+                if custom { "57%" } else { "58%" }
+            );
+            let root = json::parse(&saved).unwrap();
+            assert!(root.get("features").unwrap().get("extreme").is_err());
+            assert!(root.get("features").unwrap().get("smooth").is_err());
+            let backup = report
+                .lines()
+                .find_map(|line| line.strip_prefix("backup="))
+                .unwrap();
+            assert_eq!(fs::read_to_string(backup).unwrap(), text);
+            assert!(initialize(&module(), &hardware, &state)
+                .unwrap()
+                .contains("config=preserved"));
+            fs::remove_dir_all(state).unwrap();
+        }
+    }
 }
 fn restore(path: &Path, previous: &Option<String>) -> Result<()> {
     match previous {
@@ -323,17 +370,24 @@ pub fn initialize(module: &Path, hardware: &Hardware, state: &Path) -> Result<St
             root.get("schema").is_err()
                 && stock_fingerprint(root).is_ok_and(|hash| STOCK_FINGERPRINTS.contains(&hash))
         });
-    // The shipped template IS the tuning. A runtime config whose version
-    // differs from the template's is an upgrade candidate: adopt the template
-    // (with backup) so retunes reach upgrading users instead of living only
-    // in fresh installs. Hand-edits are preserved via the timestamped backup.
+    // Retune an unedited default on upgrade. User edits migrate in place;
+    // both paths keep a backup before replacing the runtime file.
     let version_upgrade = parsed
         .as_ref()
         .is_some_and(|parsed| parsed.meta.version != candidate.meta.version);
+    let previous_default = read_optional(&state.join("config.default.json"))?
+        .as_deref()
+        .and_then(|text| json::parse(text).ok());
+    let unedited_default = match (&current_root, &previous_default) {
+        (Some(current), Some(default)) => {
+            stock_fingerprint(current)? == stock_fingerprint(default)?
+        }
+        _ => false,
+    };
     let replace = current.is_none()
         || previous_soc != Some(hardware.soc)
         || stock_upgrade
-        || version_upgrade;
+        || (version_upgrade && unedited_default);
     let mut next = if replace {
         Some(template.clone())
     } else {

@@ -2,7 +2,7 @@ use crate::{
     daemon, ffi,
     logging::Logger,
     process_identity,
-    util::{self, Result, CONFIG_PATH, STATE_DIR},
+    util::{self, Result, STATE_DIR},
 };
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
@@ -20,8 +20,10 @@ fn root() -> Result<()> {
 }
 pub fn start(module: &Path, restart: bool) -> Result<()> {
     root()?;
+    ensure_not_removing(module)?;
     let state = Path::new(STATE_DIR);
     let _control = util::acquire_flock(&state.join("control.lock"))?;
+    ensure_not_removing(module)?;
     let daemon_running = process_identity::lock_held(&state.join("daemon.lock"))?;
     let supervisor_running = process_identity::lock_held(&state.join("supervisor.lock"))?;
     if daemon_running && !restart {
@@ -70,6 +72,10 @@ pub fn start(module: &Path, restart: bool) -> Result<()> {
     let mut child = command.spawn().map_err(|e| format!("启动监督失败: {e}"))?;
     let deadline = Instant::now() + Duration::from_secs(130);
     while Instant::now() < deadline {
+        if ensure_not_removing(module).is_err() {
+            stop_inner(module)?;
+            return Err("卸载已开始，已取消启动".into());
+        }
         if let Some(exit) = child.try_wait().map_err(|e| e.to_string())? {
             return Err(format!(
                 "调度未就绪，监督退出 {exit}；{}",
@@ -212,7 +218,7 @@ pub fn stop(module: &Path) -> Result<()> {
     let _control = util::acquire_flock(&Path::new(STATE_DIR).join("control.lock"))?;
     stop_inner(module)
 }
-fn stop_inner(module: &Path) -> Result<()> {
+pub(crate) fn stop_inner(module: &Path) -> Result<()> {
     let state = Path::new(STATE_DIR);
     util::create_dir(state)?;
     let daemon_running = process_identity::lock_held(&state.join("daemon.lock"))?;
@@ -252,6 +258,13 @@ fn stop_inner(module: &Path) -> Result<()> {
     }
     Err("停止/回滚超时；未发送 SIGKILL，未删除锁，未启动第二实例".into())
 }
+fn ensure_not_removing(module: &Path) -> Result<()> {
+    if !module.is_dir() || module.join(".uninstalling").exists() || module.join("remove").exists() {
+        Err("模块正在卸载，不能启动".into())
+    } else {
+        Ok(())
+    }
+}
 pub fn diagnose(module: &Path) -> Result<()> {
     root()?;
     println!(
@@ -285,6 +298,11 @@ pub fn diagnose(module: &Path) -> Result<()> {
             Ok(s) => println!("{s}"),
             Err(e) => println!("{e}"),
         }
+    }
+    println!("\n[module/boot-entry.log]");
+    match tail(&module.join("boot-entry.log"), 32768) {
+        Ok(log) => println!("{log}"),
+        Err(error) => println!("{error}"),
     }
     println!(
         "\n[scene-telemetry]\n{}",

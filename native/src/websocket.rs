@@ -9,8 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::app_modes::{self, AppModes};
+use crate::automatic::{self, Automatic, Classification};
 use crate::logging::Logger;
-use crate::options::Options;
 use crate::util::Result;
 use crate::web_auth::{self, Session};
 
@@ -43,18 +43,29 @@ struct RuntimeData {
     soc: String,
     soc_id: String,
     config_profile: String,
-    extreme_supported: bool,
-    smooth_supported: bool,
+    app_kind: String,
+    classification_source: String,
+    automatic_active: bool,
+    fas_available: bool,
 }
 
 impl RuntimeState {
-    pub fn set_profile(&self, soc: crate::soc::Soc, extreme: bool, smooth: bool) {
+    pub fn set_automatic_active(&self, active: bool) {
+        if let Ok(mut data) = self.inner.lock() {
+            data.automatic_active = active;
+        }
+    }
+    pub fn set_classification(&self, classification: &Classification) {
+        if let Ok(mut data) = self.inner.lock() {
+            data.app_kind = classification.kind.name().into();
+            data.classification_source = classification.source.into();
+        }
+    }
+    pub fn set_profile(&self, soc: crate::soc::Soc) {
         if let Ok(mut data) = self.inner.lock() {
             data.soc = soc.name().into();
             data.soc_id = soc.id().into();
             data.config_profile = soc.file().into();
-            data.extreme_supported = extreme;
-            data.smooth_supported = smooth;
         }
     }
     pub fn set_power_profile(&self, profile: &str) {
@@ -109,12 +120,20 @@ impl RuntimeState {
             data.port = port;
         }
     }
+
+    /// Whether Scene N1's FAS runtime node is present on this boot. The
+    /// dispatcher follows mode switches through it when available.
+    pub fn set_fas_available(&self, available: bool) {
+        if let Ok(mut data) = self.inner.lock() {
+            data.fas_available = available;
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct WebState {
     pub app_modes: AppModes,
-    pub options: Options,
+    pub automatic: Automatic,
     pub runtime: RuntimeState,
     pub revision: Arc<AtomicU64>,
 }
@@ -442,18 +461,8 @@ fn handle_state(
         match frame {
             Frame::Text(message) => {
                 if state.runtime.webui_allows_message(&message) {
-                    if let Some(value) = message.strip_prefix("extreme\t") {
-                        match value.trim() {
-                            "0" => state.options.set_extreme_powersave(false)?,
-                            "1" => state.options.set_extreme_powersave(true)?,
-                            _ => return Err("extreme 选项只接受 0 或 1".into()),
-                        }
-                    } else if let Some(value) = message.strip_prefix("smooth\t") {
-                        match value.trim() {
-                            "0" => state.options.set_smooth_powersave(false)?,
-                            "1" => state.options.set_smooth_powersave(true)?,
-                            _ => return Err("smooth 选项只接受 0 或 1".into()),
-                        }
+                    if !app_endpoint && matches!(message.as_str(), "auto\ton" | "auto\toff") {
+                        state.automatic.set_enabled(message == "auto\ton")?;
                     } else if app_endpoint {
                         if let Some(rest) = message.strip_prefix("set\t") {
                             if let Some((package, mode)) = rest.split_once('\t') {
@@ -461,9 +470,17 @@ fn handle_state(
                             }
                         } else if let Some(package) = message.strip_prefix("delete\t") {
                             state.app_modes.remove_rule(package)?;
+                        } else if let Some((package, kind)) = message
+                            .strip_prefix("classify\t")
+                            .and_then(|s| s.split_once('\t'))
+                        {
+                            if automatic::valid_classification(package, kind) {
+                                state.automatic.set_kind(package, kind)?;
+                            }
                         }
                     } else if app_modes::supported(message.trim()) {
                         state.app_modes.set_rule("*", message.trim())?;
+                        state.automatic.set_enabled(false)?;
                     }
                 }
                 state.changed();
@@ -494,7 +511,7 @@ fn payload(state: &WebState, app_endpoint: bool) -> String {
     };
     if !app_endpoint {
         return format!(
-            "mode:{},effective:{},package:{},controller:{},sceneActive:{},sceneLinked:{},phase:{},heartbeatMs:{},port:{},extremePowerSave:{},smoothPowerSave:{},powerSaveProfile:{},socName:{},socId:{},configProfile:{},extremeSupported:{},smoothSupported:{}",
+            "mode:{},effective:{},package:{},controller:{},sceneActive:{},sceneLinked:{},phase:{},heartbeatMs:{},port:{},powerSaveProfile:{},socName:{},socId:{},configProfile:{},automaticEnabled:{},appKind:{},classificationSource:{},automaticActive:{},fasAvailable:{}",
             default,
             runtime.effective_mode,
             runtime.package,
@@ -503,9 +520,10 @@ fn payload(state: &WebState, app_endpoint: bool) -> String {
             runtime.scene_linked,
             runtime.phase,runtime.tick.map(|t|t.elapsed().as_millis()).unwrap_or(u128::MAX),
             runtime.port,
-            state.options.extreme_powersave(),
-            state.options.smooth_powersave(), runtime.power_profile,
-            runtime.soc, runtime.soc_id, runtime.config_profile, runtime.extreme_supported, runtime.smooth_supported,
+            runtime.power_profile,
+            runtime.soc, runtime.soc_id, runtime.config_profile,
+            state.automatic.enabled(), runtime.app_kind, runtime.classification_source, runtime.automatic_active,
+            runtime.fas_available,
         );
     }
     let mut rules = String::new();
@@ -522,15 +540,18 @@ fn payload(state: &WebState, app_endpoint: bool) -> String {
             json_escape(&mode)
         ));
     }
-    format!(
-        "{{\"type\":\"app-modes\",\"defaultMode\":\"{}\",\"currentPackage\":\"{}\",\"effectiveMode\":\"{}\",\"controller\":\"{}\",\"sceneAvailable\":{},\"sceneLinked\":{},\"locked\":{},\"rules\":[{}],\"revision\":{},\"phase\":\"{}\",\"error\":\"{}\",\"version\":\"{}\",\"port\":{},\"extremePowerSave\":{},\"smoothPowerSave\":{},\"powerSaveProfile\":\"{}\",\"socName\":\"{}\",\"socId\":\"{}\",\"configProfile\":\"{}\",\"extremeSupported\":{},\"smoothSupported\":{}}}",
+    let result = format!(
+        "{{\"type\":\"app-modes\",\"defaultMode\":\"{}\",\"currentPackage\":\"{}\",\"effectiveMode\":\"{}\",\"controller\":\"{}\",\"sceneAvailable\":{},\"sceneLinked\":{},\"locked\":{},\"rules\":[{}],\"revision\":{},\"phase\":\"{}\",\"error\":\"{}\",\"version\":\"{}\",\"port\":{},\"powerSaveProfile\":\"{}\",\"socName\":\"{}\",\"socId\":\"{}\",\"configProfile\":\"{}\"}}",
         json_escape(&default), json_escape(&runtime.package), json_escape(&runtime.effective_mode), json_escape(&runtime.controller),
         runtime.scene_active || runtime.scene_linked, runtime.scene_linked, runtime.scene_active, rules,
         state.revision.load(Ordering::Relaxed),
         json_escape(&runtime.phase),json_escape(&runtime.error),env!("CARGO_PKG_VERSION"),
-        runtime.port,state.options.extreme_powersave(),state.options.smooth_powersave(),json_escape(&runtime.power_profile),
-        json_escape(&runtime.soc),json_escape(&runtime.soc_id),json_escape(&runtime.config_profile),runtime.extreme_supported,runtime.smooth_supported,
-    )
+        runtime.port,json_escape(&runtime.power_profile),
+        json_escape(&runtime.soc),json_escape(&runtime.soc_id),json_escape(&runtime.config_profile),
+    );
+    let extra = format!(",\"automaticEnabled\":{},\"automaticActive\":{},\"appKind\":\"{}\",\"classificationSource\":\"{}\",\"classificationOverrides\":{{{}}}}}",
+        state.automatic.enabled(), runtime.automatic_active, json_escape(&runtime.app_kind), json_escape(&runtime.classification_source), state.automatic.overrides_json());
+    result.strip_suffix('}').unwrap_or(&result).to_string() + &extra
 }
 
 enum Frame {
@@ -879,8 +900,6 @@ mod tests {
             "powersave",
             "set\tcom.test.app\tfast",
             "delete\tcom.test.app",
-            "smooth\t1",
-            "extreme\t0",
         ] {
             assert!(
                 runtime.webui_allows_message(message),
@@ -891,7 +910,7 @@ mod tests {
         assert!(runtime.webui_allows_message("fast"));
         assert!(runtime.webui_allows_message("set\tcom.test.app\tfast"));
         runtime.set("com.test.app", "", "Scene foreign", true, false);
-        for message in ["smooth\t1", "fast", "set\tcom.test.app\tfast"] {
+        for message in ["fast", "set\tcom.test.app\tfast"] {
             assert!(!runtime.webui_allows_message(message));
         }
     }

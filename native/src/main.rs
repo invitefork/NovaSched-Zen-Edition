@@ -1,4 +1,5 @@
 mod app_modes;
+mod automatic;
 mod config;
 mod config_v2;
 mod daemon;
@@ -7,10 +8,10 @@ mod ffi;
 mod game_diagnostics;
 mod hardware;
 mod input_boost;
+mod installer;
 mod json;
 mod lifecycle;
 mod logging;
-mod options;
 mod package_registry;
 mod process_identity;
 mod profiles;
@@ -20,6 +21,7 @@ mod scheduler;
 mod snapshot;
 mod soc;
 mod telemetry;
+mod uninstall;
 mod util;
 mod web_auth;
 mod websocket;
@@ -40,7 +42,7 @@ fn main() {
 fn run() -> Result<()> {
     let mut args = env::args().skip(1);
     let command = args.next().ok_or_else(|| usage().to_string())?;
-    let requested_mode = if command == "scene-mode" {
+    let requested_mode = if matches!(command.as_str(), "scene-mode" | "install-check") {
         args.next()
     } else {
         None
@@ -70,6 +72,26 @@ fn run() -> Result<()> {
         }
     }
 
+    if (!module_dir.is_dir()
+        || module_dir.join(".uninstalling").exists()
+        || module_dir.join("remove").exists())
+        && matches!(
+            command.as_str(),
+            "start"
+                | "restart"
+                | "supervise"
+                | "daemon"
+                | "reload"
+                | "scene-mode"
+                | "scene-install"
+                | "prepare-config"
+                | "prepare-auto"
+                | "webui-session"
+                | "webui-rpc"
+        )
+    {
+        return Err("模块正在卸载，已停止启动、回调与配置写入".into());
+    }
     match command.as_str() {
         "version" | "--version" => {
             println!("NovaSched Zen Edition {}", env!("CARGO_PKG_VERSION"));
@@ -92,12 +114,14 @@ fn run() -> Result<()> {
             webui_request.as_deref().ok_or("webui-rpc 需要 --request")?,
         ),
         "self-test" => lifecycle::self_test(&module_dir),
+        "install-check" => installer::run(&module_dir, requested_mode.as_deref().unwrap_or("")),
         "scene-mode" => app_modes::scene_callback(requested_mode.as_deref().unwrap_or("")),
         "daemon" => daemon::run_daemon(module_dir),
         "reload" => daemon::send_signal(&module_dir, ffi::SIGHUP),
         "stop" => lifecycle::stop(&module_dir),
         "status" => daemon::print_status(&module_dir),
         "restore" => daemon::restore_stock(&module_dir),
+        "uninstall" => uninstall::run(&module_dir),
         "scene-install" => {
             println!("{}", scene::install_provider(&module_dir)?);
             Ok(())
@@ -117,6 +141,25 @@ fn run() -> Result<()> {
                     &hardware,
                     std::path::Path::new(util::STATE_DIR)
                 )?
+            );
+            Ok(())
+        }
+        "prepare-auto" => {
+            let automatic =
+                automatic::Automatic::initialize(std::path::Path::new(util::AUTO_POLICY_PATH))?;
+            println!("automatic_enabled={}", automatic.enabled());
+            Ok(())
+        }
+        "scene-status" => {
+            let presence = scene::presence();
+            let status = match presence.availability {
+                scene::SceneAvailability::Available => "available",
+                scene::SceneAvailability::Absent => "absent",
+                scene::SceneAvailability::Unknown => "unknown",
+            };
+            println!(
+                "scene_presence={status}\nscene_detection={}",
+                presence.evidence
             );
             Ok(())
         }
@@ -149,5 +192,5 @@ fn run() -> Result<()> {
 }
 
 fn usage() -> &'static str {
-    "用法: novasched <start|restart|daemon|reload|stop|status|diagnose|game-diagnose|webui-session|webui-rpc|restore|scene-install|scene-restore|scene-diagnose|probe|check-config|prepare-config|version|self-test> [--module-dir PATH] [--origin ORIGIN] [--request JSON]"
+    "用法: novasched <start|restart|daemon|reload|stop|status|diagnose|game-diagnose|webui-session|webui-rpc|restore|uninstall|scene-install|scene-restore|scene-status|scene-diagnose|probe|check-config|prepare-config|prepare-auto|version|self-test|install-check PHASE> [--module-dir PATH] [--origin ORIGIN] [--request JSON]"
 }

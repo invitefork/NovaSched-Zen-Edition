@@ -6,9 +6,9 @@ use crate::util::{self, Result};
 
 pub const MODES: [&str; 4] = ["powersave", "balance", "performance", "fast"];
 /// Tracks the template/config schema generation; must equal the release
-/// versionCode so upgrades replace the runtime config when the shipped
-/// tuning changes (see profiles::initialize version_upgrade).
-pub const PROFILE_VERSION: i64 = 237;
+/// versionCode so upgrades can update unedited defaults and migrate user
+/// configurations while preserving their tuning (see profiles::initialize).
+pub const PROFILE_VERSION: i64 = 320;
 
 #[derive(Clone, Debug)]
 pub struct Meta {
@@ -31,7 +31,7 @@ pub struct Cpuset {
     /// fast mode. Modes without an entry keep the static values.
     pub modes: BTreeMap<String, CpusetMode>,
     /// Applied only while an explicitly ruled app (a user-marked game) is
-    /// foreground: the per-app game placement. Absent on other SoCs.
+    /// foreground. The configuration can omit this override.
     pub app_rule: Option<CpusetMode>,
 }
 
@@ -49,7 +49,7 @@ pub struct CpusetMode {
 pub struct CpuctlMode {
     pub top_app_min: Option<String>,
     /// Applied only while an explicitly ruled app is foreground: the
-    /// per-app transient game floor (replaces the reverted static floor).
+    /// per-app utilization floor.
     pub top_app_min_rule: Option<String>,
     pub background_max: Option<String>,
 }
@@ -86,48 +86,15 @@ pub struct ForegroundMonitorConfig {
     pub ignored_packages: BTreeSet<String>,
 }
 
-#[derive(Clone, Debug)]
-pub struct ExtremePowerSave {
-    pub enabled_by_default: bool,
-    pub max_frequencies: [String; 4],
-    pub cpuset_top_app: Option<String>,
-    pub cpuset_foreground: Option<String>,
-    pub util_clamp_max: Option<String>,
-    pub gpu_max_pwrlevel: Option<u32>,
-}
-
-impl Default for ExtremePowerSave {
-    fn default() -> Self {
-        Self {
-            enabled_by_default: false,
-            max_frequencies: ["0".into(), "0".into(), "0".into(), "0".into()],
-            cpuset_top_app: None,
-            cpuset_foreground: None,
-            util_clamp_max: None,
-            gpu_max_pwrlevel: None,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PerfServiceLock {
     pub enable: bool,
     pub services: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
-pub struct SmoothPowerSave {
-    pub limits: ExtremePowerSave,
-    // This sysctl bounds allowed per-task MIN requests; it is not a floor.
-    pub util_clamp_min_limit: String,
-    pub up_rate_limit_us: String,
-    pub restore_stock_response: bool,
-}
-
 /// Touch-event-driven transient boost: while input activity is detected the
 /// top-app group carries a uclamp.min pulse for `duration_ms`, then returns
-/// to the dispatcher-maintained baseline. Event-driven and transient by
-/// design - never a static floor (the v1.2.0 power bomb).
+/// to the dispatcher-maintained baseline.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InputBoost {
     pub enabled: bool,
@@ -155,8 +122,6 @@ pub struct Functions {
     pub disable_gpu_boost: bool,
     pub scheduler: SchedulerConfig,
     pub foreground_monitor: ForegroundMonitorConfig,
-    pub extreme_powersave: ExtremePowerSave,
-    pub smooth_powersave: Option<SmoothPowerSave>,
     pub perf_service_lock: PerfServiceLock,
 }
 
@@ -289,13 +254,6 @@ impl Config {
             .map(parse_foreground_monitor)
             .transpose()?
             .unwrap_or_default();
-        let extreme_powersave = optional_field(function, "ExtremePowerSave")
-            .map(parse_extreme_powersave)
-            .transpose()?
-            .unwrap_or_default();
-        let smooth_powersave = optional_field(function, "SmoothPowerSave")
-            .map(parse_smooth_powersave)
-            .transpose()?;
         let perf_service_lock = optional_field(function, "PerfServiceLock")
             .map(parse_perf_service_lock)
             .transpose()?
@@ -373,8 +331,6 @@ impl Config {
                 disable_gpu_boost,
                 scheduler,
                 foreground_monitor,
-                extreme_powersave,
-                smooth_powersave,
                 perf_service_lock,
             },
             modes,
@@ -422,73 +378,6 @@ fn parse_foreground_monitor(node: &Value) -> Result<ForegroundMonitorConfig> {
         ignored_packages.insert(package.to_string());
     }
     Ok(ForegroundMonitorConfig { ignored_packages })
-}
-
-fn parse_extreme_powersave(node: &Value) -> Result<ExtremePowerSave> {
-    let max = four_strings(node.get("MaxFreq")?)?;
-    for (index, value) in max.iter().enumerate() {
-        validate_frequency(value, "ExtremePowerSave", index, "MaxFreq")?;
-    }
-    let cpuset = node.get("CpuSet")?;
-    let top_app = cpu_list(cpuset, "top_app")?;
-    let foreground = cpu_list(cpuset, "foreground")?;
-    let util_clamp_max = optional_field(node, "UtilClampMax")
-        .map(|v| -> Result<String> {
-            let value = v.as_str()?;
-            let n = value
-                .parse::<u32>()
-                .map_err(|_| "ExtremePowerSave.UtilClampMax 必须为整数字符串".to_string())?;
-            if n > 1024 {
-                return Err("ExtremePowerSave.UtilClampMax 必须在 0..1024".into());
-            }
-            Ok(value.to_string())
-        })
-        .transpose()?;
-    let gpu_max_pwrlevel = optional_field(node, "GpuMaxPwrLevel")
-        .map(|v| -> Result<u32> {
-            let value = v.as_i64()?;
-            if !(0..=255).contains(&value) {
-                return Err("ExtremePowerSave.GpuMaxPwrLevel 必须在 0..255".into());
-            }
-            Ok(value as u32)
-        })
-        .transpose()?;
-    Ok(ExtremePowerSave {
-        enabled_by_default: boolean(node, "enable")?,
-        max_frequencies: max,
-        cpuset_top_app: Some(top_app),
-        cpuset_foreground: Some(foreground),
-        util_clamp_max,
-        gpu_max_pwrlevel,
-    })
-}
-
-fn parse_smooth_powersave(node: &Value) -> Result<SmoothPowerSave> {
-    let limits = parse_extreme_powersave(node)?;
-    let util_clamp_min_limit = numeric_string(node, "UtilClampMinLimit")?;
-    let minimum = util_clamp_min_limit
-        .parse::<u32>()
-        .map_err(|e| e.to_string())?;
-    let maximum = limits
-        .util_clamp_max
-        .as_deref()
-        .ok_or_else(|| "SmoothPowerSave 缺少 UtilClampMax".to_string())?
-        .parse::<u32>()
-        .map_err(|e| e.to_string())?;
-    if minimum > maximum || minimum > 1024 {
-        return Err("SmoothPowerSave 的 MIN 请求范围上限必须在 0..UtilClampMax".into());
-    }
-    let up_rate_limit_us = numeric_string(node, "UpRateLimitUs")?;
-    let rate = up_rate_limit_us.parse::<u64>().map_err(|e| e.to_string())?;
-    if rate > 1_000_000 {
-        return Err("SmoothPowerSave.UpRateLimitUs 超过 1 秒".into());
-    }
-    Ok(SmoothPowerSave {
-        limits,
-        util_clamp_min_limit,
-        up_rate_limit_us,
-        restore_stock_response: boolean(node, "RestoreStockResponse")?,
-    })
 }
 
 fn parse_perf_service_lock(node: &Value) -> Result<PerfServiceLock> {
@@ -573,7 +462,7 @@ fn validate_governor(value: &str, mode: &str, cluster: usize) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
-    fn all_six_defaults_have_owned_identity_and_valid_inactive_slots() {
+    fn all_defaults_have_owned_identity_and_valid_inactive_slots() {
         for soc in crate::soc::SUPPORTED {
             let path = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../module-template/config")
@@ -586,37 +475,17 @@ mod tests {
             assert_eq!(config.meta.version, PROFILE_VERSION);
             assert!(config.functions.node_watchdog);
             assert!(!config.functions.launch_boost.enable);
-            assert!(!config.functions.extreme_powersave.enabled_by_default);
-            assert!(
-                !config
-                    .functions
-                    .smooth_powersave
-                    .as_ref()
-                    .unwrap()
-                    .limits
-                    .enabled_by_default
-            );
             assert!(Config::from_text(&text.replace("NovaSched_Zen_Edition", "wrong")).is_err());
             assert!(Config::from_text(&text.replace("novasched/2", "novasched/9")).is_err());
         }
     }
     #[test]
-    fn own_format_rejects_bad_cpu_ranges_service_names_and_smooth_limits() {
+    fn own_format_rejects_bad_cpu_ranges_and_service_names() {
         let text = include_str!("../../module-template/config/SM8650.json");
         assert!(Config::from_text(&text.replace("\"0-7\"", "\"0-8\"")).is_err());
         assert!(
             Config::from_text(&text.replace("\"services\": []", "\"services\": [\"-bad\"]"))
                 .is_err()
         );
-        assert!(Config::from_text(&text.replace(
-            "\"uclamp_min_limit\": \"1024\"",
-            "\"uclamp_min_limit\": \"1025\""
-        ))
-        .is_err());
-        assert!(Config::from_text(&text.replace(
-            "\"up_rate_limit_us\": \"0\"",
-            "\"up_rate_limit_us\": \"1000001\""
-        ))
-        .is_err());
     }
 }
