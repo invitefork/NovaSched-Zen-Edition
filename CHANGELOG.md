@@ -1,9 +1,11 @@
 ## v2.2.8（未发布）
 
-### WebUI 重构（性能与布局）
+### WebUI 重构（按 SleepDown 实机 UI 复刻）
 
-- 渲染引擎整体替换：移除 XiaoP Liquid Glass 的逐元素 SVG 滤镜方案（每张卡片一个滤镜实例 + 全 body MutationObserver 重扫 + 每次心跳强制回流，是卡顿主因），改用移植自 LiquidGlassView（用户自备文件，基于 QmDeve/AndroidLiquidGlassView，MIT）的 WebGL 液态玻璃渲染器。单一全屏画布渲染全部玻璃表面：着色器内程序化光斑背景、圆角矩形 SDF 边缘折射、深度渐变、光谱色散、线性 sRGB 饱和度与边缘高光全部保留；零纹理上传，帧率 30fps、画布像素预算 2.3MP、页面隐藏自动暂停、prefers-reduced-motion 静止。无 WebGL 时自动退回 CSS 毛玻璃。
-- 布局借鉴 SleepDown-Schedule（xiaomanjun233，Jetpack Compose 液态玻璃课程表）的设计语言：胶囊悬浮 dock（弹簧指示器、按压 1.12 缩放）、透明顶栏 + 状态胶囊、日期主视觉、16px 页边距与 12–14px 分区节奏；触控高光（指针跟随 sheen）同样移植自它的 InteractiveHighlight。
+- 对照 SleepDown-Schedule `1.2.7_beta5` 实机 APK 截图与 Compose 源码逐项复刻布局：左上日期块（19sp 粗体日期 + 16sp 周数 68% 透明度）、右上 42dp 胶囊按钮簇（诊断图标 + 强调色圆钮 + 状态胶囊）、助手卡（RoundedRectangle 30，强调色标签行 + 元信息行 + 分隔线 + 概述行 + SoC 天气位）、分区线（标签 + 1dp 18% 线 + 右侧时间，间距 10dp）、课程卡（22dp 圆角，粗标题 + 次行 + 注释）、设置分组行与个性化面板、底部胶囊 dock（容器 64dp / 指示器 56dp / 激活项强调色着色 / 按压缩放 1.14）、居中玻璃弹窗（39dp 圆角 / 48dp 动作按钮 / 14dp 内边距）。触控高光移植自其 InteractiveHighlight。
+- 材质常量取自其源码：强调蓝 #0A84FF（浅色 #0088FF、按压 #006FD6）、暗玻璃 #121212@0.45、浅玻璃 #F2F4F8@0.54、强调 tint 0.24/0.32、危险红 #FF453A；圆角体系 22/24/28/30/胶囊。
+- 新增背景壁纸：关于页可选壁纸 + 壁纸模糊（0–100%）与亮度滑杆，压缩至 1280px JPEG 持久化；玻璃主体采样预模糊层、折射边缘采样清晰层，与 SleepDown 的 backdrop blur + lens 结构一致。无壁纸时保持程序化光斑背景。
+- 渲染引擎整体替换：移除 XiaoP Liquid Glass 的逐元素 SVG 滤镜方案（每张卡片一个滤镜实例 + 全 body MutationObserver 重扫 + 每次心跳强制回流，是卡顿主因），改用移植自 LiquidGlassView（用户自备文件，基于 QmDeve/AndroidLiquidGlassView，MIT）的 WebGL 液态玻璃渲染器。单一全屏画布渲染全部玻璃表面：圆角矩形 SDF 边缘折射、深度渐变、光谱色散、线性 sRGB 饱和度与边缘高光；30fps 帧率上限、画布像素预算 2.3MP、页面隐藏自动暂停、prefers-reduced-motion 静止。无 WebGL 时自动退回 CSS 毛玻璃。
 - 修复旧版错位问题：`.stats-grid`、`.hero-badges`、`.hero-actions` 缺少 `display:flex/grid`，间距与栅格从未生效。
 - 心跳渲染不再产生 DOM 变更风暴：全部文本写入走变更检测，档位卡属性写入去重；日志改为增量追加渲染（级别切换或裁剪时才整体重建），长时间日志不再每行重建整表。
 - 深浅主题与玻璃渲染器实时同步（此前渲染器只在加载时读一次主题，浅色系统会得到“暗玻璃配暗字”的不可读组合）；强调色同时驱动背景光斑配色。

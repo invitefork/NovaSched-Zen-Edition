@@ -1,4 +1,5 @@
-/* NovaSched WebUI v2.2.7 · ZenJooo. Authenticated local controls and confirmed runtime state. */
+/* NovaSched WebUI v2.2.7 · ZenJooo. Authenticated local controls and confirmed runtime state.
+ * 视图结构对齐 SleepDown-Schedule 实机 UI：日期块顶栏、助手卡、分区线 + 课程卡列表、胶囊 dock、个性化面板。 */
 (() => {
   "use strict";
   const $ = (s, root = document) => root.querySelector(s);
@@ -41,14 +42,17 @@
     logReceived: false,
   };
   const ACCENTS = { blue: "蓝色", indigo: "靛色", purple: "紫色", rose: "粉色", amber: "橙色", green: "绿色" };
-  const ui = { theme: "system", accent: "blue", glassLevel: 55 };
+  const ui = { theme: "system", accent: "blue", glassLevel: 55, wallBlur: 0, wallBright: 100, wallData: "" };
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE) || "{}");
     if (own(THEME_NAMES, saved.theme)) ui.theme = saved.theme;
     if (own(ACCENTS, saved.accent)) ui.accent = saved.accent;
     if (Number.isInteger(saved.glassLevel) && saved.glassLevel >= 0 && saved.glassLevel <= 100) ui.glassLevel = saved.glassLevel;
+    if (Number.isInteger(saved.wallBlur) && saved.wallBlur >= 0 && saved.wallBlur <= 100) ui.wallBlur = saved.wallBlur;
+    if (Number.isInteger(saved.wallBright) && saved.wallBright >= 40 && saved.wallBright <= 100) ui.wallBright = saved.wallBright;
+    if (typeof saved.wallData === "string") ui.wallData = saved.wallData.slice(0, 3000000);
   } catch (_) { /* 宿主 WebView 可能禁用存储 */ }
-  const saveUI = () => { try { localStorage.setItem(STORAGE, JSON.stringify(ui)); } catch (_) {} };
+  const saveUI = () => { try { localStorage.setItem(STORAGE, JSON.stringify(ui)); } catch (_) { /* 壁纸过大或存储被禁用 */ } };
 
   const darkQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
 
@@ -563,52 +567,63 @@
     if (s.linked) return "Scene 联动";
     return "WebUI 接管";
   }
+  function isoWeek(date) {
+    const target = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    const day = target.getUTCDay() || 7;
+    target.setUTCDate(target.getUTCDate() + 4 - day);
+    const yearStart = new Date(Date.UTC(target.getUTCFullYear(), 0, 1));
+    return Math.ceil(((target - yearStart) / 86400000 + 1) / 7);
+  }
   function heroDate() {
     try {
-      const parts = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric" }).format(new Date());
-      const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "long" }).format(new Date());
-      return `${parts} · ${weekday}`;
-    } catch (_) { return ""; }
+      const now = new Date();
+      const weekday = ["一","二","三","四","五","六","日"][(now.getDay() + 6) % 7];
+      return `${now.getMonth() + 1}月${now.getDate()}日 周${weekday}`;
+    } catch (_) { return "—"; }
   }
   /* 渲染只写发生变化的文本/属性：心跳每两秒触发一次，也不产生无谓的 DOM 变更 */
   function render() {
-    /* 顶栏状态胶囊 */
+    document.documentElement.dataset.online = s.online ? "true" : "false";
+
+    /* 顶栏：日期块 + 状态胶囊 */
+    present("#hero-date", heroDate());
+    present("#hero-week", `第${isoWeek(new Date())}周`);
     const cta = $("#nav-cta");
     const ctaState = !s.online ? (s.connecting ? "connecting" : "offline") : s.phase === "degraded" ? "degraded" : s.external ? "external" : "ready";
     if (cta.dataset.state !== ctaState) cta.dataset.state = ctaState;
     present("#nav-cta-text", ctaState === "connecting" ? "连接中" : ctaState === "offline" ? "离线" : ctaState === "degraded" ? "需检查" : ctaState === "external" ? "外部接管" : "已连接");
 
-    /* 概览主视觉 */
-    present("#hero-date", heroDate() || "NovaSched");
-    const sub = !s.online
-      ? (s.connecting ? "正在寻找本机守护进程，连接成功后这里显示真实调度状态。" : "连接暂时不可用，会自动重试；也可以点下方按钮手动重连。")
-      : s.external ? "Scene 当前选用其他调度器，NovaSched 暂停节点写入并保持只读。"
-      : s.phase === "degraded" ? "部分策略下发失败，守护进程正在重试；详情见日志。"
-      : `守护进程心跳正常，当前实际生效「${MODES[s.effective]?.name || "…"}」档。`;
-    present("#hero-sub", sub);
-    const badges = [];
-    badges.push(`<span class="chip" data-tone="${!s.online ? (s.connecting ? "" : "err") : s.phase === "degraded" ? "warn" : "ok"}"><i class="dot"></i>${stateLabel()}</span>`);
-    if (s.online && s.soc) badges.push(`<span class="chip"><i class="dot"></i>${esc(s.soc)}</span>`);
-    if (s.fasAvailable) badges.push(`<span class="chip" data-tone="ok"><i class="dot"></i>Scene FAS 已就绪</span>`);
-    if (s.external) badges.push(`<span class="chip" data-tone="warn"><i class="dot"></i>外部调度器接管</span>`);
-    const badgesNode = $("#hero-badges");
-    const badgesKey = badges.join("|");
-    if (badgesNode.dataset.key !== badgesKey) { badgesNode.dataset.key = badgesKey; badgesNode.innerHTML = badges.join(""); }
-
+    /* 顶栏自动调度圆钮：开=高亮 */
     const autoButton = $("#hero-auto");
     autoButton.disabled = !editable() || !!s.pending || s.linked;
-    present("#hero-auto", !s.online ? "自动调度 · 等待连接"
+    autoButton.setAttribute("aria-pressed", String(!!s.automatic));
+    autoButton.classList.toggle("on", !!s.automatic && !s.linked);
+    autoButton.title = !s.online ? "自动调度 · 等待连接"
       : s.linked ? "Scene 正在控制档位"
       : s.pending?.kind === "auto" ? "自动调度 · 确认中…"
-      : s.automatic ? "自动调度 · 已开启" : "开启自动调度");
+      : s.automatic ? "自动调度 · 已开启" : "开启自动调度";
 
-    /* 概览卡片 */
+    /* 助手卡：档位行 / 元信息行 / 概述行 / 底部行 */
     present("#stat-mode", s.online ? (s.external ? "外部控制" : MODES[s.effective]?.name || "待确认") : "—");
-    present("#stat-mode-note", !s.online ? "连接后显示守护进程最后成功下发的档位。"
-      : s.external ? "Scene 决定档位，本地策略已暂停。"
-      : MODES[s.effective]?.copy || "等待实际策略反馈");
-    present("#foreground-tag", s.online ? "实时" : "待连接");
+    present("#foreground-tag", !s.online ? "待连接" : s.external ? "外部接管" : s.phase === "degraded" ? "需检查" : "实时");
+    present("#stat-ctrl", s.online ? s.controller : "等待本地服务");
+    const heartbeat = s.online && Number.isFinite(s.heartbeat) ? `心跳 ${(Math.round(s.heartbeat / 100) / 10).toFixed(1)}s` : "心跳 —";
+    present("#stat-heartbeat", heartbeat);
+    present("#hero-sub", !s.online
+      ? (s.connecting ? "正在寻找本机守护进程，连接成功后这里显示真实调度状态。" : "连接暂时不可用，会自动重试；也可以点右上角状态胶囊手动重连。")
+      : s.external ? "Scene 当前选用其他调度器，NovaSched 暂停节点写入并保持只读。"
+      : s.phase === "degraded" ? "部分策略下发失败，守护进程正在重试；详情见日志。"
+      : s.automatic ? "自动调度跟随前台应用：游戏用极速，其余用省电。"
+      : MODES[s.effective]?.copy || "守护进程心跳正常，实际策略已生效。");
+    const socChip = $("#stat-soc-chip");
+    if (socChip) socChip.hidden = !(s.online && s.soc);
+    present("#stat-soc-name", s.soc || "—");
+    present("#stat-mode-note", !s.online ? "点击卡片读取启动诊断" : "点击卡片读取运行诊断");
 
+    /* 前台应用分区 */
+    present("#stat-appkind", s.online
+      ? (s.appKind === "game" ? "识别为游戏" : s.appKind === "daily" ? "识别为日用" : "暂未识别")
+      : "每两秒刷新");
     const pkgName = s.online && s.pkg ? appInfo(s.pkg).name : s.online ? "无前台应用" : "等待连接";
     present("#stat-pkg", pkgName);
     present("#stat-pkg-raw", s.online && s.pkg ? s.pkg : s.online ? "锁屏、待机或暂未读取到活动" : "连接后显示应用包名");
@@ -616,18 +631,6 @@
     present("#stat-pkg-note", s.online && s.pkg
       ? (s.appKind === "game" ? "识别为游戏 · 自动模式使用极速" : s.appKind === "daily" ? "识别为日用 · 自动模式使用省电" : "暂未识别，自动模式先用省电")
       : "前台活动每两秒刷新一次。");
-
-    present("#stat-ctrl", s.online ? s.controller : "—");
-    present("#stat-ctrl-note", !s.online ? "NovaSched、Scene 联动或外部调度器接管，这里永远如实显示。"
-      : s.external ? "切换档位和修改规则暂不可用，请在 Scene 操作。"
-      : s.linked ? "Scene 的档位与应用规则在本模块执行。"
-      : s.automatic ? "自动模式跟随前台：游戏极速，其余省电。"
-      : "本地默认档位与应用规则共同生效。");
-    const heartbeat = s.online && Number.isFinite(s.heartbeat) ? `${(Math.round(s.heartbeat / 100) / 10).toFixed(1)}s` : "—";
-    present("#stat-heartbeat", heartbeat);
-    present("#stat-heartbeat-note", s.online
-      ? (s.phase === "degraded" ? "守护进程部分策略失败，正在重试。" : s.phase === "suspended" ? "调度已挂起，节点保持只读。" : "守护进程运行正常。")
-      : "连接后显示心跳间隔。");
 
     /* Scene 联动四态：联动中 / 外部接管 / 已安装待接管 / 未安装由 WebUI 接管 */
     let sceneState, sceneNote;
@@ -664,6 +667,7 @@
       $(".badge", button).hidden = !actual || !!(!s.linked && (s.automatic || s.automaticActive));
       button.disabled = !editable() || !!s.pending;
     });
+    present("#modes-state", s.online ? (s.external ? "外部控制" : MODES[s.effective]?.name || "—") : "—");
     const autoSwitch = $("#auto-switch");
     autoSwitch.disabled = !editable() || !!s.pending || s.linked;
     autoSwitch.setAttribute("aria-checked", String(!s.linked && !!s.automatic));
@@ -679,10 +683,12 @@
 
     /* 规则区 */
     renderRules();
+    present("#rules-count", s.rulesLoaded ? `${s.rules.length} 条规则` : "—");
     $("#add-rule").disabled = !editable() || !!s.pending;
 
     /* 关于 */
     present("#about-version", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.7");
+    present("#about-version-foot", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.7");
     present("#about-soc", s.online && s.soc ? s.soc : "待识别");
     present("#about-profile", s.online && s.configProfile ? s.configProfile : "待识别");
     present("#about-fas", s.fasAvailable ? "已就绪 · 档位联动" : "未检测到（可选）");
@@ -702,10 +708,10 @@
       root.innerHTML = s.rules.map(rule => {
         const a = appInfo(rule.package);
         return `<button class="rule-row g" data-radius="999" type="button" data-edit="${esc(rule.package)}" aria-label="${esc(a.name)}，${esc(MODES[rule.mode]?.name || "未知")}档">
-          <span class="rule-avatar" style="background:${avatarColor(a.name)}">${esc(a.initial)}</span>
+          <span class="app-avatar rule-avatar" style="background:${avatarColor(a.name)}">${esc(a.initial)}</span>
           <span class="rule-copy"><b>${esc(a.name)}</b><small>${esc(rule.package)}</small></span>
           <span class="mode-badge">${esc(MODES[rule.mode]?.name || "未知")}</span>
-          <svg class="chev" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
+          <svg class="chev" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg>
         </button>`;
       }).join("");
     }
@@ -774,8 +780,6 @@
   $$(".dock button").forEach(button => button.onclick = () => setPage(button.dataset.page));
 
   /* ---------------- 触控高光（借鉴 SleepDown 的 InteractiveHighlight） ---------------- */
-  document.addEventListener("pointerdown", markSheen, { passive: true });
-  document.addEventListener("pointermove", markSheen, { passive: true });
   function markSheen(event) {
     const target = event.target instanceof Element ? event.target.closest("[data-sheen]") : null;
     if (!target) return;
@@ -783,14 +787,16 @@
     target.style.setProperty("--mx", `${event.clientX - rect.left}px`);
     target.style.setProperty("--my", `${event.clientY - rect.top}px`);
   }
+  document.addEventListener("pointerdown", markSheen, { passive: true });
+  document.addEventListener("pointermove", markSheen, { passive: true });
 
-  /* ---------------- 主题：深浅模式 + 强调色 + 玻璃强度 ---------------- */
+  /* ---------------- 主题：深浅模式 + 强调色 + 玻璃强度 + 壁纸 ---------------- */
   function applyTheme() {
     const dark = ui.theme === "dark" || (ui.theme === "system" && !!darkQuery?.matches);
     const root = document.documentElement;
     root.dataset.theme = dark ? "dark" : "light";
     root.dataset.accent = ui.accent;
-    $("meta[name=theme-color]").content = dark ? "#1b2030" : "#eef1f9";
+    $("meta[name=theme-color]").content = dark ? "#121212" : "#eef0f4";
     $$(".theme-picker button").forEach(button => button.classList.toggle("active", button.dataset.themeChoice === ui.theme));
     $$(".swatch-row button").forEach(button => button.classList.toggle("active", button.dataset.accentChoice === ui.accent));
     /* 玻璃强度同时驱动 WebGL 渲染器与 CSS 降级毛玻璃 */
@@ -798,10 +804,22 @@
     root.style.setProperty("--glass-blur", (12 + level * 0.36).toFixed(1) + "px");
     window.NovaGlass?.setLevel(level);
     window.NovaGlass?.setTheme(dark ? "dark" : "light", ui.accent);
+    window.NovaGlass?.setWallOptions({ blur: ui.wallBlur, brightness: ui.wallBright / 100 });
     const slider = $("#glass-level");
     if (slider) {
       if (slider.value !== String(level)) slider.value = String(level);
       present("#glass-value", String(level));
+    }
+    const wallBlurInput = $("#wall-blur"), wallBrightInput = $("#wall-bright");
+    if (wallBlurInput) {
+      if (wallBlurInput.value !== String(ui.wallBlur)) wallBlurInput.value = String(ui.wallBlur);
+      wallBlurInput.style.setProperty("--val", ui.wallBlur + "%");
+      present("#wall-blur-val", ui.wallBlur + "%");
+    }
+    if (wallBrightInput) {
+      if (wallBrightInput.value !== String(ui.wallBright)) wallBrightInput.value = String(ui.wallBright);
+      wallBrightInput.style.setProperty("--val", ((ui.wallBright - 40) / 60 * 100) + "%");
+      present("#wall-bright-val", ui.wallBright + "%");
     }
   }
   $$(".theme-picker button").forEach(button => button.onclick = () => {
@@ -812,19 +830,62 @@
     ui.accent = button.dataset.accentChoice; saveUI(); applyTheme();
     toast("强调色已切换为" + ACCENTS[ui.accent]);
   });
-  {
-    const slider = $("#glass-level");
-    if (slider) {
-      slider.oninput = event => {
-        const value = Number(event.target.value);
-        if (!Number.isFinite(value)) return;
-        ui.glassLevel = value;
-        applyTheme();  /* 拖动实时预览 */
-      };
-      slider.onchange = () => saveUI();  /* 松手才持久化 */
-    }
+  function bindSlider(id, apply) {
+    const slider = $(id);
+    if (!slider) return;
+    slider.oninput = () => {
+      const value = Number(slider.value);
+      if (!Number.isFinite(value)) return;
+      apply(value);
+      applyTheme();  /* 拖动实时预览 */
+    };
+    slider.onchange = () => saveUI();  /* 松手才持久化 */
   }
+  bindSlider("#glass-level", value => { ui.glassLevel = value; });
+  bindSlider("#wall-blur", value => { ui.wallBlur = value; });
+  bindSlider("#wall-bright", value => { ui.wallBright = value; });
   darkQuery?.addEventListener?.("change", applyTheme);
+
+  /* ---------------- 壁纸（选图 → 压缩存储 → 作为玻璃背景） ---------------- */
+  function loadWallpaperFromStorage() {
+    if (!ui.wallData || !ui.wallData.startsWith("data:image/")) return;
+    const img = new Image();
+    img.onload = () => window.NovaGlass?.setWallpaper(img);
+    img.src = ui.wallData;
+  }
+  $("#wall-pick")?.addEventListener("click", () => $("#wall-input")?.click());
+  $("#wall-clear")?.addEventListener("click", () => {
+    ui.wallData = ""; saveUI();
+    window.NovaGlass?.setWallpaper(null);
+    toast("已清除背景壁纸");
+  });
+  $("#wall-input")?.addEventListener("change", event => {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        /* 压缩到最长边 1280px 的 JPEG，控制 localStorage 占用 */
+        const maxSide = 1280;
+        const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+        const canvasEl = document.createElement("canvas");
+        canvasEl.width = Math.max(1, Math.round(img.naturalWidth * scale));
+        canvasEl.height = Math.max(1, Math.round(img.naturalHeight * scale));
+        canvasEl.getContext("2d").drawImage(img, 0, 0, canvasEl.width, canvasEl.height);
+        try {
+          ui.wallData = canvasEl.toDataURL("image/jpeg", 0.82);
+        } catch (_) { toast("当前 WebView 无法读取图片"); return; }
+        saveUI();
+        window.NovaGlass?.setWallpaper(img);
+        toast("背景壁纸已更新");
+      };
+      img.onerror = () => toast("图片无法解析，请换一张试试");
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
 
   /* ---------------- 弹窗 ---------------- */
   let dialogFocus = null;
@@ -879,8 +940,8 @@
         ${Object.entries(MODES).map(([mode, info]) => `<button type="button" data-chip="${mode}" class="${mode === selected ? "active" : ""}">${info.name}</button>`).join("")}
       </div>
       <div class="dialog-actions">
-        <button class="btn btn-ghost" type="button" id="dialog-cancel">取消</button>
-        <button class="btn btn-accent" type="button" id="dialog-save">保存规则</button>
+        <button class="btn-capsule ghost" type="button" id="dialog-cancel">取消</button>
+        <button class="btn-capsule accent" type="button" id="dialog-save">保存规则</button>
       </div>
       ${existing ? '<button class="danger-link" type="button" id="dialog-delete">删除这条规则</button>' : ""}
     `);
@@ -908,10 +969,10 @@
       <p class="eyebrow">删除规则</p>
       <h3 id="dialog-title">删除「${esc(a.name)}」的规则？</h3>
       <p class="dialog-sub">删除后，这个应用沿用默认档位。其他应用规则保留。</p>
-      <p class="dialog-sub" style="font-family:ui-monospace,monospace;font-size:11px;">${esc(pkg)}</p>
+      <p class="dialog-sub mono" style="font-size:11px;">${esc(pkg)}</p>
       <div class="dialog-actions">
-        <button class="btn btn-ghost" type="button" id="dialog-cancel">返回编辑</button>
-        <button class="btn btn-accent" type="button" id="dialog-confirm" style="background:var(--err);">删除规则</button>
+        <button class="btn-capsule ghost" type="button" id="dialog-cancel">返回编辑</button>
+        <button class="btn-capsule" type="button" id="dialog-confirm" style="background:rgba(255,69,58,.18);color:var(--err);">删除规则</button>
       </div>
     `);
     $("#dialog-cancel").onclick = () => showRuleEditor(pkg);
@@ -929,8 +990,8 @@
       <p class="eyebrow">${sceneOnly ? "SCENE" : "DIAGNOSTICS"}</p>
       <h3 id="dialog-title">${sceneOnly ? "Scene 检测详情" : "运行诊断"}</h3>
       <p class="dialog-sub">${sceneOnly ? "读取包管理器结果、安装记录和调度回调。重新注册会保留现有外部调度器。" : "读取服务与节点状态，采样约 10 秒。"}</p>
-      <div class="dialog-actions"><button class="btn btn-ghost" id="dialog-copy" type="button">复制命令</button><button class="btn btn-accent" id="dialog-run" type="button" ${typeof bridge()?.exec === "function" ? "" : "disabled"}>读取诊断</button></div>
-      ${sceneOnly ? `<button class="btn btn-ghost" id="scene-register" type="button" ${typeof bridge()?.exec === "function" ? "" : "disabled"}>重新检测并注册</button>` : ""}
+      <div class="dialog-actions"><button class="btn-capsule ghost" id="dialog-copy" type="button">复制命令</button><button class="btn-capsule accent" id="dialog-run" type="button" ${typeof bridge()?.exec === "function" ? "" : "disabled"}>读取诊断</button></div>
+      ${sceneOnly ? `<button class="btn-capsule ghost" id="scene-register" type="button" ${typeof bridge()?.exec === "function" ? "" : "disabled"}>重新检测并注册</button>` : ""}
       <pre class="report" id="dialog-report" hidden></pre>
     `);
     const report = $("#dialog-report");
@@ -974,10 +1035,17 @@
   $("#hero-reconnect").onclick = () => { if (!s.suspended) { clearTimeout(s.retry); discover(); toast("正在重新发现本地服务"); } };
   $("#hero-diagnose").onclick = () => showDiagnostics();
   $("#scene-diagnose").onclick = () => showDiagnostics(true);
-  $("#nav-brand").onclick = event => {event.preventDefault(); setPage("overview");};
+  $("#nav-brand").onclick = () => setPage("overview");
+  $("#nav-brand").addEventListener("keydown", event => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setPage("overview"); }
+  });
   $("#about-diagnose").onclick = event => { event.preventDefault(); showDiagnostics(); };
   $("#about-license").onclick = event => { event.preventDefault(); toast("GPL-3.0-only · 许可文本见模块内 LICENSE"); };
   $("#nav-cta").onclick = () => { if (!s.online && !s.connecting) { clearTimeout(s.retry); discover(); } };
+  $(".assistant-card").onclick = () => showDiagnostics();
+  $(".assistant-card").addEventListener("keydown", event => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); showDiagnostics(); }
+  });
   $$(".log-tools [data-level]").forEach(button => button.onclick = () => {
     s.level = button.dataset.level;
     $$(".log-tools [data-level]").forEach(node => node.classList.toggle("active", node === button));
@@ -999,7 +1067,7 @@
       <h3 id="dialog-title">${esc(line.time || "本地记录")} · ${LV_TAG[line.level]}</h3>
       <pre class="report">${esc(line.raw)}</pre>
       <div class="dialog-actions">
-        <button class="btn btn-accent" type="button" id="dialog-cancel">关闭</button>
+        <button class="btn-capsule accent" type="button" id="dialog-cancel">关闭</button>
       </div>
     `);
     $("#dialog-cancel").onclick = closeDialog;
@@ -1020,6 +1088,7 @@
   window.addEventListener("pageshow", resume);
 
   applyTheme();
+  loadWallpaperFromStorage();
   setPage("overview");
   render();
   renderLogs();

@@ -2,8 +2,10 @@
  * 移植自 LiquidGlassView（AndroidLiquidGlassView → WebGL 单文件版，基于
  * QmDeve/AndroidLiquidGlassView，MIT 许可）：
  * AGSL 圆角矩形折射着色器保留（SDF 折射、深度渐变、光谱色散、线性 sRGB 饱和度），
- * 改为单一全屏画布渲染所有注册的玻璃表面，背景光斑在着色器内程序化生成，
- * 无纹理上传、无逐元素滤镜，帧率与分辨率受控以适配手机 WebView。
+ * 改为单一全屏画布渲染所有注册的玻璃表面。
+ * 背景支持两种来源：程序化光斑（无壁纸）或用户壁纸（主体采样预模糊纹理、
+ * 折射边缘采样清晰纹理，对应 SleepDown 的 backdrop blur + lens 结构）。
+ * 无纹理上传热路径：壁纸仅在设置/尺寸变化时重新上传一次。
  * 无 WebGL 时退回 CSS 毛玻璃（body.glass-flat）。 */
 (() => {
   "use strict";
@@ -19,12 +21,12 @@
   const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)") ||
     { matches: false, addEventListener() {} };
 
-  /* ---------------- 主题配色（深浅 + 强调色） ---------------- */
+  /* ---------------- 主题配色（对应 SleepDown 的玻璃材质常量） ---------------- */
   const THEMES = {
     dark: {
       baseA: [0.055, 0.065, 0.115], baseB: [0.145, 0.100, 0.215],
-      tint: [0.043, 0.047, 0.078], tintAlpha: 0.40,
-      sat: 1.16, rim: 0.52,
+      tint: [0.071, 0.071, 0.071], tintAlpha: 0.40,     // #121212
+      sat: 1.12, rim: 0.50,
       blobs: [
         [0.20, 0.44, 0.80], [0.42, 0.24, 0.72], [0.08, 0.46, 0.55],
         [0.52, 0.20, 0.42], [0.16, 0.28, 0.62], [0.68, 0.72, 0.92], [0.30, 0.55, 0.85],
@@ -34,8 +36,8 @@
     },
     light: {
       baseA: [0.925, 0.945, 0.985], baseB: [0.845, 0.875, 0.965],
-      tint: [0.988, 0.990, 1.0], tintAlpha: 0.46,
-      sat: 1.06, rim: 0.60,
+      tint: [0.949, 0.957, 0.973], tintAlpha: 0.46,     // #F2F4F8
+      sat: 1.06, rim: 0.58,
       blobs: [
         [0.58, 0.74, 1.0], [0.96, 0.78, 0.87], [0.70, 0.90, 0.83],
         [0.80, 0.76, 1.0], [1.0, 0.87, 0.76], [0.70, 0.84, 1.0], [0.86, 0.92, 1.0],
@@ -44,12 +46,14 @@
       blobI: [0.90, 0.85, 0.80, 0.78, 0.76, 0.72, 0.68],
     },
   };
-  /* 强调色把对应光斑染成主题色，强调色切换时背景跟着变 */
   const ACCENT_TINTS = {
-    blue:   [0.30, 0.55, 1.00], indigo: [0.45, 0.44, 0.98], purple: [0.68, 0.36, 0.96],
-    rose:   [1.00, 0.36, 0.55], amber:  [1.00, 0.62, 0.20], green:  [0.20, 0.78, 0.42],
+    blue:   [0.039, 0.518, 1.0],   /* #0A84FF */
+    indigo: [0.369, 0.361, 0.902],
+    purple: [0.749, 0.353, 0.949],
+    rose:   [1.0, 0.216, 0.373],
+    amber:  [1.0, 0.624, 0.039],
+    green:  [0.188, 0.820, 0.345],
   };
-  /* 光斑初始位置（屏幕比例）与漂移参数 */
   const BLOB_POS = [
     [0.18, 0.14], [0.86, 0.20], [0.10, 0.62], [0.90, 0.78], [0.52, 0.46], [0.34, 0.06], [0.70, 0.60],
   ];
@@ -58,12 +62,48 @@
     [0.035, 0.047], [0.070, 0.058], [0.045, 0.036],
   ];
 
-  let themeName = document.documentElement.dataset.theme === "light" ? "light" : "dark";
-  let accentName = document.documentElement.dataset.accent || "blue";
+  let themeName = "dark";
+  let accentName = "blue";
   let level = 55;
 
+  /* ---------------- 壁纸（清晰 + 预模糊两层，cover 适配画布） ---------------- */
+  const wallSharp = document.createElement("canvas");
+  const wallBlur = document.createElement("canvas");
+  const wallCtx = wallSharp.getContext("2d");
+  const wallBlurCtx = wallBlur.getContext("2d");
+  let wallImage = null;
+  let wallBlurPercent = 0;
+  let wallBrightness = 1;
+  let wallDirty = false;
+  let wallGlReady = false;
+
+  function drawWallLayers() {
+    if (!wallImage) return;
+    const w = Math.max(2, Math.round(cssW * dpr));
+    const h = Math.max(2, Math.round(cssH * dpr));
+    const scale = Math.min(1, Math.sqrt(1600000 / (w * h)));
+    const pw = Math.max(2, Math.round(w * scale));
+    const ph = Math.max(2, Math.round(h * scale));
+    for (const [target, ctx] of [[wallSharp, wallCtx], [wallBlur, wallBlurCtx]]) {
+      if (target.width !== pw || target.height !== ph) { target.width = pw; target.height = ph; }
+      ctx.clearRect(0, 0, pw, ph);
+    }
+    /* cover 适配 */
+    const iw = wallImage.naturalWidth || wallImage.width;
+    const ih = wallImage.naturalHeight || wallImage.height;
+    if (!iw || !ih) return;
+    const cover = Math.max(pw / iw, ph / ih);
+    const dw = iw * cover, dh = ih * cover;
+    wallCtx.drawImage(wallImage, (pw - dw) / 2, (ph - dh) / 2, dw, dh);
+    const blurPx = Math.round(wallBlurPercent * 0.004 * Math.max(pw, ph));
+    wallBlurCtx.filter = blurPx > 0 ? `blur(${blurPx}px)` : "none";
+    wallBlurCtx.drawImage(wallSharp, 0, 0);
+    wallBlurCtx.filter = "none";
+    wallDirty = true;
+  }
+
   /* ---------------- 表面注册表 ---------------- */
-  const surfaces = new Map();   // el -> {x,y,w,h,r,stale,ro}
+  const surfaces = new Map();
   let rectsDirty = true;
   let staleAll = true;
   let observer = null;
@@ -95,7 +135,7 @@
       if (surfaces.has(el)) continue;
       const record = { x: 0, y: 0, w: 0, h: 0, r: 0, stale: true, radius: Number(el.dataset.radius ?? 24), ro: null };
       surfaces.set(el, record);
-      if (observer) { try { record.ro = observer.observe(el); } catch (_) {} }
+      if (observer) { try { observer.observe(el); } catch (_) {} }
       rectsDirty = true;
     }
     for (const [el, record] of surfaces) {
@@ -114,25 +154,25 @@
     rectsDirty = true;
   }
 
-  /* ---------------- 可调参数（玻璃强度滑杆） ---------------- */
-  const params = { refH: 20, refO: 58, disp: 0.55 };
+  /* ---------------- 可调参数 ---------------- */
+  const params = { refH: 20, refO: 60, disp: 0.55 };
   function setLevel(value) {
     level = Math.max(0, Math.min(100, Number(value) || 0));
-    params.refH = 16 + level * 0.07;
-    params.refO = 34 + level * 0.30;
-    params.disp = 0.35 + level * 0.004;
+    params.refH = 15 + level * 0.06;
+    params.refO = 30 + level * 0.32;
+    params.disp = 0.32 + level * 0.004;
     paramsDirty = true;
   }
   let paramsDirty = true;
 
   /* ---------------- WebGL ---------------- */
   let gl = null, prog = null, uni = null, failed = false;
+  let wallTexBlur = null, wallTexSharp = null;
 
   const VERT_SRC =
     "attribute vec2 aPos;" +
     "void main() { gl_Position = vec4(aPos, 0.0, 1.0); }";
 
-  /* 与原版逐行对应的折射着色器，扩展为多表面循环 + 程序化背景 */
   const FRAG_SRC = [
     "#ifdef GL_FRAGMENT_PRECISION_HIGH", "precision highp float;",
     "#else", "precision mediump float;", "#endif",
@@ -151,6 +191,9 @@
     "uniform vec3 uAccent;",
     "uniform float uSat;",
     "uniform float uRim;",
+    "uniform sampler2D uWallBlurTex;",
+    "uniform sampler2D uWallSharpTex;",
+    "uniform vec4 uWallMeta;",   /* has, brightness, 0, 0 */
     "const vec3 rgbToY = vec3(0.2126, 0.7152, 0.0722);",
     "vec3 toLinearSrgb(vec3 c) {",
     "  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));",
@@ -188,7 +231,13 @@
     "  if (len > 0.001) return value / len;",
     "  return fallback;",
     "}",
+    "vec3 wallpaper(vec2 p, float sharp) {",
+    "  vec2 uv = p / uRes;",
+    "  vec3 c = mix(texture2D(uWallBlurTex, uv).rgb, texture2D(uWallSharpTex, uv).rgb, sharp);",
+    "  return c * uWallMeta.y;",
+    "}",
     "vec3 background(vec2 p) {",
+    "  if (uWallMeta.x > 0.5) return wallpaper(p, 0.0);",
     "  vec2 uv = p / uRes;",
     "  vec3 col = mix(uBaseA, uBaseB, clamp(uv.y * 0.85 + uv.x * 0.30, 0.0, 1.0));",
     "  for (int i = 0; i < " + MAX_BLOBS + "; i++) {",
@@ -199,6 +248,10 @@
     "    col = mix(col, uBlobCol[i], fall * fall * b.w);",
     "  }",
     "  return col;",
+    "}",
+    "vec3 backgroundEdge(vec2 p) {",
+    "  if (uWallMeta.x > 0.5) return wallpaper(p, 1.0);",
+    "  return background(p);",
     "}",
     "void main() {",
     "  vec2 coord = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);",
@@ -234,9 +287,9 @@
     "      float dispIntensity = uDisp * ((centeredCoord.x * centeredCoord.y) / (halfSize.x * halfSize.y));",
     "      vec2 dispVec = d * grad * dispIntensity * 2.0;",
     "      vec3 refr = vec3(",
-    "        background(refracted + dispVec).r,",
-    "        background(refracted).g,",
-    "        background(refracted - dispVec).b);",
+    "        backgroundEdge(refracted + dispVec).r,",
+    "        backgroundEdge(refracted).g,",
+    "        backgroundEdge(refracted - dispVec).b);",
     "      base = refr;",
     "      float rimBand = 1.0 - smoothstep(0.0, uRefH, -bestSd);",
     "      vec2 lightDir = vec2(-0.55, -0.835);",
@@ -259,6 +312,16 @@
     if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
     return sh;
   }
+  function makeTexture(unit) {
+    const tex = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    return tex;
+  }
   function initGL() {
     if (failed || !canvas) return false;
     try {
@@ -280,9 +343,18 @@
       gl.enableVertexAttribArray(aPos);
       gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
       const names = ["uRes","uBaseA","uBaseB","uBlobs","uBlobCol","uRects","uRadii","uCount",
-        "uRefH","uRefO","uDisp","uTint","uAccent","uSat","uRim"];
+        "uRefH","uRefO","uDisp","uTint","uAccent","uSat","uRim","uWallBlurTex","uWallSharpTex","uWallMeta"];
       uni = {};
       for (const name of names) uni[name] = gl.getUniformLocation(prog, name);
+      gl.uniform1i(uni.uWallBlurTex, 0);
+      gl.uniform1i(uni.uWallSharpTex, 1);
+      wallTexBlur = makeTexture(0);
+      wallTexSharp = makeTexture(1);
+      /* 空纹理占位，避免采样未绑定纹理时的未定义行为 */
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+      gl.activeTexture(gl.TEXTURE1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+      gl.activeTexture(gl.TEXTURE0);
       canvas.addEventListener("webglcontextlost", event => { event.preventDefault(); gl = null; applyFallback(); }, false);
       canvas.addEventListener("webglcontextrestored", () => { gl = null; failed = false; if (initGL()) bootGL(); }, false);
       return true;
@@ -302,7 +374,6 @@
   const blobColData = new Float32Array(MAX_BLOBS * 3);
   let animId = 0, lastFrame = 0, visible = !document.hidden;
   let motionless = false;
-  const startTime = performance.now();
 
   function resizeCanvas() {
     if (!gl || !canvas) return;
@@ -316,6 +387,21 @@
     dpr *= scale;
     staleAll = true;
     rectsDirty = true;
+    if (wallImage) drawWallLayers();
+  }
+
+  function uploadWallpaper() {
+    if (!gl || !wallImage) return;
+    const source = wallBlurPercent > 0 ? wallBlur : wallSharp;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, wallTexBlur);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, wallTexSharp);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, wallSharp);
+    gl.activeTexture(gl.TEXTURE0);
+    wallGlReady = true;
+    wallDirty = false;
   }
 
   function pushUniforms(time) {
@@ -358,16 +444,22 @@
     gl.uniform1f(uni.uRefH, params.refH * dpr);
     gl.uniform1f(uni.uRefO, -params.refO * dpr);
     gl.uniform1f(uni.uDisp, params.disp);
-    gl.uniform4f(uni.uTint, theme.tint[0], theme.tint[1], theme.tint[2],
-      Math.max(0.24, theme.tintAlpha - level * 0.0012));
+    /* 壁纸模式下减弱 tint，让玻璃更透（对应 SleepDown 的 PanelTintAlpha 0.15 一档） */
+    const wallActive = wallGlReady && wallImage ? 1 : 0;
+    const tintAlpha = wallActive
+      ? Math.max(0.16, theme.tintAlpha - 0.16 - level * 0.001)
+      : Math.max(0.24, theme.tintAlpha - level * 0.0012);
+    gl.uniform4f(uni.uTint, theme.tint[0], theme.tint[1], theme.tint[2], tintAlpha);
     gl.uniform3f(uni.uAccent, accent[0], accent[1], accent[2]);
     gl.uniform1f(uni.uSat, theme.sat + level * 0.001);
     gl.uniform1f(uni.uRim, theme.rim);
+    gl.uniform4f(uni.uWallMeta, wallActive, wallBrightness, 0, 0);
   }
 
   function render(time) {
     if (!gl) return;
     if (staleAll || rectsDirty) refresh();
+    if (wallDirty) uploadWallpaper();
     pushUniforms(time);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     rectsDirty = false;
@@ -398,6 +490,21 @@
     setTheme(name, accent) {
       if (name === "light" || name === "dark") themeName = name;
       if (accent && ACCENT_TINTS[accent]) accentName = accent;
+      paramsDirty = true;
+      renderNow(); ensureLoop();
+    },
+    setWallpaper(image) {
+      wallImage = image && (image.naturalWidth || image.width) ? image : null;
+      if (wallImage) drawWallLayers();
+      wallGlReady = !!wallImage && wallGlReady;
+      if (!wallImage) { wallGlReady = false; }
+      paramsDirty = true;
+      renderNow(); ensureLoop();
+    },
+    setWallOptions({ blur, brightness } = {}) {
+      if (Number.isFinite(blur)) wallBlurPercent = Math.max(0, Math.min(100, blur));
+      if (Number.isFinite(brightness)) wallBrightness = Math.max(0.3, Math.min(1.2, brightness));
+      if (wallImage) drawWallLayers();
       paramsDirty = true;
       renderNow(); ensureLoop();
     },

@@ -40,7 +40,7 @@ async function main(){
     const {dom,w,d,errors,cleanup}=await fixture(options);
     try{
       assert.equal(d.querySelector('#stat-pkg-raw').textContent,'com.omarea.vtools');
-      if(options.linked){assert.equal(d.querySelector('#stat-scene').textContent,'Scene 联动中');assert(d.querySelector('#auto-switch').disabled);assert.equal(d.querySelector('#hero-auto').textContent,'Scene 正在控制档位');}
+      if(options.linked){assert.equal(d.querySelector('#stat-scene').textContent,'Scene 联动中');assert(d.querySelector('#auto-switch').disabled);assert.equal(d.querySelector('#hero-auto').title,'Scene 正在控制档位');}
       if(options.presence==='unknown')assert.equal(d.querySelector('#stat-scene').textContent,'Scene 检测暂不可用');
       if(options.presence==='absent')assert.equal(d.querySelector('#stat-scene').textContent,'WebUI 接管');
       for(const tab of ['modes','rules','logs','about']){click(d,`.dock button[data-page="${tab}"]`);assert.equal(d.querySelector('.page.active').id,'page-'+tab);if(tab==='logs')await until(()=>d.querySelectorAll('#log-list article').length>=2);}
