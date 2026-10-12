@@ -1,4 +1,4 @@
-/* NovaSched Zen Edition WebUI v2.2.5.
+/* NovaSched Zen Edition WebUI v2.2.6.
  * 视觉设计照搬 SleepDown 课程表官网的液态玻璃语言（见 app.css）。
  * 连接协议沿用守护进程的既有契约：认证 WebSocket（/modes /app-modes /logs）
  * 与宿主 root 备用通道；渲染永远反映实际读回，不把“已发送”当“已生效”。
@@ -43,10 +43,13 @@
     discovered: false, logConnected: false, logConnecting: false, logs: [], logTail: "", level: "all", follow: true,
     logReceived: false,
   };
-  const ui = { theme: "system" };
+  const ACCENTS = { blue: "蓝色", indigo: "靛色", purple: "紫色", rose: "粉色", amber: "橙色", green: "绿色" };
+  const ui = { theme: "system", accent: "blue", glassLevel: 55 };
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE) || "{}");
     if (own(THEME_NAMES, saved.theme)) ui.theme = saved.theme;
+    if (own(ACCENTS, saved.accent)) ui.accent = saved.accent;
+    if (Number.isInteger(saved.glassLevel) && saved.glassLevel >= 0 && saved.glassLevel <= 100) ui.glassLevel = saved.glassLevel;
   } catch (_) { /* 宿主 WebView 可能禁用存储 */ }
   const saveUI = () => { try { localStorage.setItem(STORAGE, JSON.stringify(ui)); } catch (_) {} };
 
@@ -592,7 +595,7 @@
       : s.automatic ? "自动调度 · 已开启（点按关闭）" : "自动调度 · 已关闭（点按开启）";
 
     const heartbeat = s.online && Number.isFinite(s.heartbeat) ? `${(Math.round(s.heartbeat / 100) / 10).toFixed(1)}s` : "—";
-    present("#hero-compat", `NovaSched ${s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.5"} · 守护心跳 ${heartbeat} · ${sourceLabel()}`);
+    present("#hero-compat", `NovaSched ${s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.6"} · 守护心跳 ${heartbeat} · ${sourceLabel()}`);
 
     /* Shot 卡 1：当前档位 */
     present("#shot-mode-name", s.online ? (s.external ? "外部控制" : MODES[s.effective]?.name || "待确认") : "待确认");
@@ -666,11 +669,11 @@
     $("#add-rule").disabled = !editable() || !!s.pending;
 
     /* 关于 */
-    present("#about-version", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.5");
+    present("#about-version", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.6");
     present("#about-soc", s.online && s.soc ? s.soc : "待识别");
     present("#about-profile", s.online && s.configProfile ? s.configProfile : "待识别");
     present("#about-fas", s.fasAvailable ? "已就绪 · 档位联动" : "未检测到（可选）");
-    present("#footer-version", (s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.5") + " · ZenJooo");
+    present("#footer-version", (s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.6") + " · ZenJooo");
   }
   function renderRules() {
     const root = $("#rule-list");
@@ -737,17 +740,46 @@
   $$(".tab-bar button").forEach(button => button.onclick = () => setPage(button.dataset.page));
   if (motionQuery?.matches) document.body.classList.add("no-motion");
 
-  /* ---------------- 主题 ---------------- */
+  /* ---------------- 主题：深浅模式 + 强调色 + 玻璃强度 ---------------- */
   function applyTheme() {
     const dark = ui.theme === "dark" || (ui.theme === "system" && !!darkQuery?.matches);
-    document.documentElement.dataset.theme = dark ? "dark" : "light";
+    const root = document.documentElement;
+    root.dataset.theme = dark ? "dark" : "light";
+    root.dataset.accent = ui.accent;
     $("meta[name=theme-color]").content = dark ? "#0a0d13" : "#f5f7fa";
     $$(".theme-picker button").forEach(button => button.classList.toggle("active", button.dataset.themeChoice === ui.theme));
+    $$(".swatch-row button").forEach(button => button.classList.toggle("active", button.dataset.accentChoice === ui.accent));
+    /* 玻璃强度：blur 10–28px、饱和 1.4–2.0、液态环 4–18px，实时写入 CSS 变量 */
+    const level = ui.glassLevel, style = root.style;
+    style.setProperty("--glass-blur", (10 + level * 0.18).toFixed(1) + "px");
+    style.setProperty("--glass-sat", (1.4 + level * 0.006).toFixed(2));
+    style.setProperty("--lg-ring", (4 + level * 0.14).toFixed(1) + "px");
+    const slider = $("#glass-level");
+    if (slider) {
+      if (slider.value !== String(level)) slider.value = String(level);
+      slider.style.setProperty("--fill", level + "%");
+      present("#glass-value", String(level));
+    }
   }
   $$(".theme-picker button").forEach(button => button.onclick = () => {
     ui.theme = button.dataset.themeChoice; saveUI(); applyTheme();
     toast("外观已切换为" + THEME_NAMES[ui.theme]);
   });
+  $$(".swatch-row button").forEach(button => button.onclick = () => {
+    ui.accent = button.dataset.accentChoice; saveUI(); applyTheme();
+    toast("强调色已切换为" + ACCENTS[ui.accent]);
+  });
+  {
+    const slider = $("#glass-level");
+    if (slider) slider.oninput = event => {
+      const value = Number(event.target.value);
+      if (!Number.isFinite(value)) return;
+      ui.glassLevel = value;
+      /* 拖动实时预览；松手才持久化 */
+      applyTheme();
+    };
+    if (slider) slider.onchange = () => saveUI();
+  }
   darkQuery?.addEventListener?.("change", applyTheme);
 
   /* ---------------- 弹窗 ---------------- */

@@ -57,7 +57,7 @@ pub fn presence() -> ScenePresence {
         }
     }
     let state = probe_presence(util::current_android_user(), |program, args| {
-        util::query_command(program, args, Duration::from_secs(2))
+        util::query_command(program, args, Duration::from_secs(4))
     });
     if let Ok(mut cached) = cache.lock() {
         *cached = Some((Instant::now(), state.clone()));
@@ -127,6 +127,50 @@ fn probe_presence(
             "当前用户 {user} 的 Scene 安装状态查询失败: {}",
             failures.join("；")
         ),
+    }
+    .with_global_fallback()
+}
+
+/// Hard floor for detection: on some ROMs `cmd`/`pm` are slow to answer or
+/// refuse the query entirely, which used to leave presence Unknown forever
+/// even though Scene N1 was installed (package id com.omarea.vtools).
+/// /data/system/packages.list is world-parseable for root in milliseconds;
+/// a family hit upgrades Unknown to Available with an honest note, and a
+/// miss is authoritative absence (nothing of the family exists at all).
+fn global_package_record_fallback() -> ScenePresence {
+    const GLOBAL_LIST: &str = "/data/system/packages.list";
+    let Ok(text) = util::read_text(Path::new(GLOBAL_LIST)) else {
+        return ScenePresence {
+            availability: SceneAvailability::Unknown,
+            evidence: "包管理器查询失败，且全局包记录 /data/system/packages.list 不可读".into(),
+        };
+    };
+    let found = text.lines().any(|line| {
+        is_scene_package(line.split_whitespace().next().unwrap_or(""))
+    });
+    if found {
+        ScenePresence {
+            availability: SceneAvailability::Available,
+            evidence: "全局包记录 /data/system/packages.list 中发现 Scene 系包名（包管理器逐用户查询不可用，按已安装处理）".into(),
+        }
+    } else {
+        ScenePresence {
+            availability: SceneAvailability::Absent,
+            evidence: "全局包记录 /data/system/packages.list 中无任何 Scene 系包名；按未安装处理".into(),
+        }
+    }
+}
+
+impl ScenePresence {
+    fn with_global_fallback(self) -> Self {
+        if self.availability != SceneAvailability::Unknown {
+            return self;
+        }
+        let fallback = global_package_record_fallback();
+        ScenePresence {
+            availability: fallback.availability,
+            evidence: format!("{}；{}", self.evidence, fallback.evidence),
+        }
     }
 }
 

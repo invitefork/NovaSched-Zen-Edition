@@ -29,7 +29,7 @@
           <div class="hero-badges" id="hero-badges">
             <span data-tone="brand"><i class="dot"></i>等待本地服务</span>
           </div>
-          <p class="compatibility" id="hero-compat">NovaSched v2.2.5 · 需要宿主 root／Shell 权限</p>
+          <p class="compatibility" id="hero-compat">NovaSched v2.2.6 · 需要宿主 root／Shell 权限</p>
           <div class="overview-actions">
             <button class="button primary" id="hero-auto" type="button" disabled>自动调度 · 未知状态</button>
             <button class="button text-button" id="hero-reconnect" type="button">重新连接</button>
@@ -76,7 +76,7 @@
           <h1>四个档位，<br>各管一段。</h1>
           <p class="page-sub">省电、均衡、性能、极速按设备实际 policy 与频率范围下发；自动模式游戏极速、日用省电，手动选档会退出自动。</p>
         </header>
-        <div class="mode-board liquid">
+        <div class="mode-board liquid liquid-breathe">
           <div class="mode-grid" id="mode-grid">
             <button class="mode-card liquid" data-mode="powersave" type="button"><span class="badge" hidden>当前生效</span><b>省电</b><small>一省到底：进一步压低各簇频率上限</small></button>
             <button class="mode-card liquid" data-mode="balance" type="button"><span class="badge" hidden>当前生效</span><b>均衡</b><small>日用默认：保留流畅度的同时压住功耗</small></button>
@@ -115,7 +115,7 @@
           <h1>发生了什么，<br>写在这里。</h1>
           <p class="page-sub">进入本页时按需连接日志流，不在后台持续订阅；级别过滤、详情与复制都在。</p>
         </header>
-        <div class="log-board liquid">
+        <div class="log-board liquid liquid-breathe" style="--lg-radius: 32px">
           <div class="log-tools">
             <span class="segmented" role="group" aria-label="日志级别">
               <button data-level="all" class="active" type="button">全部</button>
@@ -139,7 +139,7 @@
           <h1>NovaSched<br>Zen Edition。</h1>
           <p class="page-sub">按处理器和内核能力映射 CPU 策略，支持应用单独设置、Scene N1 联动与 FAS 跟随。</p>
         </header>
-        <div class="about-card liquid">
+        <div class="about-card liquid liquid-breathe" style="--lg-radius: 32px">
           <div class="about-mark">N</div>
           <div class="about-copy">
             <p class="card-kicker">ABOUT</p>
@@ -149,10 +149,26 @@
               <div><dt>配置模板</dt><dd id="about-profile">—</dd></div>
               <div><dt>Scene FAS</dt><dd id="about-fas">—</dd></div>
             </dl>
-            <div class="theme-picker" role="group" aria-label="外观">
-              <button data-theme-choice="system" class="active" type="button">跟随系统</button>
-              <button data-theme-choice="light" type="button">浅色</button>
-              <button data-theme-choice="dark" type="button">深色</button>
+            <div class="appearance-block">
+              <p class="card-kicker">外观</p>
+              <div class="theme-picker" role="group" aria-label="深浅模式">
+                <button data-theme-choice="system" class="active" type="button">跟随系统</button>
+                <button data-theme-choice="light" type="button">浅色</button>
+                <button data-theme-choice="dark" type="button">深色</button>
+              </div>
+              <div class="swatch-row" role="group" aria-label="强调色">
+                <button data-accent-choice="blue" class="active" style="--sw:#007aff" aria-label="蓝色" type="button"></button>
+                <button data-accent-choice="indigo" style="--sw:#5e5ce6" aria-label="靛色" type="button"></button>
+                <button data-accent-choice="purple" style="--sw:#af52de" aria-label="紫色" type="button"></button>
+                <button data-accent-choice="rose" style="--sw:#ff375f" aria-label="粉色" type="button"></button>
+                <button data-accent-choice="amber" style="--sw:#ff9f0a" aria-label="橙色" type="button"></button>
+                <button data-accent-choice="green" style="--sw:#30b158" aria-label="绿色" type="button"></button>
+              </div>
+              <div class="glass-row">
+                <span>玻璃强度</span>
+                <input type="range" id="glass-level" min="0" max="100" value="55" aria-label="玻璃强度">
+                <b id="glass-value">55</b>
+              </div>
             </div>
             <div class="about-links">
               <a href="#" id="about-diagnose">诊断命令</a>
