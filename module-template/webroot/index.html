@@ -5,221 +5,175 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f5f7fa">
-  <title>NovaSched · 把性能，安排得刚刚好</title>
+  <title>NovaSched · Zen Edition</title>
   <link rel="stylesheet" href="/internal/insets.css">
   <link rel="stylesheet" href="./assets/app.css">
 </head>
 <body>
-  <a class="skip-link" href="#overview">跳到主要内容</a>
+  <a class="skip-link" href="#page-overview">跳到主要内容</a>
 
-  <header class="global-nav" id="nav">
+  <header class="global-nav">
     <span class="nav-brand"><span class="brand-mark">N</span><span class="brand-text">NovaSched</span></span>
-    <nav class="nav-dots" aria-label="页面导航">
-      <span class="nav-indicator" aria-hidden="true"></span>
-      <a href="#overview" data-section="overview">概览</a>
-      <a href="#modes" data-section="modes">档位</a>
-      <a href="#rules" data-section="rules">规则</a>
-      <a href="#logs" data-section="logs">日志</a>
-    </nav>
     <button class="nav-cta" id="nav-cta" data-state="connecting" type="button">
       <span class="dot" aria-hidden="true"></span><span id="nav-cta-text">连接中</span>
     </button>
   </header>
 
-  <section class="hero" id="top">
-    <div class="hero-copy">
-      <p class="eyebrow">NOVASCHED · ZEN EDITION</p>
-      <h1>把性能，<br>安排得刚刚好。</h1>
-      <p class="hero-sub" id="hero-sub">连接守护进程后，这里会显示真实的调度状态——不是猜测，是内核里刚生效的那一份。</p>
-      <div class="hero-badges" id="hero-badges">
-        <span data-tone="brand"><i class="dot"></i>等待本地服务</span>
-      </div>
-      <div class="hero-actions">
-        <button class="button primary" id="hero-auto" type="button" disabled>自动调度 · 未知状态</button>
-        <button class="button text-button" id="hero-reconnect" type="button">重新连接</button>
-        <button class="button text-button" id="hero-diagnose" type="button">诊断命令</button>
-      </div>
-      <p class="compatibility" id="hero-compat">NovaSched v2.2.2 · 需要宿主 root／Shell 权限</p>
-    </div>
-    <div class="hero-stage">
-      <div class="shot-stack" id="shot-stack">
-        <figure class="shot-card" data-pos="active">
-          <div class="shot-inner">
-            <span class="shot-title">01 · 当前档位</span>
-            <span class="shot-big" id="shot-mode-name">待确认</span>
-            <p class="shot-desc" id="shot-mode-desc">连接后显示实际生效的调度档位与说明。</p>
-            <div class="shot-row"><span>实际档位<small id="shot-mode-effective">等待心跳</small></span><i class="mini-dot"></i></div>
-            <div class="shot-row"><span>下发状态<small id="shot-mode-phase">—</small></span><i class="mini-dot"></i></div>
-            <div class="shot-row"><span>前台应用<small id="shot-mode-pkg">—</small></span><i class="mini-dot"></i></div>
+  <main>
+    <section class="page active" id="page-overview" aria-label="概览">
+      <div class="page-wrap">
+        <header class="page-head">
+          <p class="eyebrow">NOVASCHED · ZEN EDITION</p>
+          <h1>把性能，<br>安排得刚刚好。</h1>
+          <p class="page-sub" id="hero-sub">连接守护进程后，这里显示真实的调度状态——不是猜测，是内核里刚生效的那一份。</p>
+          <div class="hero-badges" id="hero-badges">
+            <span data-tone="brand"><i class="dot"></i>等待本地服务</span>
           </div>
-          <figcaption>实时档位</figcaption>
-        </figure>
-        <figure class="shot-card" data-pos="right">
-          <div class="shot-inner">
-            <span class="shot-title">02 · 四档调度</span>
-            <span class="shot-big">四档随心</span>
-            <p class="shot-desc">省电一省到底，均衡压住功耗，性能抬高响应，极速开放完整频率。</p>
-            <div class="shot-row" data-mode="powersave"><span>省电<small>一省到底</small></span><i class="mini-dot"></i></div>
-            <div class="shot-row" data-mode="balance"><span>均衡<small>日用默认</small></span><i class="mini-dot"></i></div>
-            <div class="shot-row" data-mode="performance"><span>性能<small>响应优先</small></span><i class="mini-dot"></i></div>
-            <div class="shot-row" data-mode="fast"><span>极速<small>游戏重载</small></span><i class="mini-dot"></i></div>
+          <p class="compatibility" id="hero-compat">NovaSched v2.2.3 · 需要宿主 root／Shell 权限</p>
+          <div class="overview-actions">
+            <button class="button primary" id="hero-auto" type="button" disabled>自动调度 · 未知状态</button>
+            <button class="button text-button" id="hero-reconnect" type="button">重新连接</button>
+            <button class="button text-button" id="hero-diagnose" type="button">诊断命令</button>
           </div>
-          <figcaption>档位一览</figcaption>
-        </figure>
-        <figure class="shot-card" data-pos="left">
-          <div class="shot-inner">
-            <span class="shot-title">03 · Scene FAS</span>
-            <span class="shot-big" id="shot-fas-title">FAS 联动</span>
-            <p class="shot-desc" id="shot-fas-desc">检测到 Scene N1 自带 FAS 时，档位切换自动同步其模式节点。</p>
-            <div class="shot-row"><span>FAS 节点<small id="shot-fas-node">待检测</small></span><i class="mini-dot"></i></div>
-            <div class="shot-row"><span>控制来源<small id="shot-fas-ctrl">—</small></span><i class="mini-dot"></i></div>
+        </header>
+        <div class="stat-grid">
+          <article class="stat-card">
+            <div class="stat-media"><span class="stat-cap">当前档位</span><span class="stat-big" id="stat-mode">—</span></div>
+            <div class="card-copy">
+              <h3>实际生效档位</h3>
+              <p id="stat-mode-note">连接后显示守护进程最后成功下发的档位。</p>
+            </div>
+          </article>
+          <article class="stat-card">
+            <div class="stat-media"><span class="stat-cap">前台应用</span><span class="stat-big" id="stat-pkg">—</span></div>
+            <div class="card-copy">
+              <h3>正在使用</h3>
+              <p id="stat-pkg-note">自动调度依据前台活动实时切换档位。</p>
+            </div>
+          </article>
+          <article class="stat-card">
+            <div class="stat-media"><span class="stat-cap">控制来源</span><span class="stat-big" id="stat-ctrl">—</span></div>
+            <div class="card-copy">
+              <h3>谁来调度</h3>
+              <p id="stat-ctrl-note">NovaSched、Scene 联动或外部调度器接管，这里永远如实显示。</p>
+            </div>
+          </article>
+          <article class="stat-card">
+            <div class="stat-media"><span class="stat-cap">Scene N1</span><span class="stat-big" id="stat-scene">—</span></div>
+            <div class="card-copy">
+              <h3>Scene 联动</h3>
+              <p id="stat-scene-note">检测到 Scene 即由它接管调度；未安装时由本页接管。</p>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="page" id="page-modes" aria-label="调度档位">
+      <div class="page-wrap">
+        <header class="page-head">
+          <p class="eyebrow">调度档位</p>
+          <h1>四个档位，<br>各管一段。</h1>
+          <p class="page-sub">省电、均衡、性能、极速按设备实际 policy 与频率范围下发；自动模式游戏极速、日用省电，手动选档会退出自动。</p>
+        </header>
+        <div class="mode-board">
+          <div class="mode-grid" id="mode-grid">
+            <button class="mode-card" data-mode="powersave" type="button"><span class="badge" hidden>当前生效</span><b>省电</b><small>一省到底：进一步压低各簇频率上限</small></button>
+            <button class="mode-card" data-mode="balance" type="button"><span class="badge" hidden>当前生效</span><b>均衡</b><small>日用默认：保留流畅度的同时压住功耗</small></button>
+            <button class="mode-card" data-mode="performance" type="button"><span class="badge" hidden>当前生效</span><b>性能</b><small>响应优先：适度抬高最低频率</small></button>
+            <button class="mode-card" data-mode="fast" type="button"><span class="badge" hidden>当前生效</span><b>极速</b><small>开放完整频率范围，跟随 FAS 全力响应</small></button>
           </div>
-          <figcaption>FAS 联动</figcaption>
-        </figure>
-      </div>
-      <div class="gallery-control">
-        <button id="shot-prev" type="button" aria-label="上一张"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
-        <span id="shot-index">1 / 3</span>
-        <button id="shot-next" type="button" aria-label="下一张"><svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>
-      </div>
-    </div>
-    <p class="scroll-hint"><i></i>向下了解<i></i></p>
-  </section>
-
-  <section class="section" id="overview">
-    <div class="section-heading reveal">
-      <p class="eyebrow">01 · 概览</p>
-      <h2>运行状态，一眼看清。</h2>
-      <p>每个数字都来自守护进程的实际读回——心跳、前台应用与控制来源，永远和内核里的状态一致。</p>
-    </div>
-    <div class="stat-grid">
-      <article class="stat-card reveal">
-        <div class="stat-media"><span class="stat-cap">当前档位</span><span class="stat-big" id="stat-mode">—</span></div>
-        <div class="card-copy">
-          <h3>实际生效档位</h3>
-          <p id="stat-mode-note">连接后显示守护进程最后成功下发的档位。</p>
-        </div>
-      </article>
-      <article class="stat-card reveal">
-        <div class="stat-media"><span class="stat-cap">前台应用</span><span class="stat-big" id="stat-pkg">—</span></div>
-        <div class="card-copy">
-          <h3>正在使用</h3>
-          <p id="stat-pkg-note">自动调度依据前台活动实时切换档位。</p>
-        </div>
-      </article>
-      <article class="stat-card reveal">
-        <div class="stat-media"><span class="stat-cap">控制来源</span><span class="stat-big" id="stat-ctrl">—</span></div>
-        <div class="card-copy">
-          <h3>谁来调度</h3>
-          <p id="stat-ctrl-note">NovaSched、Scene 联动或外部调度器接管，这里永远如实显示。</p>
-        </div>
-      </article>
-      <article class="stat-card reveal">
-        <div class="stat-media"><span class="stat-cap">Scene N1</span><span class="stat-big" id="stat-scene">—</span></div>
-        <div class="card-copy">
-          <h3>Scene 联动</h3>
-          <p id="stat-scene-note">检测到 Scene 即由它接管调度；未安装时由本页接管。</p>
-        </div>
-      </article>
-    </div>
-  </section>
-
-  <section class="section" id="modes">
-    <div class="section-heading reveal">
-      <p class="eyebrow">02 · 调度档位</p>
-      <h2>四个档位，各管一段。</h2>
-      <p>省电、均衡、性能、极速按设备实际 policy 与频率范围下发；自动模式游戏极速、日用省电，手动选档会退出自动。</p>
-    </div>
-    <div class="mode-board reveal">
-      <div class="mode-grid" id="mode-grid">
-        <button class="mode-card" data-mode="powersave" type="button"><span class="badge" hidden>当前生效</span><b>省电</b><small>一省到底：进一步压低各簇频率上限</small></button>
-        <button class="mode-card" data-mode="balance" type="button"><span class="badge" hidden>当前生效</span><b>均衡</b><small>日用默认：保留流畅度的同时压住功耗</small></button>
-        <button class="mode-card" data-mode="performance" type="button"><span class="badge" hidden>当前生效</span><b>性能</b><small>响应优先：适度抬高最低频率</small></button>
-        <button class="mode-card" data-mode="fast" type="button"><span class="badge" hidden>当前生效</span><b>极速</b><small>开放完整频率范围，跟随 FAS 全力响应</small></button>
-      </div>
-      <div class="mode-side">
-        <div class="auto-card">
-          <span><b>自动调度</b><small>游戏极速 · 日用与桌面省电 · 待机更深</small></span>
-          <button class="switch" id="auto-switch" role="switch" aria-checked="false" aria-label="自动调度" disabled type="button"></button>
-        </div>
-        <p class="mode-note" id="mode-note">高亮为实际生效档位；点击即切换，等待守护进程读回确认。</p>
-      </div>
-    </div>
-  </section>
-
-  <section class="section" id="rules">
-    <div class="section-heading reveal">
-      <p class="eyebrow">03 · 应用规则</p>
-      <h2>重要的应用，单独安排。</h2>
-      <p>关闭自动模式后，规则优先于默认档位：应用进入前台时自动切换，退出后回到默认。</p>
-    </div>
-    <div class="rule-list reveal" id="rule-list"></div>
-    <div class="rule-actions reveal">
-      <button class="button primary" id="add-rule" type="button" disabled>添加应用规则</button>
-    </div>
-  </section>
-
-  <section class="section" id="logs">
-    <div class="section-heading reveal">
-      <p class="eyebrow">04 · 日志</p>
-      <h2>发生了什么，写在这里。</h2>
-      <p>进入页面时按需连接日志流，不在后台持续订阅；级别过滤、详情与导出都在。</p>
-    </div>
-    <div class="log-board reveal">
-      <div class="log-tools">
-        <span class="segmented" role="group" aria-label="日志级别">
-          <button data-level="all" class="active" type="button">全部</button>
-          <button data-level="info" type="button">信息</button>
-          <button data-level="warn" type="button">警告</button>
-          <button data-level="error" type="button">错误</button>
-        </span>
-        <button class="switch" id="log-follow" role="switch" aria-checked="true" aria-label="跟随滚动" type="button"></button>
-        <button class="text-button button" id="log-copy" type="button" style="min-height:38px;padding:0 16px;font-size:12px;">复制筛选结果</button>
-        <span class="log-count" id="log-count">0 条</span>
-      </div>
-      <div class="log-list" id="log-list" tabindex="0"></div>
-    </div>
-  </section>
-
-  <section class="section" id="about">
-    <div class="about-card reveal">
-      <div class="about-mark">N</div>
-      <div class="about-copy">
-        <p class="card-kicker">ABOUT</p>
-        <h2>NovaSched Zen Edition</h2>
-        <dl class="about-facts">
-          <div><dt>模块版本</dt><dd id="about-version">—</dd></div>
-          <div><dt>处理器</dt><dd id="about-soc">—</dd></div>
-          <div><dt>配置模板</dt><dd id="about-profile">—</dd></div>
-          <div><dt>Scene FAS</dt><dd id="about-fas">—</dd></div>
-        </dl>
-        <div class="theme-picker" role="group" aria-label="外观">
-          <button data-theme-choice="system" class="active" type="button">跟随系统</button>
-          <button data-theme-choice="light" type="button">浅色</button>
-          <button data-theme-choice="dark" type="button">深色</button>
-        </div>
-        <div class="about-links">
-          <a href="#modes">查看档位</a>
-          <a href="#" id="about-license">GPL-3.0-only</a>
-          <a href="#" id="about-diagnose">诊断命令</a>
+          <div class="mode-side">
+            <div class="auto-card">
+              <span><b>自动调度</b><small>游戏极速 · 日用与桌面省电 · 待机更深</small></span>
+              <button class="switch" id="auto-switch" role="switch" aria-checked="false" aria-label="自动调度" disabled type="button"></button>
+            </div>
+            <p class="mode-note" id="mode-note">高亮为实际生效档位；点击即切换，等待守护进程读回确认。</p>
+          </div>
         </div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <footer>
-    <div class="footer-top">
-      <span class="nav-brand"><span class="brand-mark">N</span><span class="brand-text">NovaSched Zen Edition</span></span>
-      <span id="footer-version">v2.2.2 · ZenJooo</span>
-    </div>
-    <div class="footer-grid">
-      <div><b>调度</b><a href="#modes">四档说明</a><a href="#rules">应用规则</a><a href="#logs">运行日志</a></div>
-      <div><b>项目</b><a href="https://github.com/zeng060812-creator/NovaSched-Zen-Edition" target="_blank" rel="noopener">GitHub 仓库</a><a href="#about">关于模块</a></div>
-      <div><b>适配</b><a href="#overview">处理器识别</a><a href="#top">Scene N1 / FAS</a></div>
-    </div>
-    <p class="legal">按设备实际 CPU policy、频率范围与可用调速器下发调度；可选 CpuSet、uclamp 与 GPU 控制默认关闭。模块不写入任何温控、电池或充电节点。</p>
-    <p class="copyright">© NovaSched Zen Edition · GPL-3.0-only · 作者 ZenJooo · 界面设计语言来自 SleepDown 课程表</p>
-  </footer>
+    <section class="page" id="page-rules" aria-label="应用规则">
+      <div class="page-wrap">
+        <header class="page-head">
+          <p class="eyebrow">应用规则</p>
+          <h1>重要的应用，<br>单独安排。</h1>
+          <p class="page-sub">关闭自动模式后，规则优先于默认档位：应用进入前台时自动切换，退出后回到默认。</p>
+        </header>
+        <div class="rule-list" id="rule-list"></div>
+        <div class="rule-actions">
+          <button class="button primary" id="add-rule" type="button" disabled>添加应用规则</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="page" id="page-logs" aria-label="日志">
+      <div class="page-wrap">
+        <header class="page-head">
+          <p class="eyebrow">日志</p>
+          <h1>发生了什么，<br>写在这里。</h1>
+          <p class="page-sub">进入本页时按需连接日志流，不在后台持续订阅；级别过滤、详情与复制都在。</p>
+        </header>
+        <div class="log-board">
+          <div class="log-tools">
+            <span class="segmented" role="group" aria-label="日志级别">
+              <button data-level="all" class="active" type="button">全部</button>
+              <button data-level="info" type="button">信息</button>
+              <button data-level="warn" type="button">警告</button>
+              <button data-level="error" type="button">错误</button>
+            </span>
+            <button class="switch" id="log-follow" role="switch" aria-checked="true" aria-label="跟随滚动" type="button"></button>
+            <button class="text-button button" id="log-copy" type="button" style="min-height:38px;padding:0 16px;font-size:12px;">复制筛选结果</button>
+            <span class="log-count" id="log-count">0 条</span>
+          </div>
+          <div class="log-list" id="log-list" tabindex="0"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="page" id="page-about" aria-label="关于">
+      <div class="page-wrap">
+        <header class="page-head">
+          <p class="eyebrow">关于</p>
+          <h1>NovaSched<br>Zen Edition。</h1>
+          <p class="page-sub">按处理器和内核能力映射 CPU 策略，支持应用单独设置、Scene N1 联动与 FAS 跟随。</p>
+        </header>
+        <div class="about-card">
+          <div class="about-mark">N</div>
+          <div class="about-copy">
+            <p class="card-kicker">ABOUT</p>
+            <dl class="about-facts">
+              <div><dt>模块版本</dt><dd id="about-version">—</dd></div>
+              <div><dt>处理器</dt><dd id="about-soc">—</dd></div>
+              <div><dt>配置模板</dt><dd id="about-profile">—</dd></div>
+              <div><dt>Scene FAS</dt><dd id="about-fas">—</dd></div>
+            </dl>
+            <div class="theme-picker" role="group" aria-label="外观">
+              <button data-theme-choice="system" class="active" type="button">跟随系统</button>
+              <button data-theme-choice="light" type="button">浅色</button>
+              <button data-theme-choice="dark" type="button">深色</button>
+            </div>
+            <div class="about-links">
+              <a href="#" id="about-diagnose">诊断命令</a>
+              <a href="https://github.com/zeng060812-creator/NovaSched-Zen-Edition" target="_blank" rel="noopener">GitHub 仓库</a>
+              <a href="#" id="about-license">GPL-3.0-only</a>
+            </div>
+          </div>
+        </div>
+        <p class="about-foot">按设备实际 CPU policy、频率范围与可用调速器下发调度；可选 CpuSet、uclamp 与 GPU 控制默认关闭。模块不写入任何温控、电池或充电节点。界面设计语言来自 SleepDown 课程表。© NovaSched Zen Edition · 作者 ZenJooo</p>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tab-bar" aria-label="页面切换">
+    <span class="tab-indicator" aria-hidden="true"></span>
+    <button data-page="overview" aria-current="page" type="button"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg><span>概览</span></button>
+    <button data-page="modes" type="button"><svg viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h7M15 18h5"/><circle cx="16" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="13" cy="18" r="2"/></svg><span>档位</span></button>
+    <button data-page="rules" type="button"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h10"/><path d="M17 17l2 2 4-4" transform="translate(-2 -1)"/></svg><span>规则</span></button>
+    <button data-page="logs" type="button"><svg viewBox="0 0 24 24"><path d="M6 3h9l5 5v13H6z"/><path d="M14 3v6h6M9 13h6M9 17h6"/></svg><span>日志</span></button>
+    <button data-page="about" type="button"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8v.5"/></svg><span>关于</span></button>
+  </nav>
 
   <div class="dialog-layer" id="dialog-layer">
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">

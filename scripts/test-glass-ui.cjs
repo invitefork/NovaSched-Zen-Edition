@@ -45,9 +45,9 @@ check('design: glass nav with sliding indicator', () => {
 });
 check('design: hero copy, badges and gallery control', () => {
   assert(html.includes('把性能，'), 'hero headline missing');
-  assert(html.includes('shot-stack') && html.includes('gallery-control'), 'hero carousel missing');
-  assert(css.includes('.shot-card[data-pos="active"]'), 'carousel positions missing');
-  assert(html.includes('向下了解'), 'scroll hint missing');
+  assert(html.includes('class="tab-bar"') && html.includes('tab-indicator'), 'bottom tab bar missing');
+  assert(css.includes('.page.active') && css.includes('translateX(calc(var(--tab-index, 0)'), 'page switching missing');
+  assert(html.includes('id="page-logs"') && html.includes('id="page-about"'), 'five pages missing');
 });
 check('design: reveal scroll animations', () => {
   assert(css.includes('.reveal') && css.includes('.reveal.visible'), 'reveal animation missing');

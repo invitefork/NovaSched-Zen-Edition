@@ -1,4 +1,4 @@
-/* NovaSched Zen Edition WebUI v2.2.2.
+/* NovaSched Zen Edition WebUI v2.2.3.
  * 视觉设计照搬 SleepDown 课程表官网的液态玻璃语言（见 app.css）。
  * 连接协议沿用守护进程的既有契约：认证 WebSocket（/modes /app-modes /logs）
  * 与宿主 root 备用通道；渲染永远反映实际读回，不把“已发送”当“已生效”。
@@ -33,7 +33,7 @@
   };
 
   const s = {
-    page: "home", online: false, connecting: true, phase: "", error: "", connectionError: "", version: "",
+    page: "overview", online: false, connecting: true, phase: "", error: "", connectionError: "", version: "",
     mode: "", effective: "", pkg: "", controller: "", external: false, linked: false,
     heartbeat: null, soc: "", socId: "", configProfile: "", fasAvailable: false, sceneInstalled: false,
     automatic: false, automaticActive: false, appKind: "", classificationSource: "",
@@ -592,7 +592,7 @@
       : s.automatic ? "自动调度 · 已开启（点按关闭）" : "自动调度 · 已关闭（点按开启）";
 
     const heartbeat = s.online && Number.isFinite(s.heartbeat) ? `${(Math.round(s.heartbeat / 100) / 10).toFixed(1)}s` : "—";
-    present("#hero-compat", `NovaSched ${s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.2"} · 守护心跳 ${heartbeat} · ${sourceLabel()}`);
+    present("#hero-compat", `NovaSched ${s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.3"} · 守护心跳 ${heartbeat} · ${sourceLabel()}`);
 
     /* Shot 卡 1：当前档位 */
     present("#shot-mode-name", s.online ? (s.external ? "外部控制" : MODES[s.effective]?.name || "待确认") : "待确认");
@@ -666,11 +666,11 @@
     $("#add-rule").disabled = !editable() || !!s.pending;
 
     /* 关于 */
-    present("#about-version", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.2");
+    present("#about-version", s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.3");
     present("#about-soc", s.online && s.soc ? s.soc : "待识别");
     present("#about-profile", s.online && s.configProfile ? s.configProfile : "待识别");
     present("#about-fas", s.fasAvailable ? "已就绪 · 档位联动" : "未检测到（可选）");
-    present("#footer-version", (s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.2") + " · ZenJooo");
+    present("#footer-version", (s.version ? "v" + s.version.replace(/^v/, "") : "v2.2.3") + " · ZenJooo");
   }
   function renderRules() {
     const root = $("#rule-list");
@@ -710,69 +710,27 @@
     if (s.follow || nearBottom) output.scrollTop = output.scrollHeight;
     else output.scrollTop = oldScroll;
   }
-  const logsActive = () => window.location.hash === "#logs" || logSectionVisible;
+  const logsActive = () => s.page === "logs";
 
-  /* ---------------- Hero 轮播（照搬参考站的 1/3 指示 + 左右切换） ---------------- */
-  const shotPositions = ["active", "right", "left"];
-  let shotIndex = 0;
-  function layoutShots() {
-    const cards = $$("#shot-stack .shot-card");
-    cards.forEach((card, i) => {
-      card.dataset.pos = shotPositions[(i - shotIndex + shotPositions.length) % shotPositions.length];
+  /* ---------------- 页面切换（底部 tab 栏） ---------------- */
+  const PAGE_IDS = ["overview", "modes", "rules", "logs", "about"];
+  let currentPage = "overview";
+  function setPage(page) {
+    if (!PAGE_IDS.includes(page)) page = "overview";
+    const changed = currentPage !== page;
+    currentPage = page; s.page = page;
+    $$(".page").forEach(node => node.classList.toggle("active", node.id === "page-" + page));
+    $$(".tab-bar button").forEach(button => {
+      if (button.dataset.page === page) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
     });
-    present("#shot-index", `${shotIndex + 1} / ${cards.length}`);
+    $(".tab-bar").style.setProperty("--tab-index", String(PAGE_IDS.indexOf(page)));
+    if (changed) window.scrollTo({ top: 0, behavior: "instant" });
+    /* 日志页按需连接：进入才连，离开即断 */
+    if (page === "logs") openEndpoint("logs");
+    else { stopSocket("logs"); s.logConnected = false; s.logConnecting = false; renderLogs(); }
   }
-  $("#shot-prev").onclick = () => { shotIndex = (shotIndex + 1) % 3; layoutShots(); };
-  $("#shot-next").onclick = () => { shotIndex = (shotIndex + 2) % 3; layoutShots(); };
-  let touchX = null;
-  $("#shot-stack").addEventListener("pointerdown", e => { touchX = e.clientX; }, { passive: true });
-  $("#shot-stack").addEventListener("pointerup", e => {
-    if (touchX === null) return;
-    const dx = e.clientX - touchX; touchX = null;
-    if (Math.abs(dx) < 40) return;
-    if (dx < 0) { shotIndex = (shotIndex + 1) % 3; } else { shotIndex = (shotIndex + 2) % 3; }
-    layoutShots();
-  }, { passive: true });
-  layoutShots();
-
-  /* ---------------- 导航：指示器 / compact / 锚点观察 ---------------- */
-  const sectionIds = ["overview", "modes", "rules", "logs"];
-  const navLinks = $$(".nav-dots a");
-  function setNavIndex(index) {
-    $("#nav").style.setProperty("--nav-index", String(index));
-    navLinks.forEach((link, i) => link.classList.toggle("active", i === index));
-  }
-  setNavIndex(0);
-  const sectionObserver = new IntersectionObserver(entries => {
-    for (const entry of entries) {
-      if (!entry.isIntersecting) continue;
-      const index = sectionIds.indexOf(entry.target.id);
-      if (index >= 0) setNavIndex(index);
-    }
-  }, { rootMargin: "-40% 0px -50% 0px" });
-  sectionIds.forEach(id => { const el = document.getElementById(id); if (el) sectionObserver.observe(el); });
-  window.addEventListener("scroll", () => {
-    $("#nav").classList.toggle("compact", window.scrollY > 24);
-  }, { passive: true });
-
-  /* 日志区按需连接：进入视口才连，离开即断 */
-  let logSectionVisible = false;
-  const logObserver = new IntersectionObserver(entries => {
-    for (const entry of entries) {
-      logSectionVisible = entry.isIntersecting;
-      if (entry.isIntersecting) openEndpoint("logs");
-      else { stopSocket("logs"); s.logConnected = false; s.logConnecting = false; renderLogs(); }
-    }
-  }, { threshold: .08 });
-  logObserver.observe($("#logs"));
-
-  /* reveal 滚动入场（照搬参考站动效） */
-  const revealObserver = new IntersectionObserver(entries => {
-    for (const entry of entries) {
-      if (entry.isIntersecting) { entry.target.classList.add("visible"); revealObserver.unobserve(entry.target); }
-    }
-  }, { threshold: .12 });
-  $$(".reveal").forEach(node => revealObserver.observe(node));
+  $$(".tab-bar button").forEach(button => button.onclick = () => setPage(button.dataset.page));
   if (motionQuery?.matches) document.body.classList.add("no-motion");
 
   /* ---------------- 主题 ---------------- */
@@ -960,6 +918,7 @@
   window.addEventListener("pageshow", resume);
 
   applyTheme();
+  setPage("overview");
   render();
   renderLogs();
   discover();

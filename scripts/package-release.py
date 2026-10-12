@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / 'module-template'
 DIST = ROOT / 'dist'
 DIST.mkdir(exist_ok=True)
-VERSION = '2.2.2'
-VERSION_CODE = 322
+VERSION = '2.2.3'
+VERSION_CODE = 323
 CONFIG_VERSION = 320  # config schema generation; PROFILE_VERSION in config.rs must match
 parser = argparse.ArgumentParser()
 parser.add_argument('--source-only', action='store_true', help='Package source without requiring an Android binary')
@@ -76,8 +76,8 @@ assert '--origin ${shellQuote(origin)}' in ui, 'Origin-bound root credential req
 # The SleepDown-derived design language must ship intact; these markers are
 # the visual contract of the liquid-glass single page.
 for marker in ['--brand: #007aff', 'backdrop-filter: blur(30px) saturate(1.65)',
-               '.shot-card[data-pos="active"]', '.reveal.visible', '[data-theme="dark"]',
-               '把性能，', 'gallery-control', 'id="auto-switch"', 'fasAvailable']:
+               '.tab-bar button[aria-current="page"]', '[data-theme="dark"]',
+               '把性能，', '.tab-bar', '.page.active', 'id="auto-switch"', 'sceneInstalled', 'fasAvailable']:
     assert marker in (css + html + ui), f'design/feature marker missing: {marker}'
 for banned in ['FS_GLASS', 'SpringFloat', '__ytblDebug', 'assets/zen']:
     assert banned not in (css + html + ui), f'retired canvas engine leftover: {banned}'
