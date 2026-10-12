@@ -60,6 +60,26 @@ function walk(dir, base = '') {
   return out;
 }
 
+const COMMIT_MESSAGE = [
+  'Fix glass-surface drift and WebView viewport black bars',
+  '',
+  '- Glass rects were only re-measured when an element\'s SIZE changed; when a',
+  '  sibling resized (status pill text shortens after connect) neighbours shift',
+  '  position without resizing and ResizeObserver never fires, so their glass',
+  '  stayed behind at the old offset. Every rendered frame now re-measures all',
+  '  registered surfaces (one batched reflow per frame, max 30fps).',
+  '- The background canvas used 100vw/100vh, which on Android WebView hosts can',
+  '  leave the body background exposed at the viewport edges (black bars top and',
+  '  bottom). It is now position:fixed inset:0 with 100%/100% and html/body carry',
+  '  a gradient matching the shader base colors so any overscroll-exposed edge',
+  '  blends into the scene instead of showing black.',
+  '- Top bar compaction for 360-392px phones (the most common widths): the status',
+  '  text hides below 430px (state stays visible on the assistant card), tighter',
+  '  gaps and paddings, date block gets ellipsis truncation for large font scales.',
+  '',
+  'Repackaged and re-uploaded to the v2.2.8 release.',
+].join('\n');
+
 async function main() {
   const push = process.argv.includes('--push');
   const ref = await api('/git/ref/heads/main');
@@ -119,17 +139,9 @@ async function main() {
     method: 'POST',
     body: { base_tree: baseTreeSha, tree: entries },
   });
-  const message = [
-    'Bump version to v2.2.8 (328)',
-    '',
-    'module.prop / powercfg.json / package.json / Cargo.toml / packaging script',
-    'and the WebUI fallback strings now track v2.2.8 · 328. The changelog entry',
-    'for the SleepDown-mirrored WebUI rebuild and native fixes ships under this',
-    'version; scheduling core and config schema unchanged (CONFIG_VERSION 320).',
-  ].join('\n');
   const commit = await api('/git/commits', {
     method: 'POST',
-    body: { message, tree: newTree.sha, parents: [baseCommitSha] },
+    body: { message: COMMIT_MESSAGE, tree: newTree.sha, parents: [baseCommitSha] },
   });
   await api('/git/refs/heads/main', {
     method: 'PATCH',

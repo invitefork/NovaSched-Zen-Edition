@@ -46,16 +46,19 @@
 
 /* ---------------- 基础 ---------------- */
 * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html { min-width: 280px; }
+html { min-width: 280px; overscroll-behavior: none; height: 100%; }
+html, body {
+  /* 底色与着色器 baseA/baseB 同源：视口边缘/回弹露出的部分与玻璃画布融为一体，不出现黑边 */
+  background: linear-gradient(160deg, #0e1120 0%, #251a38 55%, #1c2233 100%);
+}
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "MiSans", "PingFang SC", "Noto Sans CJK SC", sans-serif;
   font-size: 14px; line-height: 1.55; color: var(--ink);
   min-height: 100dvh;
   overscroll-behavior-y: none;
-  background: #121212;
 }
-[data-theme="light"] body { background: #eef0f4; }
-#glass-canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 0; display: block; }
+[data-theme="light"] html, [data-theme="light"] body { background: linear-gradient(160deg, #eef0f9 0%, #e2e6f2 55%, #e8ecf7 100%); }
+#glass-canvas { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; display: block; }
 button, input, textarea { font: inherit; color: inherit; }
 button { border: 0; background: none; cursor: pointer; touch-action: manipulation; }
 button:disabled { opacity: .45; cursor: default; }
@@ -76,9 +79,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, [tabindex]:focus-vis
   padding: var(--safe-top) var(--page-pad) 0;
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
 }
-.date-block { min-width: 0; cursor: pointer; user-select: none; }
-.date-main { font-size: 19px; line-height: 21px; font-weight: 700; letter-spacing: -.2px; white-space: nowrap; }
-.date-sub { font-size: 16px; line-height: 18px; font-weight: 500; color: var(--muted); margin-top: 1px; white-space: nowrap; }
+.date-block { min-width: 0; cursor: pointer; user-select: none; overflow: hidden; }
+.date-main { font-size: 19px; line-height: 21px; font-weight: 700; letter-spacing: -.2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.date-sub { font-size: 16px; line-height: 18px; font-weight: 500; color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .top-actions { display: flex; align-items: center; gap: 8px; }
 .chrome-btn {
   display: flex; align-items: center; justify-content: center; gap: 6px;
@@ -415,13 +418,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, [tabindex]:focus-vis
   .content { max-width: 680px; }
   .date-main { font-size: 21px; }
 }
+@media (max-width: 429px) {
+  /* 360-392px 主流手机宽度：收起状态文字（状态在助手卡仍可见），防止顶栏挤压重叠 */
+  .status-pill span { display: none; }
+  .status-pill { padding: 0 13px; }
+  .top-actions { gap: 6px; }
+  .chrome-btn { padding: 0 12px; }
+}
 @media (max-width: 359px) {
   :root { --page-pad: 13px; }
   .course-card, .assistant-card { padding: 14px; }
   .assistant-title { font-size: 19px; }
-  .chrome-btn { padding: 0 11px; }
-  .status-pill span { display: none; }
-  .status-pill { padding: 0 12px; }
+  .date-main { font-size: 17px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }

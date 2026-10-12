@@ -147,8 +147,11 @@
     }
   }
   function refresh() {
+    /* 每次渲染前全量重测：尺寸不变的位移（兄弟节点文字变短挤动、列表增删）
+     * 不会触发 ResizeObserver，只有逐帧全量测量才能保证玻璃贴住 DOM。
+     * 一帧内的多次 getBoundingClientRect 会合并为一次回流，开销可控。 */
     for (const [el, record] of surfaces) {
-      if (record.stale || staleAll) measure(el, record);
+      measure(el, record);
     }
     staleAll = false;
     rectsDirty = true;
@@ -458,7 +461,7 @@
 
   function render(time) {
     if (!gl) return;
-    if (staleAll || rectsDirty) refresh();
+    refresh();
     if (wallDirty) uploadWallpaper();
     pushUniforms(time);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
