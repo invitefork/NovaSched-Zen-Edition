@@ -1,3 +1,5 @@
+# 启用方法：把这个文件移动到 .github/workflows/ci.yml 并提交（需要 workflow 权限的 token）。
+
 name: CI
 
 on:
