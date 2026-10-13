@@ -1,3 +1,15 @@
+## v2.5.0 · 版本代码 350
+
+### 应用重构：改用参考应用同款开源技术栈
+
+- 液态玻璃渲染整体切换为 Kyant0/AndroidLiquidGlass 2.0.1（Apache-2.0，参考应用同款库）：Backdrop 折射管线 + lens（折射带 26u / 折射量 30u / 色散开启）+ 库自带边缘高光，替代 v2.4.0 的手写 AGSL 移植版；此前手写实现的折射算法与该库同源，视觉规格不变。
+- 圆角体系改用 Kyant0 Shapes 1.2.1 的 G2 连续曲率 RoundedRectangle / Capsule，与参考 APK 的圆角轮廓一致。
+- 开关与滑杆组件改用 miuix 0.9.4（Apache-2.0，HyperOS 组件库）承载交互与动效。
+- 应用 assets 内置 shiguang_warehouse 数据仓库（与参考 APK 同源资产），并在 NOTICE 增加三个上游项目的署名。
+- 新增应用图标：用户提供的插画制作为自适应图标（前景 62% 安全区 + 纯白背景），含 legacy 全密度 mipmap 与 monochrome。
+- 工具链升级：AGP 9.3.2（内建 Kotlin）+ Kotlin 2.4.10 + Gradle 9.8.1 + compileSdk 37（依赖树要求），targetSdk 保持 36。
+- 版本 v2.5.0 / 350；守护进程与配置 schema（320）不变。
+
 ## v2.4.0 · 版本代码 340
 
 ### 内置 NovaSched 应用（替代 WebUI）

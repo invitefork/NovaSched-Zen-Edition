@@ -18,8 +18,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -41,7 +39,7 @@ import com.zenjooo.novasched.core.NovaStatus
 import com.zenjooo.novasched.core.NovaViewModel
 import com.zenjooo.novasched.core.Page
 import com.zenjooo.novasched.core.RuleItem
-import com.zenjooo.novasched.ui.glass.GlassBackdrop
+import com.kyant.backdrop.Backdrop
 import com.zenjooo.novasched.ui.theme.SleepColors
 import com.zenjooo.novasched.ui.theme.SD
 
@@ -52,7 +50,7 @@ fun OverviewPage(
     vm: NovaViewModel,
     status: NovaStatus,
     colors: SleepColors,
-    backdrop: GlassBackdrop,
+    backdrop: Backdrop,
     connected: Boolean,
 ) {
     LazyColumn(
@@ -174,7 +172,7 @@ fun ProfilesPage(
     status: NovaStatus,
     config: AppConfig,
     colors: SleepColors,
-    backdrop: GlassBackdrop,
+    backdrop: Backdrop,
     editable: Boolean,
 ) {
     var draft by remember(config) { mutableStateOf(config) }
@@ -229,16 +227,11 @@ fun ProfilesPage(
                         Text("$key 频率上限", color = colors.onGlass, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                         Text("$value%", color = colors.accent, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                     }
-                    Slider(
+                    top.yukonga.miuix.kmp.basic.Slider(
                         value = value.toFloat(),
                         onValueChange = { draft = draft.copy(freqPct = draft.freqPct + (key to it.toInt())) },
                         valueRange = 0f..100f,
                         enabled = editable,
-                        colors = SliderDefaults.colors(
-                            thumbColor = colors.accent,
-                            activeTrackColor = colors.accent,
-                            inactiveTrackColor = colors.onGlassDim.copy(alpha = 0.2f),
-                        ),
                     )
                 }
             }
@@ -308,7 +301,7 @@ fun RulesPage(
     vm: NovaViewModel,
     rules: List<RuleItem>,
     colors: SleepColors,
-    backdrop: GlassBackdrop,
+    backdrop: Backdrop,
     editable: Boolean,
 ) {
     LaunchedEffect(Unit) {
@@ -383,11 +376,11 @@ fun RulesPage(
             title = "编辑规则", colors = colors, backdrop = backdrop, onDismiss = { editing = null },
             message = editor.pkg + if (editor.userId != 0) "（userId ${editor.userId}）" else "",
             actions = {
-                DialogAction("删除", colors, danger = true) {
+                DialogAction("删除", colors, backdrop, danger = true) {
                     vm.deleteRule(editor.pkg, editor.userId)
                     editing = null
                 }
-                DialogAction("关闭", colors) { editing = null }
+                DialogAction("关闭", colors, backdrop) { editing = null }
             },
         )
     }
@@ -418,8 +411,8 @@ fun RulesPage(
                 }
             },
             actions = {
-                DialogAction("取消", colors) { showAdd = false }
-                DialogAction("保存", colors, accent = true) {
+                DialogAction("取消", colors, backdrop) { showAdd = false }
+                DialogAction("保存", colors, backdrop, accent = true) {
                     if (pkg.isNotBlank()) {
                         vm.setRule(pkg.trim(), 0, mode)
                         showAdd = false
@@ -437,7 +430,7 @@ fun LogsPage(
     vm: NovaViewModel,
     logs: List<LogLine>,
     colors: SleepColors,
-    backdrop: GlassBackdrop,
+    backdrop: Backdrop,
 ) {
     LaunchedEffect(Unit) {
         // 节流冲刷：高频日志 180ms 批量入列，防止 UI 卡死
@@ -502,7 +495,7 @@ fun AboutPage(
     vm: NovaViewModel,
     status: NovaStatus,
     colors: SleepColors,
-    backdrop: GlassBackdrop,
+    backdrop: Backdrop,
     rootGranted: Boolean,
 ) {
     LazyColumn(

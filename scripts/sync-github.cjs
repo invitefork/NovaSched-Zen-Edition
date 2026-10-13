@@ -62,14 +62,16 @@ function walk(dir, base = '') {
 }
 
 const COMMIT_MESSAGE = [
-  'Release v2.4.0 (340): native Compose client replaces the WebUI',
+  'Release v2.5.0 (350): rebuild the app on AndroidLiquidGlass + miuix',
   '',
-  'Ships the bundled NovaSched Compose app (AGSL liquid-glass shader with a',
-  'frosted fallback, five pages, exponential-backoff loopback WebSocket), the',
-  'daemon JSON API on 127.0.0.1:31416 (get_status/set_profile/set_auto/rules/',
-  'log stream), forced APK install via service.sh and customize.sh, webroot',
-  'removal and the release signing keystore. Versions track v2.4.0 - 340;',
-  'config schema unchanged (CONFIG_VERSION 320).',
+  "Ports the bundled Compose client to the reference app's own stack:",
+  'Kyant0/AndroidLiquidGlass 2.0.1 for the liquid-glass pipeline (Backdrop +',
+  'lens + highlight), Kyant0 Shapes 1.2.1 for G2 continuous corners, miuix',
+  '0.9.4 for HyperOS switch/slider, shiguang_warehouse bundled under assets,',
+  'and a user-supplied adaptive launcher icon. Toolchain moves to AGP 9.3.2',
+  '(built-in Kotlin) + Kotlin 2.4.10 + Gradle 9.8.1 + compileSdk 37 as',
+  'required by the dependency tree. Versions track v2.5.0 - 350; config',
+  'schema unchanged (CONFIG_VERSION 320).',
 ].join('\n');
 
 async function main() {

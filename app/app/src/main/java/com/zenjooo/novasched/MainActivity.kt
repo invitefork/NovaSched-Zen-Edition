@@ -42,8 +42,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -61,9 +63,11 @@ import com.zenjooo.novasched.ui.OverviewPage
 import com.zenjooo.novasched.ui.ProfilesPage
 import com.zenjooo.novasched.ui.RulesPage
 import com.zenjooo.novasched.ui.SnackbarHost
-import com.zenjooo.novasched.ui.glass.GlassBackdrop
-import com.zenjooo.novasched.ui.glass.glassSurface
+import com.zenjooo.novasched.ui.glass.novaBackdropSource
+import com.zenjooo.novasched.ui.glass.novaGlass
+import com.zenjooo.novasched.ui.glass.rememberNovaBackdrop
 import com.zenjooo.novasched.ui.theme.SleepColors
+import com.kyant.backdrop.Backdrop
 import com.zenjooo.novasched.ui.theme.rememberSleepColors
 import java.util.Calendar
 
@@ -81,7 +85,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun NovaSchedApp(vm: NovaViewModel) {
     val colors = rememberSleepColors()
-    val backdrop = remember { GlassBackdrop() }
+    val backdrop = rememberNovaBackdrop()
     val status by vm.status.collectAsState()
     val page by vm.page.collectAsState()
     val conn by vm.conn.collectAsState()
@@ -91,32 +95,47 @@ fun NovaSchedApp(vm: NovaViewModel) {
     val toast by vm.toast.collectAsState()
     val rootGranted by vm.rootGranted.collectAsState()
 
-    var rootPx by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
-
-    // 背景静态栅格化：仅在尺寸/主题变化时重建快照（玻璃折射源）。
-    LaunchedEffect(rootPx, colors.isDark) {
-        if (rootPx.width > 0 && rootPx.height > 0) {
-            backdrop.render(
-                widthPx = rootPx.width,
-                heightPx = rootPx.height,
-                dark = colors.isDark,
-                accentArgb = colors.accent.toArgb(),
-                wallpaper = null,
-                wallpaperBlurPct = 0,
-                wallpaperBrightPct = 100,
-            )
-        }
-    }
-
     LaunchedEffect(conn) {
         if (conn == NovaSocket.ConnState.DISCONNECTED) vm.showToast("本地连接已断开，正在自动重连")
     }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .onGloballyPositioned { rootPx = it.size }
-    ) {
+    Box(Modifier.fillMaxSize()) {
+        // 折射源背景：渐变底色 + 强调色光斑（AndroidLiquidGlass 的 backdrop 采样源）
+        Box(
+            Modifier
+                .fillMaxSize()
+                .novaBackdropSource(backdrop)
+                .background(
+                    Brush.verticalGradient(
+                        0f to colors.background[0],
+                        0.55f to colors.background[1],
+                        1f to colors.background[2],
+                    )
+                )
+                .drawBehind {
+                    val accent = colors.accent
+                    val blobA = if (colors.isDark) 0.26f else 0.30f
+                    drawCircle(
+                        Brush.radialGradient(
+                            listOf(accent.copy(alpha = blobA), Color.Transparent),
+                            center = Offset(size.width * 0.22f, size.height * 0.20f),
+                            radius = size.width * 0.75f,
+                        ),
+                        radius = size.width * 0.75f,
+                        center = Offset(size.width * 0.22f, size.height * 0.20f),
+                    )
+                    val blobB = if (colors.isDark) 0xFF7C5CFF.toInt() else 0xFFC9B7FF.toInt()
+                    drawCircle(
+                        Brush.radialGradient(
+                            listOf(Color(blobB).copy(alpha = if (colors.isDark) 0.20f else 0.34f), Color.Transparent),
+                            center = Offset(size.width * 0.92f, size.height * 0.08f),
+                            radius = size.width * 0.55f,
+                        ),
+                        radius = size.width * 0.55f,
+                        center = Offset(size.width * 0.92f, size.height * 0.08f),
+                    )
+                }
+        )
         val statusBar = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
 
         Column(Modifier.fillMaxSize()) {
@@ -164,7 +183,7 @@ fun NovaSchedApp(vm: NovaViewModel) {
 private fun TopBar(
     status: NovaStatus,
     colors: SleepColors,
-    backdrop: GlassBackdrop,
+    backdrop: Backdrop,
     conn: NovaSocket.ConnState,
     statusBarPad: Dp,
 ) {
@@ -233,7 +252,7 @@ private fun TopBar(
 private fun LiquidDock(
     page: Page,
     colors: SleepColors,
-    backdrop: GlassBackdrop,
+    backdrop: Backdrop,
     onSwitch: (Page) -> Unit,
 ) {
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -243,8 +262,7 @@ private fun LiquidDock(
             .padding(bottom = navBottom)
             .fillMaxWidth()
             .height(64.dp)
-            .clip(RoundedCornerShape(50))
-            .glassSurface(backdrop, 50.dp, colors.glass, colors.isDark)
+            .novaGlass(backdrop, com.kyant.shapes.Capsule(), colors.glass, colors.isDark)
             .padding(4.dp),
     ) {
         Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {

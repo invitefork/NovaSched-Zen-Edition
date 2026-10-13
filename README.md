@@ -1,12 +1,12 @@
 # NovaSched Zen Edition
 
-作者：**ZenJooo**。当前版本：**v2.4.0 / 340**。
+作者：**ZenJooo**。当前版本：**v2.5.0 / 350**。
 
 根据处理器和内核能力调整 CPU 策略，提供省电、均衡、性能、极速四档。支持应用规则、Scene 联动和原厂节点恢复。WebUI 的布局与液态玻璃材质按 [SleepDown-Schedule](https://github.com/xiaomanjun233/SleepDown-Schedule) 实机 UI 复刻（日期块顶栏、助手卡、分区课程卡、胶囊 dock、个性化面板与壁纸玻璃），渲染核心为移植自 LiquidGlassView（基于 QmDeve/AndroidLiquidGlassView，MIT）的 WebGL 折射着色器。所有运行资源均随模块提供，无需联网加载。
 
 ## 安装与更新
 
-在 root 管理器中安装 `NovaSched-v2.4.0-release.zip`，覆盖更新后重启手机。模块内置 NovaSched 应用（com.zenjooo.novasched），安装脚本会在刷入时直接安装、开机脚本在每次启动时强制覆盖安装/升级；卸载模块会一并移除该应用。已有有效配置、应用规则和自动调度偏好会保留。`source.zip` 是源码，不是安装包。
+在 root 管理器中安装 `NovaSched-v2.5.0-release.zip`，覆盖更新后重启手机。模块内置 NovaSched 应用（com.zenjooo.novasched），安装脚本会在刷入时直接安装、开机脚本在每次启动时强制覆盖安装/升级；卸载模块会一并移除该应用。已有有效配置、应用规则和自动调度偏好会保留。`source.zip` 是源码，不是安装包。
 
 支持 ARM64。安装不按管理器品牌或版本号拦截；Magisk（含 Alpha）、KernelSU 系列与 APatch 使用相同的模块入口。没有内置 WebUI 的管理器需要独立 WebUI 宿主，并授予其 root / Shell 权限。具体分支仍取决于它是否提供标准模块安装、启动和命令接口。
 
@@ -61,7 +61,7 @@ python3 scripts/test-installer.py
 
 常规 Linux 主机可以设置 `CHROME` 指向 Chromium，再运行 `npm run test:render` 做 320、393、768px 的截图和交互检查。
 
-v2.4.0 起 WebUI 已移除，控制面为内置 NovaSched 应用（纯 Jetpack Compose，液态玻璃 AGSL 着色器，GPU 不支持时自动降级半透明毛玻璃）。应用仅通过本地回环 WebSocket `127.0.0.1:31416` 与守护进程 JSON API 通信，不直接读写 /sys 内核节点；root 仅用于 su 检测、守护进程拉起与日志导出。验证记录见 `docs/validation-v2.4.0.md`。
+v2.4.0 起 WebUI 已移除，控制面为内置 NovaSched 应用（纯 Jetpack Compose；液态玻璃采用参考应用同款开源库 Kyant0/AndroidLiquidGlass，组件层借用 miuix，GPU 不支持 RuntimeShader 时自动降级半透明毛玻璃）。应用仅通过本地回环 WebSocket `127.0.0.1:31416` 与守护进程 JSON API 通信，不直接读写 /sys 内核节点；root 仅用于 su 检测、守护进程拉起与日志导出。验证记录见 `docs/validation-v2.5.0.md`。
 
 模块 ELF 为 AArch64 静态可执行文件，不需要动态解释器或共享库，LOAD 段按 16KB 对齐。
 

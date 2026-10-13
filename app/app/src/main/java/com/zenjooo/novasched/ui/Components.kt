@@ -43,8 +43,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.zenjooo.novasched.ui.glass.GlassBackdrop
-import com.zenjooo.novasched.ui.glass.glassSurface
+import com.kyant.backdrop.Backdrop
+import com.kyant.shapes.Capsule
+import com.kyant.shapes.RoundedRectangle
+import com.zenjooo.novasched.ui.glass.novaGlass
 import com.zenjooo.novasched.ui.theme.SleepColors
 import com.zenjooo.novasched.ui.theme.SD
 
@@ -85,7 +87,7 @@ fun SectionDivider(
 /** 玻璃卡片容器（课程卡 22dp / 助手卡 30dp 圆角），按压缩放反馈。 */
 @Composable
 fun GlassCard(
-    backdrop: GlassBackdrop,
+    backdrop: Backdrop,
     corner: Dp,
     colors: SleepColors,
     modifier: Modifier = Modifier,
@@ -103,8 +105,7 @@ fun GlassCard(
         modifier = modifier
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .fillMaxWidth()
-            .clip(RoundedCornerShape(corner))
-            .glassSurface(backdrop, corner, colors.glass, colors.isDark)
+            .novaGlass(backdrop, RoundedRectangle(corner), colors.glass, colors.isDark)
             .then(
                 if (onClick != null) Modifier.clickable(
                     interactionSource = interaction,
@@ -122,12 +123,12 @@ fun GlassCard(
 fun CapsuleButton(
     onClick: () -> Unit,
     colors: SleepColors,
-    backdrop: GlassBackdrop,
+    backdrop: Backdrop,
     modifier: Modifier = Modifier,
     size: Dp = SD.TopBar.CapsuleSize,
     accent: Boolean = false,
     enabled: Boolean = true,
-    content: @Composable BoxScopeCompat.() -> Unit,
+    content: @Composable () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
@@ -140,10 +141,9 @@ fun CapsuleButton(
         modifier = modifier
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .size(size)
-            .clip(RoundedCornerShape(50))
-            .glassSurface(
+            .novaGlass(
                 backdrop,
-                50.dp,
+                Capsule(),
                 when {
                     !enabled -> colors.glass.copy(alpha = 0.4f)
                     accent && pressed -> colors.accentPressed
@@ -160,13 +160,8 @@ fun CapsuleButton(
                 onClick = onClick
             ),
         contentAlignment = Alignment.Center,
-    ) { content(BoxScopeCompatInstance) }
+    ) { content() }
 }
-
-/** BoxScope 的透明别名（组件内容声明用）。 */
-object BoxScopeCompat
-
-private val BoxScopeCompatInstance = BoxScopeCompat
 
 /** 档位选择卡：图标 + 文案 + 状态徽标。 */
 @Composable
@@ -177,7 +172,7 @@ fun ModeCard(
     pending: Boolean,
     enabled: Boolean,
     colors: SleepColors,
-    backdrop: GlassBackdrop,
+    backdrop: Backdrop,
     icon: ImageVector,
     onClick: () -> Unit,
 ) {
@@ -196,8 +191,7 @@ fun ModeCard(
         modifier = Modifier
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .fillMaxWidth()
-            .clip(RoundedCornerShape(SD.CourseCard.Corner))
-            .glassSurface(backdrop, SD.CourseCard.Corner, tint, colors.isDark)
+            .novaGlass(backdrop, RoundedRectangle(SD.CourseCard.Corner), tint, colors.isDark)
             .clickable(interactionSource = interaction, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -239,7 +233,7 @@ fun ModeCard(
     }
 }
 
-/** iOS 风格开关（设置行 / 自动调度）。 */
+/** iOS 风格开关：miuix（HyperOS 组件库）Switch 承载交互与动效。 */
 @Composable
 fun NovaSwitch(
     checked: Boolean,
@@ -248,42 +242,12 @@ fun NovaSwitch(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
-    val position by animateFloatAsState(
-        targetValue = if (checked) 1f else 0f,
-        animationSpec = spring(dampingRatio = 0.7f, stiffness = 500f),
-        label = "switchPos",
+    top.yukonga.miuix.kmp.basic.Switch(
+        checked = checked,
+        onCheckedChange = onCheckedChange,
+        modifier = modifier,
+        enabled = enabled,
     )
-    val trackColor = when {
-        !enabled -> colors.onGlassDim.copy(alpha = 0.16f)
-        checked -> colors.accent
-        else -> if (colors.isDark) Color.White.copy(alpha = 0.22f) else Color(0x33000000)
-    }
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) 0.96f else 1f, label = "swScale")
-    Box(
-        modifier = modifier
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .width(51.dp)
-            .height(31.dp)
-            .clip(RoundedCornerShape(50))
-            .background(trackColor)
-            .clickable(interactionSource = interaction, indication = null, enabled = enabled, role = Role.Switch) {
-                onCheckedChange(!checked)
-            },
-        contentAlignment = Alignment.CenterStart,
-    ) {
-        Box(
-            Modifier
-                .graphicsLayer {
-                    translationX = position * (20.dp.toPx())
-                }
-                .padding(2.dp)
-                .size(27.dp)
-                .clip(CircleShape)
-                .background(Color.White)
-        )
-    }
 }
 
 /** 居中玻璃弹窗壳：39dp 圆角 / 286dp 宽 / 14dp 内距 / 50dp 动作（参考 APK 规格）。 */
@@ -291,7 +255,7 @@ fun NovaSwitch(
 fun GlassDialog(
     title: String,
     colors: SleepColors,
-    backdrop: GlassBackdrop,
+    backdrop: Backdrop,
     onDismiss: () -> Unit,
     message: String? = null,
     body: (@Composable ColumnScope.() -> Unit)? = null,
@@ -311,10 +275,9 @@ fun GlassDialog(
         Column(
             Modifier
                 .width(SD.CenteredDialog.Width)
-                .clip(RoundedCornerShape(SD.CenteredDialog.Corner))
-                .glassSurface(
+                .novaGlass(
                     backdrop,
-                    SD.CenteredDialog.Corner,
+                    RoundedRectangle(SD.CenteredDialog.Corner),
                     colors.glass.copy(alpha = if (colors.isDark) 0.62f else 0.72f),
                     colors.isDark
                 )
@@ -355,6 +318,7 @@ fun GlassDialog(
 fun RowScope.DialogAction(
     label: String,
     colors: SleepColors,
+    backdrop: Backdrop,
     accent: Boolean = false,
     danger: Boolean = false,
     onClick: () -> Unit,
@@ -377,8 +341,7 @@ fun RowScope.DialogAction(
             .weight(1f)
             .height(SD.CenteredDialog.ActionHeight)
             .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(RoundedCornerShape(25.dp))
-            .glassSurface(backdropLocal, 25.dp, bg, colors.isDark)
+            .novaGlass(backdrop, RoundedRectangle(25.dp), bg, colors.isDark)
             .clickable(onClick = onClick, indication = null, interactionSource = interaction, role = Role.Button),
         contentAlignment = Alignment.Center,
     ) {
@@ -386,19 +349,15 @@ fun RowScope.DialogAction(
     }
 }
 
-/** DialogAction 内部使用的共享空 backdrop 占位（动作钮太小，玻璃细节可忽略）。 */
-private val backdropLocal = GlassBackdrop()
-
 /** 底部 Snackbar。 */
 @Composable
-fun SnackbarHost(text: String, colors: SleepColors, backdrop: GlassBackdrop) {
+fun SnackbarHost(text: String, colors: SleepColors, backdrop: Backdrop) {
     if (text.isEmpty()) return
     Box(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp)
-            .clip(RoundedCornerShape(18.dp))
-            .glassSurface(backdrop, 18.dp, colors.glass, colors.isDark)
+            .novaGlass(backdrop, RoundedRectangle(18.dp), colors.glass, colors.isDark)
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         Text(text, color = colors.onGlass, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -411,7 +370,7 @@ fun SettingsRow(
     title: String,
     subtitle: String,
     colors: SleepColors,
-    backdrop: GlassBackdrop,
+    backdrop: Backdrop,
     trailing: @Composable () -> Unit = {},
     onClick: (() -> Unit)? = null,
 ) {
@@ -419,8 +378,7 @@ fun SettingsRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(SD.CourseCard.Corner))
-            .glassSurface(backdrop, SD.CourseCard.Corner, colors.glass, colors.isDark)
+            .novaGlass(backdrop, RoundedRectangle(SD.CourseCard.Corner), colors.glass, colors.isDark)
             .then(
                 if (onClick != null) Modifier.clickable(
                     interactionSource = interaction, indication = null, onClick = onClick
@@ -451,7 +409,7 @@ fun GlassTextField(
     onValueChange: (String) -> Unit,
     hint: String,
     colors: SleepColors,
-    backdrop: GlassBackdrop,
+    backdrop: Backdrop,
     readOnly: Boolean = false,
 ) {
     BasicTextField(
@@ -463,8 +421,7 @@ fun GlassTextField(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 46.dp)
-            .clip(RoundedCornerShape(SD.Field.SingleLineCorner))
-            .glassSurface(backdrop, SD.Field.SingleLineCorner, colors.glass, colors.isDark),
+            .novaGlass(backdrop, Capsule(), colors.glass, colors.isDark),
         decorationBox = { inner ->
             Box(
                 Modifier
