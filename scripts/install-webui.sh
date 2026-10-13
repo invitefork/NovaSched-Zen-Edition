@@ -12,7 +12,7 @@ MODULE_DIR=${1:-/data/adb/modules/NovaSched_Zen_Edition}
 if [ ! -f "$MODULE_DIR/module.prop" ] && [ "$#" -eq 0 ]; then
   MODULE_DIR=/data/adb/ap/modules/NovaSched_Zen_Edition
 fi
-if [ ! -f "$MODULE_DIR/module.prop" ] || ! grep -q '^id=NovaSched_Zen_Edition$' "$MODULE_DIR/module.prop" || ! grep -qE '^version=v2\.(2\.8|6\.[0-9]+)$' "$MODULE_DIR/module.prop" || [ ! -x "$MODULE_DIR/bin/novasched" ]; then
+if [ ! -f "$MODULE_DIR/module.prop" ] || ! grep -q '^id=NovaSched_Zen_Edition$' "$MODULE_DIR/module.prop" || ! grep -qE '^version=v2\.(2\.8|6\.[0-9]+|7\.[0-9]+)$' "$MODULE_DIR/module.prop" || [ ! -x "$MODULE_DIR/bin/novasched" ]; then
   echo "没有找到已安装的 NovaSched Zen Edition。此更新支持 v2.2.8 与 v2.6.x；其它版本请完整安装。" >&2
   exit 1
 fi
