@@ -1,6 +1,6 @@
 id=NovaSched_Zen_Edition
 name=NovaSched Zen Edition
-version=v2.3.0
-versionCode=330
+version=v2.4.0
+versionCode=340
 author=ZenJooo
 description=根据处理器与内核能力调整 CPU 策略，提供省电、均衡、性能、极速四档，支持应用规则、Scene 联动、FAS 跟随和液态玻璃 WebUI。覆盖更新后重启生效，卸载时恢复保存的原厂节点。

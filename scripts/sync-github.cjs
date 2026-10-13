@@ -50,8 +50,9 @@ function walk(dir, base = '') {
     const rel = base ? `${base}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
       if (entry.name === '.git') continue;
-      if (['node_modules', 'target', 'target-static', 'dist', 'validation', 'ui-preview', '__pycache__', 'bin'].includes(entry.name) && base === '') continue;
+      if (['node_modules', 'target', 'target-static', 'dist', 'validation', 'ui-preview', '__pycache__', 'bin', 'build', '.gradle', '.kotlin', '.idea'].includes(entry.name)) continue;
       if (rel === 'native/target' || rel === 'native/target-static' || rel === 'module-template/bin') continue;
+      if (entry.isFile() && entry.name === 'local.properties') continue;
       out.push(...walk(path.join(dir, entry.name), rel));
     } else {
       out.push(rel);
@@ -61,15 +62,14 @@ function walk(dir, base = '') {
 }
 
 const COMMIT_MESSAGE = [
-  'Release v2.3.0 (330)',
+  'Release v2.4.0 (340): native Compose client replaces the WebUI',
   '',
-  'Ships the consolidated Liquid Glass WebUI (single WebGL2 renderer with a',
-  'full DOM fallback), the unified frontend timer manager, the 4s root',
-  'fallback, screen-off foreground-scan throttling, nice 10 + SCHED_BATCH for',
-  'the daemon and the sdcard log mirror defaulting to off behind a marker',
-  'file. module.prop, powercfg.json, package.json, Cargo.toml, the packaging',
-  'script and the WebUI fallback strings now track v2.3.0 - 330. Config',
-  'schema unchanged (CONFIG_VERSION 320).',
+  'Ships the bundled NovaSched Compose app (AGSL liquid-glass shader with a',
+  'frosted fallback, five pages, exponential-backoff loopback WebSocket), the',
+  'daemon JSON API on 127.0.0.1:31416 (get_status/set_profile/set_auto/rules/',
+  'log stream), forced APK install via service.sh and customize.sh, webroot',
+  'removal and the release signing keystore. Versions track v2.4.0 - 340;',
+  'config schema unchanged (CONFIG_VERSION 320).',
 ].join('\n');
 
 async function main() {

@@ -214,6 +214,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         runtime: runtime.clone(),
         revision: revision.clone(),
     };
+    let jsonapi_state = web_state.clone();
     let web_thread = match websocket::start(web_state, logger.clone(), web_stop.clone()) {
         Ok((handle, port)) => {
             runtime.set_port(port);
@@ -228,6 +229,18 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
                 }
             }
             return startup_fail(&logger, state_dir, "启动 WebUI", error);
+        }
+    };
+    // v2.4.0 原生客户端 JSON API（固定 127.0.0.1:31416）。非致命：绑定失败
+    // 只告警，调度与旧 WebUI 不受影响，下次重启重试。
+    let jsonapi_thread: Option<std::thread::JoinHandle<()>> = match crate::jsonapi::start(jsonapi_state, logger.clone(), web_stop.clone()) {
+        Ok((handle, port)) => {
+            logger.info(format!("JSON API 就绪: 127.0.0.1:{port}"));
+            Some(handle)
+        }
+        Err(error) => {
+            logger.warn(format!("JSON API 启动失败（非致命）: {error}"));
+            None
         }
     };
     // Touch-driven transient boost: input thread applies a short uclamp.min
@@ -633,6 +646,11 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
     if let Some(handle) = web_thread {
         if handle.join().is_err() {
             logger.error("WebUI 接入线程异常退出");
+        }
+    }
+    if let Some(handle) = jsonapi_thread {
+        if handle.join().is_err() {
+            logger.error("JSON API 线程异常退出");
         }
     }
     let restore = if scene.controls_locked() {

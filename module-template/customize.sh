@@ -8,7 +8,7 @@ stage() {
 }
 
 ui_print " "
-ui_print "✦ NovaSched Zen Edition v2.3.0"
+ui_print "✦ NovaSched Zen Edition v2.4.0"
 ui_print "  作者 ZenJooo"
 stage 1 "检查运行环境" "根据内核能力适配 Magisk、Alpha、KernelSU 系列和 APatch。"
 if [ "$ARCH" != "arm64" ] && [ "$ARCH" != "arm64-v8a" ]; then
@@ -82,10 +82,18 @@ case "$SCENE_STATUS" in
   *) ui_print "  Scene 检测暂不可用，服务启动后会继续检测。" ;;
 esac
 ui_print "  Scene 联动期间由 Scene 决定档位，本地自动调度暂停。"
+NOVA_APK="$MODPATH/app/NovaSched.apk"
+if [ -f "$NOVA_APK" ]; then
+  if command -v pm >/dev/null 2>&1 && pm install -r "$NOVA_APK" >/dev/null 2>&1; then
+    ui_print "  ✓ NovaSched 应用已安装"
+  else
+    ui_print "  · NovaSched 应用将在重启后由开机脚本安装"
+  fi
+fi
 stage 6 "安装完成" "请重启手机，使新版核心与配置生效。"
 ui_print "  原厂节点会在首次写入前保存；卸载时恢复。"
 ui_print "  管理器没有 WebUI 时，可使用独立 WebUI 宿主并授予 root。"
 ui_print "  安装记录：$CHECK_LOG"
 ui_print "  运行记录：/data/adb/novasched/novasched.log"
 ui_print " "
-ui_print "✦ NovaSched v2.3.0 · ZenJooo"
+ui_print "✦ NovaSched v2.4.0 · ZenJooo"

@@ -1,4 +1,9 @@
 #!/system/bin/sh
+# v2.4.0：模块卸载时一并移除内置 NovaSched 应用（保留数据由系统按普通应用规则处理）
+NOVA_PKG="com.zenjooo.novasched"
+if command -v pm >/dev/null 2>&1; then
+  pm uninstall "$NOVA_PKG" >/dev/null 2>&1 || pm uninstall --user 0 "$NOVA_PKG" >/dev/null 2>&1 || true
+fi
 MODDIR=${0%/*}
 umask 077
 export PATH="/system/bin:/system/xbin:/data/adb/ksu/bin:/data/adb/ap/bin:/data/adb/magisk:$PATH"

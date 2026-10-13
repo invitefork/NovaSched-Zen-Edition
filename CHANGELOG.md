@@ -1,3 +1,25 @@
+## v2.4.0 · 版本代码 340
+
+### 内置 NovaSched 应用（替代 WebUI）
+
+- WebUI 已移除。控制面改为随模块分发的原生 Jetpack Compose 应用（com.zenjooo.novasched，minSdk 33）：界面按 SleepDown课程表 1.2.7_beta5 实机解析规格逐项复刻——日期块顶栏（19sp 粗体日期 + 16sp 68% 周数）、42dp 胶囊按钮簇、30dp 助手卡、22dp 课程卡、1dp 18% 分区线（4/2dp + 10dp 间距）、64dp 胶囊 dock、39dp 圆角 / 50dp 动作钮 / 14dp 内距的居中弹窗、260/240/220ms 深度转场。
+- 液态玻璃为 Compose 自绘 AGSL 着色器：圆角矩形 SDF 边缘法线折射、RGB 色散、边缘高光、内阴影，背景（渐变光斑）静态栅格化后经 BitmapShader 供采样，快照仅随主题/尺寸重建；GPU 或 RuntimeShader 不可用时自动降级为半透明玻璃色 + 高光描边，功能完整。
+- 强制安装：customize.sh 在刷入时尝试 `pm install -r`（Recovery 环境无 pm 时跳过），service.sh 在每次开机完成 `pm install -r` 覆盖安装/升级（最多重试 5 次，失败不阻断调度启动）；卸载模块时一并移除应用。
+- 应用 root 使用严格收敛为三件事：su 检测与授权、守护进程存活检测与拉起、日志导出；严禁读写 /sys，调度完全经 WebSocket 下发守护进程。
+- 通信为固定契约：本地回环 `ws://127.0.0.1:31416`，`{"cmd":"get_status"}` / `{"cmd":"set_profile",...}` 等 JSON 指令与状态/频率/温度/日志流回包；断线指数退避重连（1s→30s 封顶 + 抖动）；高频日志 180ms 批量冲刷防卡 UI。
+- 应用仅声明 INTERNET 权限且无任何外网端点（Android 对回环 socket 也要求该权限）；旋转/重建状态保留。
+
+### 守护进程 JSON API
+
+- 新增固定端口 127.0.0.1:31416 的 JSON WebSocket 端点（jsonapi.rs）：状态聚合（版本/档位/SoC/各簇实时频率/温度/前台应用）、档位切换、自动调度开关、应用规则增删查、日志流订阅与清空。与旧 WebUI 状态层同源，指令面收敛为调度控制，无 shell、无文件写入面。
+- 配置写入（set_config/reset_config）本版明确返回"下版开放"，不做假成功；get_config 返回各簇当前上限占物理上限的真实百分比。
+- JSON API 绑定失败为非致命（告警后继续调度，下次重启重试）。
+
+### 发布
+
+- 版本 v2.4.0 / 340；配置 schema 保持 320。release.zip 内含应用 APK；release 签名 keystore 随源码分发（app/keystore/），保证后续版本覆盖安装签名一致。
+- 原生 ELF 仍为 AArch64 静态（无 INTERP/NEEDED，LOAD 16KB 对齐）。
+
 ## v2.3.0 · 版本代码 330
 
 ### WebUI

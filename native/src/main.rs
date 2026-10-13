@@ -10,6 +10,7 @@ mod hardware;
 mod input_boost;
 mod installer;
 mod json;
+mod jsonapi;
 mod lifecycle;
 mod logging;
 mod package_registry;
