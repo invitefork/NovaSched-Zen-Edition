@@ -4,7 +4,7 @@
   "meta": {
     "name": "NovaSched Zen Edition",
     "author": "ZenJooo",
-    "version": 320,
+    "version": 370,
     "soc": "XRING_O3",
     "loglevel": "INFO"
   },
@@ -25,12 +25,38 @@
       "background": "4-5"
     },
     "cpuctl": {
-      "enabled": false
+      "enabled": true,
+      "modes": {
+        "powersave": {
+          "background_max": "65"
+        },
+        "balance": {
+          "background_max": "85"
+        }
+      }
     },
     "input_boost": {
-      "enabled": false,
+      "enabled": true,
       "top_app_min": "30",
-      "duration_ms": "300"
+      "duration_ms": "300",
+      "modes": {
+        "powersave": {
+          "top_app_min": "15",
+          "duration_ms": "100"
+        },
+        "balance": {
+          "top_app_min": "20",
+          "duration_ms": "140"
+        },
+        "performance": {
+          "top_app_min": "28",
+          "duration_ms": "180"
+        },
+        "fast": {
+          "top_app_min": "40",
+          "duration_ms": "220"
+        }
+      }
     },
     "launch_boost": {
       "enabled": false,
@@ -59,6 +85,30 @@
     "perf_lock": {
       "enabled": false,
       "services": []
+    },
+    "fas": {
+      "enabled": true,
+      "override_scene": true,
+      "step_ms": "200",
+      "sample_ms": "1000",
+      "modes": {
+        "powersave": {
+          "ceiling": "35",
+          "freq_scale": "30"
+        },
+        "balance": {
+          "ceiling": "55",
+          "freq_scale": "45"
+        },
+        "performance": {
+          "ceiling": "80",
+          "freq_scale": "60"
+        },
+        "fast": {
+          "ceiling": "95",
+          "freq_scale": "80"
+        }
+      }
     }
   },
   "modes": {
@@ -70,9 +120,9 @@
         "0"
       ],
       "max": [
-        "60%",
-        "55%",
-        "50%",
+        "54%",
+        "46%",
+        "48%",
         "0"
       ],
       "governors": [
@@ -106,9 +156,9 @@
         "0"
       ],
       "max": [
-        "85%",
-        "80%",
-        "78%",
+        "68%",
+        "60%",
+        "62%",
         "0"
       ],
       "governors": [
@@ -136,15 +186,15 @@
     },
     "performance": {
       "min": [
-        "15%",
-        "20%",
-        "20%",
+        "8%",
+        "8%",
+        "8%",
         "0"
       ],
       "max": [
-        "100%",
-        "100%",
-        "100%",
+        "82%",
+        "74%",
+        "80%",
         "0"
       ],
       "governors": [
@@ -178,7 +228,7 @@
         "0"
       ],
       "max": [
-        "100%",
+        "92%",
         "100%",
         "100%",
         "0"

@@ -38,6 +38,14 @@ fn clamp(node: &Value, key: &str) -> Result<String> {
     }
     Ok(value)
 }
+fn percent_number(node: &Value, key: &str) -> Result<u32> {
+    let value = number(node, key)?;
+    let parsed = value.parse::<u64>().map_err(|e| e.to_string())?;
+    if parsed > 100 {
+        return Err(format!("{key} 必须在 0..100: {value}"));
+    }
+    Ok(parsed as u32)
+}
 fn cpus(node: &Value, key: &str) -> Result<String> {
     let value = string(node, key)?;
     crate::hardware::parse_cpu_list(&value)?;
@@ -274,10 +282,30 @@ pub fn parse(root: &Value) -> Result<Config> {
             if !(50..=5000).contains(&rate.parse::<u64>().map_err(|e| e.to_string())?) {
                 return Err("输入突频持续时间必须在 50..5000 ms".into());
             }
+            let mut modes = BTreeMap::new();
+            if let Some(Value::Object(entries)) = field(block, "modes") {
+                for (mode, value) in entries {
+                    if !crate::config::MODES.contains(&mode.as_str()) {
+                        return Err(format!("input_boost.modes 含未知档位: {mode}"));
+                    }
+                    let duration_ms = number(value, "duration_ms")?
+                        .parse::<u64>().map_err(|e| e.to_string())?;
+                    if !(50..=5000).contains(&duration_ms) {
+                        return Err("输入突频持续时间必须在 50..5000 ms".into());
+                    }
+                    modes.insert(mode.clone(), InputBoostMode {
+                        top_app_min: clamp_percent_strict(value, "top_app_min")?,
+                        duration_ms,
+                    });
+                }
+            } else if field(block, "modes").is_some() {
+                return Err("input_boost.modes 必须为对象".into());
+            }
             InputBoost {
                 enabled,
                 top_app_min,
                 duration_ms: rate.parse::<u64>().map_err(|e| e.to_string())?,
+                modes,
             }
         }
         None => InputBoost::default(),
@@ -296,6 +324,49 @@ pub fn parse(root: &Value) -> Result<Config> {
     {
         return Err("性能服务列表包含非法名称".into());
     }
+    // The frame-aware engine is optional so older configs keep parsing;
+    // absent means the engine stays off until the template ships it.
+    let fas = match field(features, "fas") {
+        Some(block) => {
+            let enabled = flag(block, "enabled")?;
+            let override_scene = field(block, "override_scene")
+                .map(|value| value.as_bool())
+                .transpose()?
+                .unwrap_or(true);
+            let step_ms = number(block, "step_ms")?.parse::<u64>().map_err(|e| e.to_string())?;
+            let sample_ms = number(block, "sample_ms")?.parse::<u64>().map_err(|e| e.to_string())?;
+            if !(100..=2000).contains(&step_ms) {
+                return Err("fas.step_ms 必须在 100..2000 ms".into());
+            }
+            if !(250..=10000).contains(&sample_ms) {
+                return Err("fas.sample_ms 必须在 250..10000 ms".into());
+            }
+            let mut modes = BTreeMap::new();
+            if let Some(Value::Object(entries)) = field(block, "modes") {
+                for (mode, value) in entries {
+                    if !crate::config::MODES.contains(&mode.as_str()) {
+                        return Err(format!("fas.modes 含未知档位: {mode}"));
+                    }
+                    let ceiling = percent_number(value, "ceiling")?;
+                    let freq_scale = percent_number(value, "freq_scale")?;
+                    modes.insert(
+                        mode.clone(),
+                        FasMode { ceiling, freq_scale },
+                    );
+                }
+            } else if field(block, "modes").is_some() {
+                return Err("fas.modes 必须为对象".into());
+            }
+            FasConfig {
+                enabled,
+                override_scene,
+                step_ms,
+                sample_ms,
+                modes,
+            }
+        }
+        None => FasConfig::default(),
+    };
     let mut modes = BTreeMap::new();
     for mode in MODES {
         let m = root.get("modes")?.get(mode)?;
@@ -359,6 +430,7 @@ pub fn parse(root: &Value) -> Result<Config> {
                 enable: flag(p, "enabled")?,
                 services,
             },
+            fas,
         },
     })
 }
@@ -464,6 +536,28 @@ pub fn encode(config: &Config, soc: Soc) -> Value {
             map.remove("modes");
         }
     }
+    let fas_modes = Value::Object(
+        f.fas
+            .modes
+            .iter()
+            .map(|(mode, value)| {
+                (
+                    mode.clone(),
+                    object([
+                        ("ceiling", Value::Number(value.ceiling as i64)),
+                        ("freq_scale", Value::Number(value.freq_scale as i64)),
+                    ]),
+                )
+            })
+            .collect(),
+    );
+    let fas_out = object([
+        ("enabled", Value::Bool(f.fas.enabled)),
+        ("override_scene", Value::Bool(f.fas.override_scene)),
+        ("step_ms", Value::Number(f.fas.step_ms as i64)),
+        ("sample_ms", Value::Number(f.fas.sample_ms as i64)),
+        ("modes", fas_modes),
+    ]);
     let features = object([
         ("node_watchdog", Value::Bool(f.node_watchdog)),
         ("cpuset", cpuset),
@@ -474,6 +568,12 @@ pub fn encode(config: &Config, soc: Soc) -> Value {
                 ("enabled", Value::Bool(f.input_boost.enabled)),
                 ("top_app_min", text(&f.input_boost.top_app_min)),
                 ("duration_ms", text(&f.input_boost.duration_ms.to_string())),
+                ("modes", Value::Object(f.input_boost.modes.iter().map(|(mode, value)| {
+                    (mode.clone(), object([
+                        ("top_app_min", text(&value.top_app_min)),
+                        ("duration_ms", text(&value.duration_ms.to_string())),
+                    ]))
+                }).collect())),
             ]),
         ),
         (
@@ -500,6 +600,7 @@ pub fn encode(config: &Config, soc: Soc) -> Value {
                 ("services", list(&f.perf_service_lock.services)),
             ]),
         ),
+        ("fas", fas_out),
     ]);
     let modes = Value::Object(
         config
@@ -592,6 +693,11 @@ pub fn migrate(root: &Value, config: &Config, soc: Soc) -> Result<Value> {
                     if !features.contains_key("cpuctl") {
                         if let Some(cpuctl) = default_features.get("cpuctl") {
                             features.insert("cpuctl".into(), cpuctl.clone());
+                        }
+                    }
+                    if !features.contains_key("fas") {
+                        if let Some(fas) = default_features.get("fas") {
+                            features.insert("fas".into(), fas.clone());
                         }
                     }
                     if let Some(Value::Object(cpuset_block)) = features.get_mut("cpuset") {
@@ -888,6 +994,7 @@ mod tests {
             enabled: true,
             top_app_min: "30".into(),
             duration_ms: 400,
+            modes: BTreeMap::new(),
         };
         let after = parse(&encode(&config, soc)).unwrap();
         assert_eq!(after.functions.cpuset, config.functions.cpuset);

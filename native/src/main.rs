@@ -4,7 +4,9 @@ mod config;
 mod config_v2;
 mod daemon;
 mod event_loop;
+mod fas;
 mod ffi;
+mod frame_ctrl;
 mod game_diagnostics;
 mod hardware;
 mod input_boost;
@@ -163,6 +165,7 @@ fn run() -> Result<()> {
             );
             Ok(())
         }
+        "fas-diagnose" => fas::diagnose(),
         "scene-diagnose" => {
             println!(
                 "module_dir={}\nmodule_version={}\nbinary_version={}",
@@ -185,6 +188,7 @@ fn run() -> Result<()> {
             }
             let data = telemetry::inspect_scene();
             print!("{}", data.diagnostic_text());
+            print!("{}", fas::inspect(std::path::Path::new("/")).report());
             Ok(())
         }
         _ => Err(usage().to_string()),
@@ -192,5 +196,5 @@ fn run() -> Result<()> {
 }
 
 fn usage() -> &'static str {
-    "用法: novasched <start|restart|daemon|reload|stop|status|diagnose|game-diagnose|webui-session|webui-rpc|restore|uninstall|scene-install|scene-restore|scene-status|scene-diagnose|probe|check-config|prepare-config|prepare-auto|version|self-test|install-check PHASE> [--module-dir PATH] [--origin ORIGIN] [--request JSON]"
+    "用法: novasched <start|restart|daemon|reload|stop|status|diagnose|game-diagnose|fas-diagnose|webui-session|webui-rpc|restore|uninstall|scene-install|scene-restore|scene-status|scene-diagnose|probe|check-config|prepare-config|prepare-auto|version|self-test|install-check PHASE> [--module-dir PATH] [--origin ORIGIN] [--request JSON]"
 }

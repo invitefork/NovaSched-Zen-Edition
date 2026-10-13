@@ -5,10 +5,9 @@ use crate::json::{self, Value};
 use crate::util::{self, Result};
 
 pub const MODES: [&str; 4] = ["powersave", "balance", "performance", "fast"];
-/// Tracks the template/config schema generation; must equal the release
-/// versionCode so upgrades can update unedited defaults and migrate user
-/// configurations while preserving their tuning (see profiles::initialize).
-pub const PROFILE_VERSION: i64 = 320;
+/// Profile generation, independent of the UI version. Bump when defaults change
+/// so unedited configurations update while custom tuning migrates in place.
+pub const PROFILE_VERSION: i64 = 370;
 
 #[derive(Clone, Debug)]
 pub struct Meta {
@@ -100,6 +99,13 @@ pub struct InputBoost {
     pub enabled: bool,
     pub top_app_min: String,
     pub duration_ms: u64,
+    pub modes: BTreeMap<String, InputBoostMode>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputBoostMode {
+    pub top_app_min: String,
+    pub duration_ms: u64,
 }
 
 impl Default for InputBoost {
@@ -108,6 +114,50 @@ impl Default for InputBoost {
             enabled: false,
             top_app_min: "30".into(),
             duration_ms: 300,
+            modes: BTreeMap::new(),
+        }
+    }
+}
+
+/// Frame-aware scheduling engine (NovaFAS). Reads the foreground app's render
+/// frame signal and dynamically raises/relaxes the top-app utilization floor
+/// and per-cluster minimum frequencies, always inside the mode envelope.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FasMode {
+    /// Highest top-app cpu.uclamp.min the engine may set, in percent.
+    pub ceiling: u32,
+    /// Highest per-cluster minimum frequency the engine may set, as a percent
+    /// of that cluster's current maximum frequency.
+    pub freq_scale: u32,
+}
+
+/// No fas block (legacy config) keeps the engine off until the template that
+/// ships it is applied.
+impl Default for FasMode {
+    fn default() -> Self {
+        Self { ceiling: 0, freq_scale: 0 }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FasConfig {
+    pub enabled: bool,
+    /// Suspend a running fas-rs (Scene's FAS) so two frame schedulers never
+    /// fight over the same nodes; resumed when this engine stops.
+    pub override_scene: bool,
+    pub step_ms: u64,
+    pub sample_ms: u64,
+    pub modes: BTreeMap<String, FasMode>,
+}
+
+impl Default for FasConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            override_scene: true,
+            step_ms: 200,
+            sample_ms: 1000,
+            modes: BTreeMap::new(),
         }
     }
 }
@@ -123,6 +173,7 @@ pub struct Functions {
     pub scheduler: SchedulerConfig,
     pub foreground_monitor: ForegroundMonitorConfig,
     pub perf_service_lock: PerfServiceLock,
+    pub fas: FasConfig,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -344,6 +395,7 @@ impl Config {
                 scheduler,
                 foreground_monitor,
                 perf_service_lock,
+                fas: FasConfig::default(),
             },
             modes,
         })

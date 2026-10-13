@@ -1,4 +1,12 @@
-"""Generate NovaSched defaults from one policy definition per supported SoC."""
+"""Generate NovaSched defaults from one policy definition per supported SoC.
+
+v2.7.0 调优标准（功耗优先）：
+- 省电档：极限压低各簇上限，只服务信息流与日用，输入靠短脉冲保跟手；
+- 均衡档：日用甜点，给剪辑 / AI 生产留余量但不拉大频率；
+- 性能档：按王者荣耀稳定 120 帧的每芯片甜点频率，只留 8% 底频；
+- 极速档：开放中/大核全频段给 3D 游戏，小核封顶 90-94%（封顶收益低），
+  动态部分交给 NovaFAS（features.fas），不再使用 hispeed_freq 强推。
+"""
 from pathlib import Path
 import argparse
 import json
@@ -11,116 +19,55 @@ LAYOUTS = {
     'DIMENSITY8350': [0, 4, 7, -1], 'DIMENSITY9400PLUS': [0, 4, 7, -1],
     'XRING_O3': [4, 0, 1, -1],
 }
-# Per-SoC tuning. Slot order follows LAYOUTS (c0..c3 = policy anchors,
-# little/efficiency first, prime last; -1 = cluster absent on that SoC).
-# Percentages resolve against each cluster's physical max on the device.
-# Defaults retain the OEM governor and leave optional placement/GPU controls off.
-# New platforms use device frequency ranges, without assuming Qualcomm nodes.
-SOC_TUNING = {
-    # 8 Gen 1: c0=4xA510@1.8 little, c1=3xA710@2.5 big, c2=X2@3.0 prime.
-    # A710 runs hot: floors and ceilings stay moderate.
-    'SM8450': {
-        'powersave': {'max': ['62%', '52%', '52%', '0%']},
-        'balance': {'max': ['85%', '82%', '80%', '0%']},
-        'performance': {'min': ['20%', '25%', '25%', '0%']},
-        'fast': {
-            'params': [{}, {'hispeed_freq': '50%'}, {'hispeed_freq': '55%'}, {}],
-        },
-    },
-    # 8+ Gen 1: X2@3.2 — same shape as SM8450 with a slightly higher
-    # prime ceiling.
-    'SM8475': {
-        'powersave': {'max': ['60%', '50%', '50%', '0%']},
-        'balance': {'max': ['85%', '82%', '80%', '0%']},
-        'performance': {'min': ['20%', '25%', '25%', '0%']},
-        'fast': {
-            'params': [{}, {'hispeed_freq': '50%'}, {'hispeed_freq': '55%'}, {}],
-        },
-    },
-    # 8 Gen 2: c0=3xA520@1.8 little, c1=4xA715/A710@2.8 big, c2=X3@3.2 prime.
-    # Powersave caps to a cool standby/daily profile. Fast keeps every ceiling
-    # open and raises hispeed jumps so walt/schedutil actually reaches the
-    # prime boost OPP instead of idling one tier below it.
-    'SM8550': {
-        'powersave': {'max': ['60%', '50%', '52%', '0%']},
-        'balance': {'max': ['88%', '82%', '80%', '0%']},
-        'performance': {'min': ['20%', '25%', '25%', '0%']},
-        'fast': {
-            'params': [{}, {'hispeed_freq': '70%'}, {'hispeed_freq': '75%'}, {}],
-        },
-    },
-    # 8 Gen 3: c0=2xA520@2.27 little, c1=3xA720@3.2 big, c2=2xA720@3.0 mid,
-    # c3=X4@3.3 prime. v2.2.0 caps balance as well: the previous unlimited
-    # balance profile pulled ~5W in heavy feed scrolling. The caps keep daily
-    # smoothness while holding a much cooler envelope; powersave stays the
-    # full-save profile and fast remains fully open.
-    'SM8650': {
-        'powersave': {'max': ['58%', '50%', '48%', '54%']},
-        'balance': {'max': ['85%', '80%', '78%', '82%']},
-        'performance': {'min': ['15%', '20%', '25%', '25%']},
-        'fast': {
-            'params': [
-                {'hispeed_freq': '30%'},
-                {'hispeed_freq': '50%'},
-                {'hispeed_freq': '55%'},
-                {'hispeed_freq': '65%'},
-            ],
-        },
-    },
-    # 8 Elite / 8 Elite Gen 5: c0=6x Oryon-E@3.53, c1=2x Oryon-P@4.32.
-    # E cores are performance-class: fast mode keeps all 8 cores for
-    # foreground, only the prime pair gets a hispeed jump above its floor.
-    'SM8750': {
-        'powersave': {'max': ['58%', '52%', '0%', '0%']},
-        'balance': {'max': ['80%', '75%', '0%', '0%']},
-        'performance': {'min': ['15%', '20%', '0%', '0%']},
-        'fast': {
-            'params': [{}, {'hispeed_freq': '60%'}, {}, {}],
-        },
-    },
-    'SM8850': {
-        'powersave': {'max': ['58%', '52%', '0%', '0%']},
-        'balance': {'max': ['80%', '75%', '0%', '0%']},
-        'performance': {'min': ['15%', '20%', '0%', '0%']},
-        'fast': {
-            'params': [{}, {'hispeed_freq': '60%'}, {}, {}],
-        },
-    },
-    'DIMENSITY8350': {
-        'powersave': {'max': ['62%', '55%', '52%', '0']},
-        'balance': {'max': ['85%', '82%', '80%', '0']},
-        'performance': {'min': ['15%', '20%', '20%', '0']},
-    },
-    'DIMENSITY9400PLUS': {
-        'powersave': {'max': ['58%', '52%', '50%', '0']},
-        'balance': {'max': ['85%', '80%', '78%', '0']},
-        'performance': {'min': ['15%', '20%', '20%', '0']},
-    },
-    'XRING_O3': {
-        'powersave': {'max': ['60%', '55%', '50%', '0']},
-        'balance': {'max': ['85%', '80%', '78%', '0']},
-        'performance': {'min': ['15%', '20%', '20%', '0']},
-    },
+# Cluster order follows LAYOUTS. Ceilings are percentages of the detected
+# physical range and snap to the device OPP table. These are tuning defaults,
+# not measured energy-model sweet spots. No template disables system thermal.
+#          (powersave, balance, performance, fast) per cluster, percent of max
+CEILINGS = {
+    'SM8450':            ([54, 46, 44, 0],  [68, 62, 60, 0],  [84, 80, 80, 0],  [92, 98, 100, 0]),
+    'SM8475':            ([54, 46, 44, 0],  [68, 62, 60, 0],  [84, 80, 80, 0],  [92, 98, 100, 0]),
+    'SM8550':            ([54, 46, 46, 0],  [68, 62, 62, 0],  [84, 82, 82, 0],  [92, 98, 100, 0]),
+    'SM8650':            ([52, 46, 44, 46], [66, 62, 60, 62], [82, 80, 78, 80], [90, 98, 100, 100]),
+    'SM8750':            ([52, 46, 0, 0],   [66, 58, 0, 0],   [80, 72, 0, 0],   [90, 100, 0, 0]),
+    'SM8850':            ([52, 46, 0, 0],   [66, 58, 0, 0],   [80, 70, 0, 0],   [90, 100, 0, 0]),
+    'DIMENSITY8350':     ([56, 48, 46, 0],  [70, 64, 62, 0],  [86, 84, 84, 0],  [94, 100, 100, 0]),
+    'DIMENSITY9400PLUS': ([52, 46, 44, 0],  [66, 60, 58, 0],  [80, 78, 80, 0],  [90, 100, 100, 0]),
+    'XRING_O3':          ([54, 46, 48, 0],  [68, 60, 62, 0],  [82, 74, 80, 0],  [92, 100, 100, 0]),
+}
+# NovaFAS per-mode limits: ceiling = top-app uclamp.min max percent;
+# freq_scale = per-cluster minimum-frequency max, percent of the cluster's
+# current ceiling (little cluster ×0.6 inside the engine).
+FAS_MODES = {
+    'powersave':   {'ceiling': '35', 'freq_scale': '30'},
+    'balance':     {'ceiling': '55', 'freq_scale': '45'},
+    'performance': {'ceiling': '80', 'freq_scale': '60'},
+    'fast':        {'ceiling': '95', 'freq_scale': '80'},
 }
 
 def profile(soc, policies):
     def slots(value):
         return [value if policy >= 0 else '0' for policy in policies]
     modes = {}
-    for name, minimum, maximum in [('powersave', '0%', '70%'), ('balance', '0%', '100%'),
-                                   ('performance', '15%', '100%'), ('fast', '0%', '100%')]:
+    for name, minimum in [('powersave', '0%'), ('balance', '0%'),
+                          ('performance', '8%'), ('fast', '0%')]:
         modes[name] = {
-            'min': slots(minimum), 'max': slots(maximum),
+            'min': slots(minimum), 'max': slots('100%'),
             'governors': ['auto' if p >= 0 else '' for p in policies],
             'params': [{}, {}, {}, {}], 'online': [True] * 8,
         }
-    spec = SOC_TUNING.get(soc, {})
+    for name, values in zip(('powersave', 'balance', 'performance', 'fast'), CEILINGS[soc]):
+        modes[name]['max'] = [f'{value}%' if p >= 0 else '0' for value, p in zip(values, policies)]
     features = {
         'node_watchdog': True,
         'cpuset': {'enabled': False, 'top_app': '0-7', 'foreground': '0-7',
                    'restricted': '0-3', 'system_background': '0-3', 'background': '0-1'},
-        'cpuctl': {'enabled': False},
-        'input_boost': {'enabled': False, 'top_app_min': '30', 'duration_ms': '300'},
+        'cpuctl': {'enabled': True, 'modes': {'powersave': {'background_max': '65'}, 'balance': {'background_max': '85'}}},
+        'input_boost': {'enabled': True, 'top_app_min': '30', 'duration_ms': '300', 'modes': {
+            'powersave': {'top_app_min': '15', 'duration_ms': '100'},
+            'balance': {'top_app_min': '20', 'duration_ms': '140'},
+            'performance': {'top_app_min': '28', 'duration_ms': '180'},
+            'fast': {'top_app_min': '40', 'duration_ms': '220'},
+        }},
         'launch_boost': {'enabled': False, 'rate_limit_ms': 500, 'min': ['0'] * 4},
         'disable_gpu_boost': False,
         'scheduler': {'enabled': False, 'energy_aware': True, 'schedstats': False,
@@ -129,19 +76,17 @@ def profile(soc, policies):
                       'nr_migrate': '32', 'util_clamp_min': '0', 'util_clamp_max': '1024'},
         'foreground_ignore': [],
         'perf_lock': {'enabled': False, 'services': []},
+        'fas': {
+            'enabled': True, 'override_scene': True,
+            'step_ms': '200', 'sample_ms': '1000',
+            'modes': FAS_MODES,
+        },
     }
     if soc == 'XRING_O3':
         features['cpuset'].update(restricted='4-7', system_background='4-7', background='4-5')
-    for name, fields in spec.items():
-        if name in ('cpuset', 'cpuctl'):
-            features[name] = fields
-            continue
-        for key, values in fields.items():
-            empty = {} if key == 'params' else '0'
-            modes[name][key] = [values[i] if p >= 0 else empty for i, p in enumerate(policies)]
     return {
         'schema': 'novasched/2', 'module': 'NovaSched_Zen_Edition',
-        'meta': {'name': 'NovaSched Zen Edition', 'author': 'ZenJooo', 'version': 320,
+        'meta': {'name': 'NovaSched Zen Edition', 'author': 'ZenJooo', 'version': 370,
                  'soc': soc, 'loglevel': 'INFO'},
         'policies': policies,
         'features': features,

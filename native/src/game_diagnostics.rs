@@ -28,6 +28,7 @@ pub fn run(module: &Path) -> Result<()> {
     );
     print!("{}", kernel_report(Path::new("/")));
     print_configured_limits();
+    print!("\n[fas]\n{}", crate::fas::inspect(Path::new("/")).report());
     println!("\n[samples: 10 seconds; curfreq may be a requested frequency]");
     let policies = policy_paths(Path::new("/"));
     for index in 0..11 {

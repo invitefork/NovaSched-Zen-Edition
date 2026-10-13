@@ -15,12 +15,16 @@
     if (match) { MODULE = match[1]; MODULE_CANDIDATES.unshift(MODULE); }
   } catch (_) {}
   const STORAGE = "novasched.zen.ui.v2";
+  const UI_VERSION = window.NovaRelease?.version || "2.6.1";
 
   const MODES = {
-    powersave:   { name: "省电", copy: "已降低 CPU 频率上限，减少日常耗电。" },
-    balance:     { name: "均衡", copy: "兼顾响应速度与耗电。" },
-    performance: { name: "性能", copy: "适度抬高最低频率，优先响应。" },
-    fast:        { name: "极速", copy: "开放完整频率范围，优先响应。" },
+    powersave:   { name: "省电", copy: "极限控功耗，适合信息流和日用，输入保持跟手。" },
+    balance:     { name: "均衡", copy: "日用甜点频率，剪辑与 AI 生产可用，不拉大频率。" },
+    performance: { name: "性能", copy: "按王者荣耀稳定 120 帧的甜点频率配置。" },
+    fast:        { name: "极速", copy: "3D 游戏全频段，NovaFAS 按帧动态调频。" },
+  };
+  const ENGINE_TITLES = {
+    off: "NovaFAS 未启用", idle: "NovaFAS 待命", active: "NovaFAS 已接管", paused: "NovaFAS 已暂停",
   };
   const THEME_NAMES = { system: "跟随系统", light: "浅色", dark: "深色" };
   const SYSTEM_NAMES = {
@@ -30,9 +34,10 @@
   };
 
   const s = {
-    page: "overview", online: false, connecting: true, phase: "", error: "", connectionError: "", version: "",
+    page: "overview", pendingControls: 0, online: false, connecting: true, phase: "", error: "", connectionError: "", version: "",
     mode: "", effective: "", pkg: "", controller: "", external: false, linked: false,
-    heartbeat: null, soc: "", socId: "", configProfile: "", fasAvailable: false, sceneInstalled: false, scenePresence: "unknown",
+    heartbeat: null, soc: "", socId: "", configProfile: "", fasAvailable: false, fasState: "unknown", fasMode: "", fasSync: "", fasLegacy: false, sceneInstalled: false, scenePresence: "unknown",
+    fasEngineState: "", fasEngineSource: "", fasFps: 0, fasBoost: 0, fasOverride: false,
     automatic: false, automaticActive: false, appKind: "", classificationSource: "",
     rules: [], rulesLoaded: false, overrides: {},
     pending: null, sockets: {}, suspended: false, retry: 0, epoch: 0, probes: new Set(),
@@ -130,7 +135,7 @@
   /* ---------------- 应用名查询（宿主元数据桥） ---------------- */
   const labels = new Map();
   const queried = new Set();
-  const bridges = () => [window.ksu, window.magisk, window.apatch, window.KSU, window.mmrl].filter(Boolean);
+  const bridges = () => window.NovaHost?.hosts() || [window.ksu, window.magisk, window.apatch, window.KSU, window.mmrl].filter(Boolean);
   const bridge = () => bridges().find(api => typeof api.exec === "function") || bridges()[0];
   const metadataBridge = () => bridges().find(api => typeof api.getPackagesInfo === "function") || bridge();
   function loadLabels(packages) {
@@ -141,7 +146,8 @@
     for (let index = 0; index < needed.length; index += 48) {
       const batch = needed.slice(index, index + 48);
       try {
-        const result = JSON.parse(api.getPackagesInfo(JSON.stringify(batch)));
+        const response = api.getPackagesInfo(JSON.stringify(batch));
+        const result = typeof response === "string" ? JSON.parse(response) : response;
         if (Array.isArray(result)) {
           for (const info of result) {
             if (batch.includes(info.packageName) && typeof info.appLabel === "string" && info.appLabel.trim()) {
@@ -466,17 +472,52 @@
     try { bindSocket(kind, new WebSocket(`ws://${s.host || "127.0.0.1"}:${s.port || 31415}${path}`, [KEY, AUTH_PREFIX + sessionToken])); }
     catch (_) { if (kind === "logs") { s.logConnecting = false; renderLogs(); } }
   }
+  let legacyFasAt = 0, legacyFasJob = null;
+  function probeLegacyFas() {
+    if (s.suspended || document.hidden || legacyFasJob || performance.now() < legacyFasAt || typeof bridge()?.exec !== "function") return;
+    legacyFasAt = performance.now() + 10000;
+    legacyFasJob = rootExec("if [ -e /dev/fas_rs/mode ]; then cat /dev/fas_rs/mode; else printf '%s\\n' '__NOVA_FAS_ABSENT__'; fi", 5000)
+      .then(reply => {
+        if (!s.fasLegacy) return;
+        const mode = reply.stdout.trim();
+        s.fasState = reply.errno !== 0 ? "unreadable" : mode === "__NOVA_FAS_ABSENT__" ? "absent" : own(MODES, mode) ? "ready" : "invalid";
+        s.fasMode = own(MODES, mode) ? mode : "";
+        s.fasAvailable = s.fasState === "ready";
+        s.fasSync = "unavailable";
+        render();
+      }).catch(() => { if (s.fasLegacy) { s.fasState = "unknown"; render(); } })
+      .finally(() => { legacyFasJob = null; });
+  }
   function receiveModes(data) {
     s.connectionError = "";
     s.mode = data.mode; s.effective = own(MODES, data.effective) ? data.effective : "";
     s.pkg = data.package || ""; s.controller = data.controller || "NovaSched";
     s.external = data.sceneActive === "true"; s.linked = data.sceneLinked === "true";
+    s.pendingControls = /^\d+$/.test(data.pendingControls || "") ? Number(data.pendingControls) : 0;
     s.phase = data.phase; s.heartbeat = Number(data.heartbeatMs);
     s.online = s.heartbeat < 30000; s.connecting = false;
     s.soc = data.socName || ""; s.socId = data.socId || ""; s.configProfile = data.configProfile || "";
-    s.fasAvailable = data.fasAvailable === "true";
+    if (typeof data.version === "string" && /^v?\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(data.version)) s.version = data.version.replace(/^v/, "");
+    if (["ready", "running", "unreadable", "invalid", "absent", "unknown"].includes(data.fasState)) {
+      s.fasLegacy = false;
+      s.fasState = data.fasState;
+      s.fasAvailable = data.fasAvailable === "true";
+      s.fasMode = own(MODES, data.fasMode) ? data.fasMode : "";
+      s.fasSync = ["synced", "pending", "failed", "paused", "unavailable"].includes(data.fasSync) ? data.fasSync : "unavailable";
+    } else {
+      s.fasLegacy = true;
+      if (s.fasState === "unknown") s.fasAvailable = data.fasAvailable === "true";
+      probeLegacyFas();
+    }
     s.sceneInstalled = data.sceneInstalled === "true";
     s.scenePresence = ["available", "absent", "unknown"].includes(data.scenePresence) ? data.scenePresence : s.sceneInstalled ? "available" : "unknown";
+    if (["off", "idle", "active", "paused"].includes(data.fasEngine)) {
+      s.fasEngineState = data.fasEngine;
+      s.fasEngineSource = ["timestats", "heuristic", "none"].includes(data.fasEngineSrc) ? data.fasEngineSrc : "none";
+      s.fasFps = Number(data.fasFps) || 0;
+      s.fasBoost = /^\d+$/.test(data.fasBoost || "") ? Number(data.fasBoost) : 0;
+      s.fasOverride = data.fasOverride === "true";
+    }
     s.automatic = data.automaticEnabled === "true";
     s.automaticActive = data.automaticActive === "true";
     s.appKind = ["game", "daily", "unknown"].includes(data.appKind) ? data.appKind : "";
@@ -494,7 +535,7 @@
         s.overrides = Object.fromEntries(Object.entries(data.classificationOverrides).filter(([pkg, kind]) => validPackage(pkg) && !pkg.includes(":") && ["game", "daily"].includes(kind)));
       }
       s.error = typeof data.error === "string" ? data.error : "";
-      s.version = typeof data.version === "string" ? data.version : s.version;
+      if (typeof data.version === "string" && /^v?\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(data.version)) s.version = data.version.replace(/^v/, "");
       if (own(MODES, data.defaultMode)) s.mode = data.defaultMode;
       loadLabels([...s.rules.map(r => r.package), ...Object.keys(s.overrides)]); confirmPending(); render();
     } catch (_) { toast("应用规则数据无法解析，请重连后再试"); }
@@ -558,7 +599,7 @@
       if (s.automatic === (p.value === "on") && s.automaticActive === s.automatic && s.phase === "ready" && (p.value === "off" || s.effective === (s.appKind === "game" ? "fast" : "powersave"))) return finishPending(true, p.value === "on" ? "自动调度已开启" : "已返回手动调度");
     } else if (p.kind === "mode") {
       if (s.automatic || s.automaticActive) return;
-      if (s.phase === "degraded" && s.mode === p.value) return finishPending(false, s.error || "策略下发失败，已保留最后成功档位");
+      if (s.phase === "degraded" && s.pendingControls === 0 && s.mode === p.value) return finishPending(false, s.error || "策略下发失败，已保留最后成功档位");
       if (s.phase === "ready" && s.mode === p.value && s.effective === p.value) return finishPending(true, `${MODES[p.value].name}档已生效`);
       const rule = s.rules.find(r => r.package === basePackage(s.pkg));
       if (s.mode === p.value && rule && rule.mode === s.effective && s.effective !== p.value && s.phase === "ready") return finishPending(true, `${MODES[p.value].name}已设为默认；当前应用规则优先，仍使用${MODES[s.effective].name}档`);
@@ -586,50 +627,22 @@
     if (s.linked) return "Scene 联动";
     return "WebUI 接管";
   }
-  function isoWeek(date) {
-    const target = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
-    const day = target.getUTCDay() || 7;
-    target.setUTCDate(target.getUTCDate() + 4 - day);
-    const yearStart = new Date(Date.UTC(target.getUTCFullYear(), 0, 1));
-    return Math.ceil(((target - yearStart) / 86400000 + 1) / 7);
-  }
-  function heroDate() {
-    try {
-      const now = new Date();
-      const weekday = ["一","二","三","四","五","六","日"][(now.getDay() + 6) % 7];
-      return `${now.getMonth() + 1}月${now.getDate()}日 周${weekday}`;
-    } catch (_) { return "—"; }
-  }
   /* 渲染只写发生变化的文本/属性：心跳每两秒触发一次，也不产生无谓的 DOM 变更 */
   function render() {
     document.documentElement.dataset.online = s.online ? "true" : "false";
 
-    /* 顶栏：日期块 + 状态胶囊 */
-    present("#hero-date", heroDate());
-    present("#hero-week", `第${isoWeek(new Date())}周`);
+    /* 顶栏状态胶囊：点击=诊断（在线）或重连（离线） */
     const cta = $("#nav-cta");
     const ctaState = !s.online ? (s.connecting ? "connecting" : "offline") : s.phase === "degraded" ? "degraded" : s.external ? "external" : "ready";
     if (cta.dataset.state !== ctaState) cta.dataset.state = ctaState;
     present("#nav-cta-text", ctaState === "connecting" ? "连接中" : ctaState === "offline" ? "离线" : ctaState === "degraded" ? "需检查" : ctaState === "external" ? "外部接管" : "已连接");
 
-    /* 顶栏自动调度圆钮：开=高亮 */
-    const autoButton = $("#hero-auto");
-    autoButton.disabled = !editable() || !!s.pending || s.linked;
-    autoButton.setAttribute("aria-pressed", String(!!s.automatic));
-    autoButton.classList.toggle("on", !!s.automatic && !s.linked);
-    autoButton.title = !s.online ? "自动调度 · 等待连接"
-      : s.linked ? "Scene 正在控制档位"
-      : s.pending?.kind === "auto" ? "自动调度 · 确认中…"
-      : s.automatic ? "自动调度 · 已开启" : "开启自动调度";
-
-    /* 助手卡：档位行 / 元信息行 / 概述行 / 底部行 */
+    /* 状态卡：当前档位大字 + 来源 + 概述 + SoC/心跳 */
     present("#stat-mode", s.online ? (s.external ? "外部控制" : MODES[s.effective]?.name || "待确认") : "—");
-    present("#foreground-tag", !s.online ? "待连接" : s.external ? "外部接管" : s.phase === "degraded" ? "需检查" : "实时");
     present("#stat-ctrl", s.online ? s.controller : "等待本地服务");
-    const heartbeat = s.online && Number.isFinite(s.heartbeat) ? `心跳 ${(Math.round(s.heartbeat / 100) / 10).toFixed(1)}s` : "心跳 —";
-    present("#stat-heartbeat", heartbeat);
+    present("#foreground-tag", !s.online ? "待连接" : s.external ? "外部接管" : s.phase === "degraded" ? "需检查" : "实时");
     present("#hero-sub", !s.online
-      ? (s.connecting ? "正在寻找本机守护进程，连接成功后这里显示真实调度状态。" : "连接暂时不可用，会自动重试；也可以点右上角状态胶囊手动重连。")
+      ? (s.connecting ? "正在寻找本机守护进程，连接成功后这里显示真实调度状态。" : "连接暂时不可用，会自动重试；点右上角状态胶囊可手动重连。")
       : s.external ? "Scene 当前选用其他调度器，NovaSched 暂停节点写入并保持只读。"
       : s.phase === "degraded" ? "部分策略下发失败，守护进程正在重试；详情见日志。"
       : s.automatic ? "自动调度跟随前台应用：游戏用极速，其余用省电。"
@@ -637,44 +650,10 @@
     const socChip = $("#stat-soc-chip");
     if (socChip) socChip.hidden = !(s.online && s.soc);
     present("#stat-soc-name", s.soc || "—");
-    present("#stat-mode-note", !s.online ? "点击卡片读取启动诊断" : "点击卡片读取运行诊断");
+    const heartbeat = s.online && Number.isFinite(s.heartbeat) ? `心跳 ${(Math.round(s.heartbeat / 100) / 10).toFixed(1)}s` : "心跳 —";
+    present("#stat-heartbeat", heartbeat);
 
-    /* 前台应用分区 */
-    present("#stat-appkind", s.online
-      ? (s.appKind === "game" ? "识别为游戏" : s.appKind === "daily" ? "识别为日用" : "暂未识别")
-      : "每两秒刷新");
-    const pkgName = s.online && s.pkg ? appInfo(s.pkg).name : s.online ? "无前台应用" : "等待连接";
-    present("#stat-pkg", pkgName);
-    present("#stat-pkg-raw", s.online && s.pkg ? s.pkg : s.online ? "锁屏、待机或暂未读取到活动" : "连接后显示应用包名");
-    present("#foreground-avatar", s.online && s.pkg ? appInfo(s.pkg).initial : "—");
-    present("#stat-pkg-note", s.online && s.pkg
-      ? (s.appKind === "game" ? "识别为游戏 · 自动模式使用极速" : s.appKind === "daily" ? "识别为日用 · 自动模式使用省电" : "暂未识别，自动模式先用省电")
-      : "前台活动每两秒刷新一次。");
-
-    /* Scene 联动四态：联动中 / 外部接管 / 已安装待接管 / 未安装由 WebUI 接管 */
-    let sceneState, sceneNote;
-    if (!s.online) {
-      sceneState = "等待连接"; sceneNote = "连接守护进程后显示 Scene 的接管状态。";
-    } else if (s.external) {
-      sceneState = "外部调度器接管";
-      sceneNote = "Scene 当前选用其它调度器，本模块暂停写入保持只读；在 Scene 停用它后自动恢复。";
-    } else if (s.linked) {
-      sceneState = "Scene 联动中";
-      sceneNote = "NovaSched 是 Scene 的调度回调：在 Scene 里切换档位由本模块执行下发，应用规则双向同步。";
-    } else if (s.sceneInstalled) {
-      sceneState = "Scene 已安装 · 待接管";
-      sceneNote = "安装已确认，调度回调尚未注册。可点检测详情重新注册，再重新打开 Scene 查看调度信息。";
-    } else if (s.scenePresence === "unknown") {
-      sceneState = "Scene 检测暂不可用";
-      sceneNote = "系统暂未返回安装状态。调度服务会继续检测，可在检测详情查看原因。";
-    } else {
-      sceneState = "WebUI 接管";
-      sceneNote = "未安装 com.omarea.vtools 或 Scene 系应用，本页管理本地调度。";
-    }
-    present("#stat-scene", sceneState);
-    present("#stat-scene-note", sceneNote);
-
-    /* 档位区 */
+    /* 档位网格 */
     $$("#mode-grid .mode-card").forEach(button => {
       const mode = button.dataset.mode;
       const actual = s.online && !s.external && mode === s.effective;
@@ -693,12 +672,82 @@
     present("#auto-note", s.linked ? "Scene 决定档位；本地自动偏好保留，退出联动后恢复。" : "游戏用极速，日用和桌面用省电。");
     autoSwitch.setAttribute("aria-busy", String(s.pending?.kind === "auto"));
 
-    /* FAS 卡 */
-    present("#shot-fas-title", s.fasAvailable ? "FAS 已就绪" : "FAS 未检测到");
-    present("#shot-fas-desc", s.fasAvailable
-      ? "Scene N1 的 FAS（fas-rs）正在运行，档位切换会自动同步到它的模式节点。"
-      : "未检测到 FAS 模式节点。若 Scene 提供 FAS，请先在 Scene 中启用。");
-    present("#shot-fas-node", s.fasAvailable ? "已就绪" : "待检测");
+    /* NovaFAS 引擎卡：引擎状态与 fas-rs 接口状态分开呈现 */
+    const engineRunning = s.online && s.fasEngineState === "active";
+    present("#fas-engine-badge", !s.online ? "待连接" : engineRunning ? (s.fasOverride ? "已接管 fas-rs" : "运行中") : s.fasEngineState === "idle" ? "待命" : "未启用");
+    let engineTitle, engineDesc, engineSource;
+    if (!s.online) {
+      engineTitle = "等待连接"; engineDesc = "连接后读取 NovaFAS 引擎状态。"; engineSource = "待连接";
+    } else if (s.fasEngineState === "active") {
+      engineTitle = ENGINE_TITLES.active;
+      engineSource = s.fasEngineSource === "timestats" ? "帧信号 · SurfaceFlinger" : "负载启发式";
+      engineDesc = s.fasOverride
+        ? "读取前台应用渲染帧信号，在档位包络内动态调频；Scene 的 fas-rs 已被暂停，由本引擎接管。"
+        : "读取前台应用渲染帧信号，在档位包络内动态调频：掉帧快速加压，稳定后缓慢回落省电。";
+    } else if (s.fasEngineState === "idle") {
+      engineTitle = ENGINE_TITLES.idle;
+      engineSource = "待命";
+      engineDesc = "引擎已加载，等待前台应用进入可调度状态。";
+    } else if (s.fasEngineState === "paused") {
+      engineTitle = ENGINE_TITLES.paused;
+      engineSource = "暂停";
+      engineDesc = "外部调度器接管中，NovaFAS 暂停写入。";
+    } else {
+      engineTitle = ENGINE_TITLES.off;
+      engineSource = "未启用";
+      engineDesc = "当前配置未启用 NovaFAS；安装完整 v2.7.0 并重启后生效。";
+    }
+    present("#fas-engine-title", engineTitle);
+    present("#fas-engine-source", engineSource);
+    present("#fas-engine-desc", engineDesc);
+    const meter = $("#fas-engine-meter");
+    if (meter) meter.hidden = !engineRunning;
+    present("#fas-engine-fps", engineRunning ? `${s.fasFps.toFixed(1)} fps` : "—");
+    present("#fas-engine-boost", engineRunning ? `${s.fasBoost}%` : "—");
+    const bar = $("#fas-engine-bar");
+    if (bar) bar.style.width = `${Math.min(100, s.fasBoost)}%`;
+    /* 旧版服务没有引擎字段时，退回展示 fas-rs 模式接口状态 */
+    const legacy = $("#fas-legacy-desc");
+    if (legacy) {
+      const showLegacy = s.online && !s.fasEngineState;
+      legacy.hidden = !showLegacy;
+      if (showLegacy) legacy.textContent = `fas-rs 接口：${{ ready: "已检测到", running: "进程运行中", absent: "未检测到", unreadable: "不可读", invalid: "待就绪" }[s.fasState] || "待确认"}${s.fasSync === "synced" ? " · 档位已同步" : ""}。这是旧版服务；完整安装 v2.7.0 后由 NovaFAS 引擎接管。`;
+    }
+
+    /* 前台应用分区 */
+    present("#stat-appkind", s.online
+      ? (s.appKind === "game" ? "识别为游戏" : s.appKind === "daily" ? "识别为日用" : "暂未识别")
+      : "每两秒刷新");
+    const pkgName = s.online && s.pkg ? appInfo(s.pkg).name : s.online ? "无前台应用" : "等待连接";
+    present("#stat-pkg", pkgName);
+    present("#stat-pkg-raw", s.online && s.pkg ? s.pkg : s.online ? "锁屏、待机或暂未读取到活动" : "连接后显示应用包名");
+    present("#foreground-avatar", s.online && s.pkg ? appInfo(s.pkg).initial : "—");
+    present("#stat-pkg-note", s.online && s.pkg
+      ? (s.appKind === "game" ? "识别为游戏 · 自动模式使用极速" : s.appKind === "daily" ? "识别为日用 · 自动模式使用省电" : "暂未识别，自动模式先用省电")
+      : "前台活动每两秒刷新一次。");
+
+    /* Scene 联动四态 */
+    let sceneState, sceneNote;
+    if (!s.online) {
+      sceneState = "等待连接"; sceneNote = "连接守护进程后显示 Scene 的接管状态。";
+    } else if (s.external) {
+      sceneState = "外部调度器接管";
+      sceneNote = "Scene 当前选用其它调度器，本模块暂停写入保持只读；在 Scene 停用它后自动恢复。";
+    } else if (s.linked) {
+      sceneState = "Scene 联动中";
+      sceneNote = "NovaSched 是 Scene 的调度回调：在 Scene 里切换档位由本模块执行下发，应用规则双向同步。";
+    } else if (s.sceneInstalled) {
+      sceneState = "Scene 已安装 · 待接管";
+      sceneNote = "安装已确认，调度回调尚未注册。可点检测详情重新注册。";
+    } else if (s.scenePresence === "unknown") {
+      sceneState = "Scene 检测暂不可用";
+      sceneNote = "系统暂未返回安装状态。调度服务会继续检测，可在检测详情查看原因。";
+    } else {
+      sceneState = "WebUI 接管";
+      sceneNote = "未安装 Scene 系应用，本页管理本地调度。";
+    }
+    present("#stat-scene", sceneState);
+    present("#stat-scene-note", sceneNote);
 
     /* 规则区 */
     renderRules();
@@ -706,12 +755,17 @@
     $("#add-rule").disabled = !editable() || !!s.pending;
 
     /* 关于 */
-    present("#about-version", s.version ? "v" + s.version.replace(/^v/, "") : "v2.6.0");
-    present("#about-version-foot", s.version ? "v" + s.version.replace(/^v/, "") : "v2.6.0");
+    present("#about-version", "v" + UI_VERSION);
+    present("#about-engine-version", s.version ? "v" + s.version : "待连接");
+    const versionMismatch = !!s.version && s.version !== UI_VERSION;
+    $("#version-note").hidden = !versionMismatch;
+    present("#version-note", versionMismatch ? `界面 v${UI_VERSION}，服务 v${s.version}。仅更新界面不会升级调度核心；完整安装同一版本并重启后，NovaFAS 与新策略才会全部生效。` : "");
     present("#about-soc", s.online && s.soc ? s.soc : "待识别");
     present("#about-profile", s.online && s.configProfile ? s.configProfile : "待识别");
-    present("#about-fas", s.fasAvailable ? "已就绪 · 档位联动" : "未检测到（可选）");
-    present("#footer-version", (s.version ? "v" + s.version.replace(/^v/, "") : "v2.6.0") + " · ZenJooo");
+    present("#about-fas", !s.online ? "待连接" : s.fasEngineState === "active" ? "NovaFAS 已接管" : s.fasEngineState === "idle" ? "NovaFAS 待命" : s.fasSync === "synced" ? "fas-rs 已同步" : fasTitleShort());
+  }
+  function fasTitleShort() {
+    return { ready: "fas-rs 已检测到", running: "fas-rs 运行中", unreadable: "fas-rs 不可读", invalid: "fas-rs 待就绪", absent: "fas-rs 未检测到", unknown: "待确认" }[s.fasState] || "待确认";
   }
   let ruleQuery="";
   function renderRules() {
@@ -779,10 +833,8 @@
   }
   const logsActive = () => s.page === "logs";
 
-  /* ---------------- 页面切换（底部胶囊 dock） ---------------- */
-  const PAGE_IDS = ["overview", "modes", "rules", "logs", "about"];
-  const ROOT_PAGES = ["overview", "modes", "about"];
-  const PAGE_TITLES = { rules: "应用规则", logs: "运行记录" };
+  /* ---------------- 页面切换（底部胶囊 dock，双向转场） ---------------- */
+  const PAGE_IDS = ["overview", "rules", "logs", "about"];
   let currentPage = "overview", routeDepth = 0;
   const pageScroll = new Map();
   const reducedMotion = () => ui.reduceMotion || !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
@@ -794,128 +846,135 @@
     } catch (_) {}
   }
   rememberRoute(null, true);
-  let scrollFrame = 0;
-  function updateScrollClip() {
-    scrollFrame = 0;
-    document.documentElement.style.setProperty("--scroll-offset", Math.max(0, window.scrollY || 0) + "px");
-  }
-  window.addEventListener("scroll", () => {
-    if (!scrollFrame) scrollFrame = requestAnimationFrame(updateScrollClip);
-  }, { passive: true });
-  updateScrollClip();
+  const mainScroll = $("#main");
   function syncInert() {
     const modal = !!$(".appearance-layer.open,.dialog-layer.open");
-    for (const selector of ["main", ".dock", ".top-bar", ".detail-bar"]) { const node=$(selector); if(node)node.inert=modal; }
+    for (const selector of ["main", "#dock-wrap", ".top-bar"]) { const node=$(selector); if(node)node.inert=modal; }
+    $("#personal-panel").inert = $("#dialog-layer").classList.contains("open");
     document.body.classList.toggle("overlay-open", modal);
   }
+  /* 锚点 morph：打开与关闭共用同一组关键帧，关闭时反向播放，
+     元素精确回到它的来源锚点（从哪来就从哪回去）。 */
   function morph(element, anchor, opening = true) {
     if (!element || !anchor || reducedMotion() || typeof element.animate !== "function") return;
     const target = element.getBoundingClientRect(), from = anchor.getBoundingClientRect();
     if (!target.width || !target.height || !from.width || !from.height) return;
-    const dx=from.left+from.width/2-target.left-target.width/2, dy=from.top+from.height/2-target.top-target.height/2;
-    const small=`translate(${dx}px,${dy}px) scale(${Math.max(.08,from.width/target.width)},${Math.max(.08,from.height/target.height)})`;
-    element.animate(opening ? [{transform:small,opacity:.2},{transform:"none",opacity:1}] : [{transform:"none",opacity:1},{transform:small,opacity:0}],
-      {duration:opening?580:420,easing:opening?"cubic-bezier(.18,.76,.20,1)":"cubic-bezier(.34,.02,.30,1)",fill:"none"});
-    window.NovaGlass?.invalidate(opening?640:460);
+    const dx = from.left + from.width / 2 - target.left - target.width / 2;
+    const dy = from.top + from.height / 2 - target.top - target.height / 2;
+    const small = `translate(${dx}px,${dy}px) scale(${Math.max(.08, from.width / target.width)},${Math.max(.08, from.height / target.height)})`;
+    const frames = [
+      { transform: small, opacity: .25 },
+      { transform: "none", opacity: 1 },
+    ];
+    element.animate(opening ? frames : [...frames].reverse(), {
+      duration: 420, easing: "cubic-bezier(.32,.72,0,1)", fill: "none",
+    });
+    window.NovaGlass?.invalidate(560);
+  }
+  function animatePageSwitch(previous, next, forward) {
+    const incoming = $("#page-" + next), outgoing = $("#page-" + previous);
+    if (!incoming || !outgoing || reducedMotion() || typeof incoming.animate !== "function") return;
+    const duration = 400, easing = "cubic-bezier(.32,.72,0,1)";
+    const enter = [
+      { transform: `translateX(${forward ? "26%" : "-26%"})`, opacity: 0 },
+      { transform: "translateX(0)", opacity: 1 },
+    ];
+    const leave = [
+      { transform: "translateX(0)", opacity: 1 },
+      { transform: `translateX(${forward ? "-18%" : "18%"})`, opacity: 0 },
+    ];
+    outgoing.classList.add("leaving");
+    const out = outgoing.animate(leave, { duration, easing, fill: "forwards" });
+    const inn = incoming.animate(enter, { duration, easing, fill: "both" });
+    let done = 0;
+    const finish = () => {
+      if (++done < 2) return;
+      out.cancel(); inn.cancel();
+      outgoing.classList.remove("leaving");
+      window.NovaGlass?.invalidate(360);
+    };
+    out.onfinish = finish; inn.onfinish = finish;
+    setTimeout(finish, duration + 80); /* 兜底：标签页切换或 WebView 暂停时 onfinish 可能延迟 */
   }
   function setPage(page, fromHistory = false) {
     if (!PAGE_IDS.includes(page)) page = "overview";
-    const previous=currentPage, changed=previous!==page;
-    if(changed) {
-      pageScroll.set(previous,window.scrollY || 0);
-      closeQuick();
-      if($("#appearance-layer").classList.contains("open"))closePersonalize(true);
-      if($("#dialog-layer").classList.contains("open"))closeDialog(true);
+    const previous = currentPage, changed = previous !== page;
+    if (changed) {
+      pageScroll.set(previous, mainScroll.scrollTop || 0);
+      if ($("#appearance-layer").classList.contains("open")) closePersonalize(true);
+      if ($("#dialog-layer").classList.contains("open")) closeDialog(true);
     }
-    currentPage=page;s.page=page;
-    $$(".page").forEach(node=>{
-      node.classList.toggle("active",node.id==="page-"+page);
-      node.setAttribute("aria-hidden",String(node.id!=="page-"+page));
+    currentPage = page; s.page = page;
+    $$(".page").forEach(node => {
+      node.classList.toggle("active", node.id === "page-" + page);
+      node.setAttribute("aria-hidden", String(node.id !== "page-" + page));
     });
-    const rootIndex=ROOT_PAGES.includes(page)?ROOT_PAGES.indexOf(page):2;
-    $$(".dock button").forEach((button,index)=>{
-      if(index===rootIndex)button.setAttribute("aria-current","page");else button.removeAttribute("aria-current");
+    const index = PAGE_IDS.indexOf(page);
+    $$(".dock button").forEach((button, buttonIndex) => {
+      if (buttonIndex === index) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
     });
-    $(".dock").style.setProperty("--tab-index",String(rootIndex));
-    const detail=!!PAGE_TITLES[page];
-    $(".top-bar").hidden=detail || page==="about";
-    $(".detail-bar").hidden=!detail;present("#detail-title",PAGE_TITLES[page]||"");
-    $("#detail-action").hidden=page!=="rules";
-    $("#dock-wrap").classList.toggle("settings",rootIndex===2);
-    $("#dock-wrap").classList.toggle("hidden",detail);
-    document.documentElement.dataset.page=page;
-    const active=$("#page-"+page);
-    if(changed) {
-      window.scrollTo({top:fromHistory?(pageScroll.get(page)||0):0,behavior:"instant"});
-      active.classList.remove("page-entering");
-      active.style.setProperty("--page-shift",(ROOT_PAGES.indexOf(page)>=ROOT_PAGES.indexOf(previous)?24:-24)+"px");
-      [...active.children].forEach((node,index)=>node.style.setProperty("--group-index",String(Math.min(index,5))));
-      if(!reducedMotion()) {void active.offsetWidth;active.classList.add("page-entering");}
-      if(!fromHistory)rememberRoute();
+    $(".dock").style.setProperty("--tab-index", String(index));
+    document.documentElement.dataset.page = page;
+    if (changed) {
+      /* Tab 式导航：每个页面保留自己的滚动位置，切回时恢复。 */
+      mainScroll.scrollTop = pageScroll.get(page) || 0;
+      animatePageSwitch(previous, page, PAGE_IDS.indexOf(page) > PAGE_IDS.indexOf(previous));
+      if (!fromHistory) rememberRoute();
     }
-    updateScrollClip();
     window.dispatchEvent(new CustomEvent("nova:page", { detail: { animate: changed && !reducedMotion() } }));
-    if(page==="logs")openEndpoint("logs");
-    else {stopSocket("logs");s.logConnected=false;s.logConnecting=false;renderLogs();}
+    if (page === "logs") openEndpoint("logs");
+    else { stopSocket("logs"); s.logConnected = false; s.logConnecting = false; renderLogs(); }
   }
-  document.addEventListener("click",event=>{
-    const button=event.target instanceof Element?event.target.closest("[data-page]"):null;
-    if(!button)return;setPage(button.dataset.page);haptic();
+  document.addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-page]") : null;
+    if (!button) return; setPage(button.dataset.page); haptic();
   });
-  $("#detail-back").onclick=()=>{if(history.state?.nova && routeDepth>0)history.back();else setPage("about");};
-  $("#detail-action").onclick=()=>showRuleEditor();
-  window.addEventListener("popstate",event=>{
-    if(!event.state?.nova)return;
-    routeDepth=event.state.depth||0;
-    closeQuick();
-    if(event.state.overlay!=="dialog")closeDialog(true);
-    if(event.state.overlay!=="appearance")closePersonalize(true);
-    setPage(event.state.page,true);
-    if(event.state.overlay==="appearance"&&!$("#appearance-layer").classList.contains("open"))openPersonalize(null,false);
+  window.addEventListener("popstate", event => {
+    if (!event.state?.nova) return;
+    routeDepth = event.state.depth || 0;
+    if (event.state.overlay !== "dialog") closeDialog(true);
+    if (event.state.overlay !== "appearance") closePersonalize(true);
+    setPage(event.state.page || "overview", true);
+    if (event.state.overlay === "appearance" && !$("#appearance-layer").classList.contains("open")) openPersonalize(null, false);
   });
-  const dock=$(".dock");let dockDrag=null,ignoreDockClick=0;
-  dock.addEventListener("pointerdown",event=>{
-    if(event.button>0)return;
-    const rect=dock.getBoundingClientRect(),cell=(rect.width-8)/3;
-    dockDrag={pointer:event.pointerId,start:event.clientX,rect,cell,moved:false,index:ROOT_PAGES.indexOf(currentPage)};
-    dock.setPointerCapture?.(event.pointerId);
+  const dock = $(".dock"); let dockDrag = null, ignoreDockClick = 0;
+  dock.addEventListener("pointerdown", event => {
+    if (event.button > 0) return;
+    const rect = dock.getBoundingClientRect(), cell = (rect.width - 10) / 4;
+    dockDrag = { pointer: event.pointerId, start: event.clientX, startY: event.clientY, rect, cell, moved: false, index: PAGE_IDS.indexOf(currentPage) };
   });
-  dock.addEventListener("pointermove",event=>{
-    if(!dockDrag || event.pointerId!==dockDrag.pointer)return;
-    if(Math.abs(event.clientX-dockDrag.start)>5)dockDrag.moved=true;
-    if(!dockDrag.moved)return;
-    event.preventDefault();dock.classList.add("dock-dragging");
-    const x=Math.max(-6,Math.min(dockDrag.cell*2+6,event.clientX-dockDrag.rect.left-4-dockDrag.cell/2));
-    dock.style.setProperty("--dock-drag-x",x+"px");window.NovaGlass?.invalidate();
-  });
-  function endDock(event,cancelled=false) {
-    if(!dockDrag || event.pointerId!==dockDrag.pointer)return;
-    if(dockDrag.moved && !cancelled){
-      const index=Math.max(0,Math.min(2,Math.round((event.clientX-dockDrag.rect.left-4-dockDrag.cell/2)/dockDrag.cell)));
-      setPage(ROOT_PAGES[index]);haptic();ignoreDockClick=performance.now()+180;
+  dock.addEventListener("pointermove", event => {
+    if (!dockDrag || event.pointerId !== dockDrag.pointer) return;
+    if (!dockDrag.moved) {
+      const dx = Math.abs(event.clientX - dockDrag.start), dy = Math.abs(event.clientY - dockDrag.startY);
+      if (dy > 8 && dy > dx) { dockDrag = null; return; }
+      if (dx <= 8) return;
+      dockDrag.moved = true;
+      dock.setPointerCapture?.(event.pointerId);
     }
-    dock.classList.remove("dock-dragging");dockDrag=null;window.NovaGlass?.invalidate(360);
-  }
-  dock.addEventListener("pointerup",event=>endDock(event));dock.addEventListener("pointercancel",event=>endDock(event,true));
-  dock.addEventListener("click",event=>{if(performance.now()<ignoreDockClick){event.preventDefault();event.stopImmediatePropagation();}},true);
-  dock.addEventListener("keydown",event=>{
-    if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;
-    event.preventDefault();const current=ROOT_PAGES.indexOf(currentPage);
-    const index=event.key==="Home"?0:event.key==="End"?2:Math.max(0,Math.min(2,current+(event.key==="ArrowRight"?1:-1)));
-    setPage(ROOT_PAGES[index]);$$("button",dock)[index]?.focus();
+    if (!dockDrag.moved) return;
+    event.preventDefault(); dock.classList.add("dock-dragging");
+    const x = Math.max(-6, Math.min(dockDrag.cell * 3 + 6, event.clientX - dockDrag.rect.left - 5 - dockDrag.cell / 2));
+    dock.style.setProperty("--dock-drag-x", x + "px"); window.NovaGlass?.invalidate();
   });
-  let swipeStart=null;
-  $("main").addEventListener("pointerdown",event=>{
-    if(event.target.closest("button,input,a,.log-list") || !ROOT_PAGES.includes(currentPage))return;
-    swipeStart={x:event.clientX,y:event.clientY,time:performance.now()};
-  },{passive:true});
-  $("main").addEventListener("pointerup",event=>{
-    if(!swipeStart)return;const dx=event.clientX-swipeStart.x,dy=event.clientY-swipeStart.y,elapsed=performance.now()-swipeStart.time;swipeStart=null;
-    if(Math.abs(dx)<60 || Math.abs(dx)<Math.abs(dy)*1.6 || elapsed>650)return;
-    const index=Math.max(0,Math.min(2,ROOT_PAGES.indexOf(currentPage)+(dx<0?1:-1)));setPage(ROOT_PAGES[index]);haptic();
-  },{passive:true});
-  $("main").addEventListener("pointercancel",()=>{swipeStart=null;},{passive:true});
-
+  function endDock(event, cancelled = false) {
+    if (!dockDrag || event.pointerId !== dockDrag.pointer) return;
+    if (dockDrag.moved && !cancelled) {
+      const index = Math.max(0, Math.min(3, Math.round((event.clientX - dockDrag.rect.left - 5 - dockDrag.cell / 2) / dockDrag.cell)));
+      setPage(PAGE_IDS[index]); haptic(); ignoreDockClick = performance.now() + 180;
+    }
+    if (dock.hasPointerCapture?.(event.pointerId)) dock.releasePointerCapture?.(event.pointerId);
+    dock.classList.remove("dock-dragging"); dockDrag = null; window.NovaGlass?.invalidate(360);
+  }
+  dock.addEventListener("pointerup", event => endDock(event)); dock.addEventListener("pointercancel", event => endDock(event, true));
+  dock.addEventListener("click", event => { if (performance.now() < ignoreDockClick) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
+  dock.addEventListener("keydown", event => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault(); const current = PAGE_IDS.indexOf(currentPage);
+    const index = event.key === "Home" ? 0 : event.key === "End" ? 3 : Math.max(0, Math.min(3, current + (event.key === "ArrowRight" ? 1 : -1)));
+    setPage(PAGE_IDS[index]); $$("button", dock)[index]?.focus();
+  });
   /* ---------------- 触控高光（借鉴 SleepDown 的 InteractiveHighlight） ---------------- */
   function markSheen(event) {
     const target = event.target instanceof Element ? event.target.closest("[data-sheen]") : null;
@@ -987,7 +1046,7 @@
   darkQuery?.addEventListener?.("change",applyTheme);window.addEventListener("orientationchange",()=>{setTimeout(applyTheme,80);});window.addEventListener("resize",()=>{window.NovaGlass?.setWallOptions(currentCrop());});
   let personalAnchor=null,personalFocus=null,personalCloseTimer=0;
   function openPersonalize(anchor=$("#personalize-open"),push=true,glassOnly=false) {
-    closeQuick();personalAnchor=anchor||personalAnchor;personalFocus=document.activeElement;
+    personalAnchor=anchor||personalAnchor;personalFocus=document.activeElement;
     const layer=$("#appearance-layer");if(layer.classList.contains("open")&&!layer.classList.contains("closing"))return;
     clearTimeout(personalCloseTimer);layer.classList.remove("closing");
     layer.classList.add("open");layer.setAttribute("aria-hidden","false");syncInert();
@@ -999,14 +1058,15 @@
   }
   function closePersonalize(fromHistory=false) {
     const layer=$("#appearance-layer");
-    if(!layer.classList.contains("open")||layer.classList.contains("closing"))return;
+    if(!layer.classList.contains("open") || (!fromHistory && layer.classList.contains("closing")))return;
     stopSliderPreview();
     const finish=()=>{
       layer.classList.remove("open","closing");layer.setAttribute("aria-hidden","true");
       if(personalAnchor)personalAnchor.style.visibility="";
       syncInert();if(personalFocus?.isConnected)personalFocus.focus();window.dispatchEvent(new Event("nova:overlay"));
     };
-    if(reducedMotion())finish();
+    clearTimeout(personalCloseTimer);
+    if(fromHistory || reducedMotion())finish();
     else{layer.classList.add("closing");morph($("#personal-panel"),personalAnchor,false);personalCloseTimer=setTimeout(finish,420);}
     if(!fromHistory && history.state?.overlay==="appearance")history.back();
   }
@@ -1064,7 +1124,6 @@
   /* ---------------- 弹窗 ---------------- */
   let dialogFocus = null, dialogCloseTimer = 0;
   function openDialog(bodyHtml) {
-    closeQuick();
     clearTimeout(dialogCloseTimer);$("#dialog-layer").classList.remove("closing");
     const firstOpen=!$("#dialog-layer").classList.contains("open");
     if(firstOpen)rememberRoute("dialog");
@@ -1083,13 +1142,14 @@
   }
   function closeDialog(fromHistory = false) {
     const layer=$("#dialog-layer");
-    if(!layer.classList.contains("open")||layer.classList.contains("closing"))return;
+    if(!layer.classList.contains("open") || (!fromHistory && layer.classList.contains("closing")))return;
     const finish=()=>{
       layer.classList.remove("open","closing");layer.setAttribute("aria-hidden","true");
       syncInert();document.body.style.overflow = "";
       if(dialogFocus?.isConnected)dialogFocus.focus();window.dispatchEvent(new Event("nova:dialog"));
     };
-    if(reducedMotion())finish();
+    clearTimeout(dialogCloseTimer);
+    if(fromHistory || reducedMotion())finish();
     else{layer.classList.add("closing");morph($(".dialog"),dialogFocus,false);dialogCloseTimer=setTimeout(finish,420);}
     if(!fromHistory && history.state?.overlay==="dialog")history.back();
   }
@@ -1098,7 +1158,7 @@
   });
   document.addEventListener("keydown", event => {
     if (!$("#dialog-layer").classList.contains("open")) {
-      if(event.key==="Escape") { if($("#appearance-layer").classList.contains("open"))closePersonalize();else if(!$("#quick-layer").hidden)closeQuick();else if(PAGE_TITLES[currentPage])$("#detail-back").click(); }
+      if(event.key==="Escape") { if($("#appearance-layer").classList.contains("open"))closePersonalize(); }
       if(event.key==="Tab"&&$("#appearance-layer").classList.contains("open"))trapFocus(event,$("#personal-panel"));
       return;
     }
@@ -1111,7 +1171,7 @@
   });
 
   function showRuleEditor(pkg = "") {
-    if (!editable() || s.pending) return;
+    if (!editable() || s.pending) { toast(s.pending ? "上一次操作正在确认，请稍候" : s.external ? "当前由其它调度器接管，请先处理 Scene 调度来源" : "请先连接到模块服务"); return; }
     const existing = s.rules.find(rule => rule.package === pkg);
     const a = pkg ? appInfo(pkg) : null;
     let selected = existing?.mode || s.mode || "balance";
@@ -1207,7 +1267,7 @@
   /* ---------------- 控件事件 ---------------- */
   $$("#mode-grid .mode-card").forEach(button => button.onclick = () => {
     if (s.automatic || s.automaticActive) { beginPending("mode", button.dataset.mode); return; }
-    if (!s.automatic && button.dataset.mode === s.mode && button.dataset.mode === s.effective) { toast("当前档位已生效"); return; }
+    if (!s.automatic && s.phase === "ready" && button.dataset.mode === s.mode && button.dataset.mode === s.effective) { toast("当前档位已生效"); return; }
     beginPending("mode", button.dataset.mode);
   });
   /* switch 是 button[role=switch]，没有原生 change 事件；统一用 click 翻转 */
@@ -1216,22 +1276,13 @@
     beginPending("auto", on ? "on" : "off");
     render();
   };
-  $("#hero-auto").onclick = () => {
-    beginPending("auto", s.automatic ? "off" : "on");
-    render();
-  };
-  $("#hero-reconnect").onclick = () => { if (!s.suspended) { clearTimeout(s.retry); discover(); toast("正在重新发现本地服务"); } };
-  $("#hero-diagnose").onclick = () => showDiagnostics();
   $("#scene-diagnose").onclick = () => showDiagnostics(true);
-  $("#nav-brand").onclick = () => setPage("overview");
-  $("#nav-brand").addEventListener("keydown", event => {
-    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setPage("overview"); }
-  });
+  $("#scene-diagnose-settings").onclick = () => showDiagnostics(true);
   $("#about-diagnose").onclick = event => { event.preventDefault(); showDiagnostics(); };
-  $("#about-license").onclick = event => { event.preventDefault(); openDialog(`<h3 id="dialog-title">来源与许可</h3><p class="dialog-sub">模块作者：ZenJooo。调度核心沿用 GPL-3.0-only。</p><p class="dialog-sub">界面参照 SleepDown 课程表 1.2.7_beta5，原作者 xiaomanjun233。这里是独立的模块 WebUI，非官方修改版；没有打包课表、教务或助手业务代码。</p><p class="dialog-sub">玻璃透镜与色散公式来自 Kyant Backdrop，Apache-2.0。浏览器运行 WebGL 适配器，APK 运行原生 Compose / RuntimeShader。</p><p class="dialog-sub"><a href="https://github.com/xiaomanjun233/SleepDown-Schedule" target="_blank" rel="noopener noreferrer">SleepDown-Schedule</a><br><a href="https://github.com/Kyant0/AndroidLiquidGlass" target="_blank" rel="noopener noreferrer">Kyant0/AndroidLiquidGlass</a></p><div class="dialog-actions"><button class="btn-capsule ghost" id="license-close" type="button">关闭</button></div>`);$("#license-close").onclick=()=>closeDialog(); };
-  $("#nav-cta").onclick = () => { if (!s.online && !s.connecting) { clearTimeout(s.retry); discover(); } };
-  $(".assistant-card").onclick = () => showDiagnostics();
-  $(".assistant-card").addEventListener("keydown", event => {
+  $("#about-license").onclick = event => { event.preventDefault(); openDialog(`<h3 id="dialog-title">来源与许可</h3><p class="dialog-sub">模块作者：ZenJooo。调度核心沿用 GPL-3.0-only。</p><p class="dialog-sub">NovaFAS 为本模块原创的帧感知调度引擎，读取 SurfaceFlinger 帧统计并在档位包络内动态调频。</p><p class="dialog-sub">界面布局沿用其早期版本的玻璃设计语言；玻璃透镜与色散公式来自 Kyant Backdrop，Apache-2.0。</p><p class="dialog-sub"><a href="https://github.com/Kyant0/AndroidLiquidGlass" target="_blank" rel="noopener noreferrer">Kyant0/AndroidLiquidGlass</a></p><div class="dialog-actions"><button class="btn-capsule ghost" id="license-close" type="button">关闭</button></div>`);$("#license-close").onclick=()=>closeDialog(); };
+  $("#nav-cta").onclick = () => { if (s.online) showDiagnostics(); else if (!s.connecting) { clearTimeout(s.retry); discover(); toast("正在连接模块服务"); } else toast("正在连接，请稍候"); };
+  $(".hero-card").onclick = () => showDiagnostics();
+  $(".hero-card").addEventListener("keydown", event => {
     if (event.key === "Enter" || event.key === " ") { event.preventDefault(); showDiagnostics(); }
   });
   $$(".log-tools [data-level]").forEach(button => button.onclick = () => {
@@ -1267,20 +1318,9 @@
     const first=fields[0],last=fields.at(-1);if(!first)return;
     if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
   }
-  function closeQuick(){
-    $("#quick-layer").hidden=true;$("#more-open").setAttribute("aria-expanded","false");$("#dock-add").setAttribute("aria-expanded","false");window.dispatchEvent(new Event("nova:overlay"));
-  }
-  function openQuick(fromDock=false){
-    if(!$("#quick-layer").hidden){closeQuick();return;}
-    const menu=$("#quick-menu");menu.classList.toggle("from-dock",fromDock);$("#quick-layer").hidden=false;
-    $(fromDock?"#dock-add":"#more-open").setAttribute("aria-expanded","true");window.NovaGlass?.scan(menu);morph(menu,$(fromDock?"#dock-add":"#more-open"));window.dispatchEvent(new Event("nova:overlay"));
-  }
-  $("#more-open").onclick=()=>openQuick();$("#dock-add").onclick=()=>openQuick(true);
-  $("#quick-layer").onclick=event=>{if(event.target===$("#quick-layer"))closeQuick();};
-  $("#quick-add-rule").onclick=()=>{closeQuick();showRuleEditor();};$("#quick-diagnose").onclick=()=>{closeQuick();showDiagnostics();};
   $("#foreground-time").onclick=()=>{if(!editable()||!s.pkg){toast("连接后可以为前台应用设置规则");return;}showRuleEditor(basePackage(s.pkg));};
-  $("#foreground-card").onclick=()=>$("#foreground-time").click();
-  $("#foreground-card").addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();$("#foreground-time").click();}});
+  $("#foreground-card").onclick=event=>{if (!event.target.closest("button")) $("#foreground-time").click();};
+  $("#foreground-card").addEventListener("keydown",event=>{if(event.target.closest("button"))return;if(event.key==="Enter"||event.key===" "){event.preventDefault();$("#foreground-time").click();}});
   $("#rule-search").oninput=event=>{ruleQuery=event.target.value.trim().toLowerCase();renderRules();};
   let ruleDrag=null,suppressRuleClick=0;
   $("#rule-list").addEventListener("pointerdown",event=>{

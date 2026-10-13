@@ -18,6 +18,9 @@ fn read_optional(path: &Path) -> Result<Option<String>> {
     }
 }
 // Canonical fingerprints identify unedited shipped defaults without shipping their text.
+// 历史版本（v2.2.x 及更早）9 项 + v2.6.1 默认 9 项 + 当前默认 9 项。
+// `scripts/stock-fingerprints.cjs` 生成；tests::shipped_templates_are_stock
+// 在编译期保证列表与模板一致。
 const STOCK_FINGERPRINTS: &[u64] = &[
     0x00df72641cb5315d,
     0x187662c4444d7f9f,
@@ -32,6 +35,26 @@ const STOCK_FINGERPRINTS: &[u64] = &[
     0xbb0eb2dd1bf523b9,
     0xc81eb91a20d18da4,
     0xee17150670468fe5,
+    // v2.6.1 / 361 出厂默认
+    0xbc888f88624ddbb3,
+    0xaf9e94ec7766e2f0,
+    0x2f5fe631f9a855f6,
+    0x3c5b29772b46f6f1,
+    0xa2a4c3e8937ff85c,
+    0x565e21d2d03dc48d,
+    0x479caa59910101a7,
+    0x7281d3cce7742fba,
+    0x8ef9f2339863c33f,
+    // v2.7.0 / 370 出厂默认（四档重调 + NovaFAS）
+    0x92e9a41722e2ee60,
+    0x872b816b5dba7962,
+    0xa9b3361360220f3e,
+    0x0e53fc1001e5605d,
+    0x7fa9a11fb8d804ce,
+    0xb7c6585c29ae61c7,
+    0xff3861fff889e34b,
+    0xaa5c443f5dd402a4,
+    0x1cf376805d3c56a1,
 ];
 const OWNED_META: &[&str] = &[
     "name",
@@ -141,6 +164,21 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("nova-config-{}-{n}", util::current_pid()))
+    }
+    #[test]
+    fn shipped_templates_are_stock() {
+        for soc in SUPPORTED {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../module-template/config")
+                .join(soc.file());
+            let root = json::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+            let hash = stock_fingerprint(&root).unwrap();
+            assert!(
+                STOCK_FINGERPRINTS.contains(&hash),
+                "模板 {} 指纹 {hash:#x} 不在 STOCK_FINGERPRINTS：模板被修改或列表过期，请运行 scripts/stock-fingerprints.cjs 重新生成",
+                soc.file()
+            );
+        }
     }
     #[test]
     fn all_defaults_initialize_and_manual_edits_survive_repeated_upgrade() {

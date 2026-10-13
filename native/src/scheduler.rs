@@ -27,8 +27,8 @@ pub struct CpuctlLiveState {
     pub duration_ms: u64,
     /// False while a foreign scheduler owns the nodes.
     pub allowed: bool,
-    /// True while the foreground app has an explicit rule (the pulse is a
-    /// responsiveness feature for marked apps, not for every screen).
+    /// True while an application is in the foreground. Pulses are short and
+    /// mode-specific, including daily apps in powersave.
     pub active: bool,
 }
 
@@ -305,46 +305,79 @@ impl Scheduler {
         self.current_mode = mode.to_string();
         self.current_package = package.to_string();
         self.last_explicit = explicit;
-        self.apply_fas_mode(mode);
         if package_changed || mode_changed || force {
             self.logger.info(format!("情景模式: {mode} 已启用"));
         }
         Ok(())
     }
 
-    /// Drive Scene N1's FAS (fas-rs) to follow the dispatched mode. NovaSched
-    /// never implements frame-aware scheduling itself — it writes the four
-    /// mode names to Scene's well-known node so the bundled FAS engine (its
-    /// own margin/温控配置) tracks 档位切换, whether the switch came from the
-    /// WebUI, Scene, or automatic scheduling. The node is foreign runtime
-    /// state: never captured for restore, written best-effort without
-    /// failing the dispatch, and skipped entirely while a foreign scheduler
-    /// owns this module's controls (apply_inner does not run then).
-    fn apply_fas_mode(&mut self, mode: &str) {
-        if !matches!(mode, "powersave" | "balance" | "performance" | "fast") {
-            return;
+    /// Refresh independently of CPU writes: FAS can start or restart after boot.
+    pub fn refresh_fas(&mut self, allowed: bool) -> crate::fas::Status {
+        let mut status = crate::fas::inspect(&self.kernel_root);
+        if !allowed {
+            status.sync = "paused";
+            return status;
         }
-        let path = self.node("/dev/fas_rs/mode");
-        if !path.exists() {
-            return;
+        if !matches!(status.state, "ready" | "invalid")
+            || !self.node("/dev/fas_rs/mode").is_file()
+            || !crate::app_modes::supported(&self.current_mode)
+        {
+            self.fas_mode = None;
+            return status;
         }
-        if let Ok(current) = util::read_trimmed(&path) {
-            if current == mode && self.fas_mode.as_deref() == Some(mode) {
-                return;
-            }
-        }
-        match util::write_node(&path, mode) {
-            Ok(()) => {
-                if self.fas_mode.as_deref() != Some(mode) {
-                    self.logger
-                        .info(format!("FAS 模式已跟随档位（Scene N1）: {mode}"));
+        if status.mode != self.current_mode {
+            let path = self.node("/dev/fas_rs/mode");
+            let result = crate::fas::write_mode(&path, &self.current_mode).and_then(|_| {
+                let observed = util::read_trimmed(&path)?;
+                if observed == self.current_mode {
+                    Ok(())
+                } else {
+                    Err(format!("请求={} 读回={observed}", self.current_mode))
                 }
-                self.fas_mode = Some(mode.to_string());
+            });
+            if let Err(error) = result {
+                status.sync = "failed";
+                status.error = error;
+                self.fas_mode = None;
+                self.logger.debug(format!("FAS 档位同步未确认: {}", status.error));
+                return status;
             }
-            Err(error) => self
-                .logger
-                .debug(format!("FAS 模式节点写入失败，保持 FAS 当前模式: {error}")),
+            status.mode = self.current_mode.clone();
+            status.state = "ready";
+            status.error.clear();
         }
+        status.sync = "synced";
+        if self.fas_mode.as_deref() != Some(self.current_mode.as_str()) {
+            self.logger.info(format!("FAS 模式读回已确认: {}", self.current_mode));
+            self.fas_mode = Some(self.current_mode.clone());
+        }
+        status
+    }
+
+    pub fn pending_control_count(&self) -> usize {
+        self.pending_enforcement.len()
+    }
+
+    pub fn input_boost_node(&self) -> PathBuf {
+        self.cpuctl_path("top-app", "min")
+    }
+
+    /// 当前档位各簇最低频率（内核适配后的 kHz 字符串）。NovaFAS 以此为
+    /// 回落底线，未启用簇返回空串。
+    pub fn profile_min_floors(&self) -> Vec<String> {
+        match self.config.profile(&self.current_mode) {
+            Ok(profile) => profile.clusters.iter().map(|c| c.min_freq.clone()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn cpuctl_path(&self, group: &str, field: &str) -> PathBuf {
+        let paths = [
+            self.node(format!("/dev/cpuctl/{group}/cpu.uclamp.{field}")),
+            self.node(format!("/sys/fs/cgroup/{group}/cpu.uclamp.{field}")),
+            self.node(format!("/sys/fs/cgroup/cpu/{group}/cpu.uclamp.{field}")),
+        ];
+        paths.iter().find(|path| path.exists()).unwrap_or(&paths[0]).clone()
     }
 
     /// The daemon calls this on a separate 60-second deadline. A healthy
@@ -618,7 +651,7 @@ impl Scheduler {
         if self.config.functions.cpuctl.enable || self.config.functions.input_boost.enabled {
             for group in ["top-app", "background"] {
                 for field in ["cpu.uclamp.min", "cpu.uclamp.max"] {
-                    paths.insert(self.node(format!("/dev/cpuctl/{group}/{field}")));
+                    paths.insert(self.cpuctl_path(group, field.strip_prefix("cpu.uclamp.").unwrap_or(field)));
                 }
             }
         }
@@ -721,11 +754,13 @@ impl Scheduler {
     /// explicitly ruled app is foreground, and the live baseline is shared
     /// with the input-boost thread for pulse expiry.
     fn apply_mode_cpuctl(&mut self, mode: &str, explicit: bool) -> Result<()> {
+        let live = self.cpuctl_live.clone();
+        let mut state = live.inner.lock().map_err(|_| "输入加速状态锁损坏".to_string())?;
         let cpuctl = &self.config.functions.cpuctl;
         let entry = cpuctl.modes.get(mode);
         let mut top_app_baseline = self
             .snapshot
-            .original_value(&self.node("/dev/cpuctl/top-app/cpu.uclamp.min"))
+            .original_value(&self.input_boost_node())
             .ok()
             .flatten()
             .unwrap_or_else(|| "0".into());
@@ -747,7 +782,7 @@ impl Scheduler {
                     }
                     _ => entry.background_max.as_deref(),
                 });
-                let path = self.node(format!("/dev/cpuctl/{group}/cpu.uclamp.{field}"));
+                let path = self.cpuctl_path(group, field);
                 let stock = if requested.is_none() {
                     self.snapshot.original_value(&path).ok().flatten()
                 } else {
@@ -776,15 +811,16 @@ impl Scheduler {
                 }
             }
         }
-        if let Ok(mut state) = self.cpuctl_live.inner.lock() {
-            state.top_app_min = top_app_baseline;
-            state.boost_min = if self.config.functions.input_boost.enabled {
-                self.config.functions.input_boost.top_app_min.clone()
-            } else {
-                String::new()
-            };
-            state.duration_ms = self.config.functions.input_boost.duration_ms;
-        }
+        state.top_app_min = top_app_baseline;
+        let boost = &self.config.functions.input_boost;
+        let tuned = boost.modes.get(mode);
+        state.boost_min = if boost.enabled {
+            tuned.map(|value| value.top_app_min.clone())
+                .unwrap_or_else(|| boost.top_app_min.clone())
+        } else {
+            String::new()
+        };
+        state.duration_ms = tuned.map(|value| value.duration_ms).unwrap_or(boost.duration_ms);
         Ok(())
     }
 
@@ -1420,8 +1456,18 @@ pub(crate) fn normalize_frequency(base: &Path, requested: &str, minimum: bool) -
     value.to_string()
 }
 
-pub fn preflight() -> Result<Hardware> {
-    if unsafe { crate::ffi::geteuid() } != 0 {
+/// 绝对路径的 cgroup uclamp 节点探测，与具体 Scheduler 实例无关。
+/// 生产环境 kernel_root 固定为 "/"，NovaFAS 引擎线程直接使用本函数。
+pub(crate) fn cpuctl_node(group: &str, field: &str) -> PathBuf {
+    let paths = [
+        PathBuf::from(format!("/dev/cpuctl/{group}/cpu.uclamp.{field}")),
+        PathBuf::from(format!("/sys/fs/cgroup/{group}/cpu.uclamp.{field}")),
+        PathBuf::from(format!("/sys/fs/cgroup/cpu/{group}/cpu.uclamp.{field}")),
+    ];
+    paths.iter().find(|path| path.exists()).unwrap_or(&paths[0]).clone()
+}
+
+pub fn preflight() -> Result<Hardware> {    if unsafe { crate::ffi::geteuid() } != 0 {
         return Err("必须以 root 身份运行".to_string());
     }
     let hardware = hardware::detect()?;
@@ -2278,21 +2324,23 @@ mod daemon_policy_tests {
     fn live_cpuctl_and_input_configuration_changes_require_a_restart() {
         let mut fixture = Fixture::new();
         let mut config = fixture.scheduler.config.clone();
-        config.functions.input_boost.enabled = true;
+        let old_input = config.functions.input_boost.enabled;
+        config.functions.input_boost.enabled = !old_input;
         assert!(fixture
             .scheduler
             .replace_config(config)
             .unwrap_err()
             .contains("重启"));
-        assert!(!fixture.scheduler.config.functions.input_boost.enabled);
+        assert_eq!(fixture.scheduler.config.functions.input_boost.enabled, old_input);
         let mut config = fixture.scheduler.config.clone();
-        config.functions.cpuctl.enable = true;
+        let old_cpuctl = config.functions.cpuctl.enable;
+        config.functions.cpuctl.enable = !old_cpuctl;
         assert!(fixture
             .scheduler
             .replace_config(config)
             .unwrap_err()
             .contains("重启"));
-        assert!(!fixture.scheduler.config.functions.cpuctl.enable);
+        assert_eq!(fixture.scheduler.config.functions.cpuctl.enable, old_cpuctl);
     }
 
     #[test]
@@ -2307,8 +2355,46 @@ mod daemon_policy_tests {
         fixture.scheduler.apply_mode_cpuctl("fast", true).unwrap();
         let state = fixture.scheduler.cpuctl_live.inner.lock().unwrap();
         assert_eq!(state.top_app_min, "12.34");
-        assert_eq!(state.boost_min, "30");
-        assert_eq!(state.duration_ms, 300);
+        assert_eq!(state.boost_min, "40");
+        assert_eq!(state.duration_ms, 220);
         assert_eq!(util::read_trimmed(&path).unwrap(), "12.34");
     }
+    #[test]
+    fn fas_enabled_late_restarted_or_corrupted_refreshes_without_cpu_writes() {
+        let mut fixture = Fixture::new();
+        let path = fixture.root.join("dev/fas_rs/mode");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let cpu_writes = fixture.scheduler.snapshot.written_nodes().len();
+        fs::write(&path, "fast").unwrap();
+        let status = fixture.scheduler.refresh_fas(true);
+        assert_eq!(status.sync, "synced");
+        assert_eq!(status.mode, fixture.scheduler.current_mode());
+        assert_eq!(fixture.scheduler.snapshot.written_nodes().len(), cpu_writes);
+        fs::write(&path, "fastormance").unwrap();
+        assert_eq!(fixture.scheduler.refresh_fas(true).state, "ready");
+        fs::write(&path, "performance").unwrap();
+        assert_eq!(fixture.scheduler.refresh_fas(false).sync, "paused");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "performance");
+        fs::remove_file(&path).unwrap();
+        assert_ne!(fixture.scheduler.refresh_fas(true).state, "ready");
+        fs::write(&path, "balance").unwrap();
+        assert_eq!(fixture.scheduler.refresh_fas(true).sync, "synced");
+    }
+    #[test]
+    fn mode_input_pulses_use_the_selected_profile_and_restore_stock_baseline() {
+        let mut fixture = Fixture::new();
+        let path = fixture.root.join("sys/fs/cgroup/top-app/cpu.uclamp.min");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "12.34").unwrap();
+        fixture.scheduler.snapshot.capture(&path).unwrap();
+        assert_eq!(fixture.scheduler.input_boost_node(), path);
+        for (mode, value, duration) in [("powersave", "15", 100), ("balance", "20", 140), ("performance", "28", 180), ("fast", "40", 220)] {
+            fixture.scheduler.apply_mode_cpuctl(mode, false).unwrap();
+            let state = fixture.scheduler.cpuctl_live.inner.lock().unwrap();
+            assert_eq!(state.top_app_min, "12.34");
+            assert_eq!(state.boost_min, value);
+            assert_eq!(state.duration_ms, duration);
+        }
+    }
+
 }

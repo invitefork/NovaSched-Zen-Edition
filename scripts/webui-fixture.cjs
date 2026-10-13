@@ -2,16 +2,20 @@
 function mockHost(options){
   window.fixture={mode:'balance',effective:'balance',pkg:'com.omarea.vtools',linked:!!options.linked,external:!!options.external,
     installed:options.presence==='available',presence:options.presence||'available',automatic:!!options.automatic,
+    pendingControls:options.pendingControls||0,phase:options.phase||'ready',legacyMode:options.legacyMode||'balance',
+    version:options.version||'2.7.0',fasState:options.fasState||'ready',fasSync:options.fasSync||'synced',fasMode:options.fasMode||'balance',
+    fasEngine:options.fasEngine!==undefined?options.fasEngine:'idle',fasEngineSrc:options.fasEngineSrc||'none',
+    fasFps:options.fasFps||0,fasBoost:options.fasBoost||0,fasOverride:!!options.fasOverride,
     rules:[{package:'com.example.chat',mode:'balance'}],sockets:[],messages:[],commands:[]};
   const f=window.fixture;
   const labels={'com.omarea.vtools':'Scene','com.example.chat':'聊天'};
-  const modes=()=>`mode:${f.mode},effective:${f.external?'':f.effective},package:${f.pkg},controller:${f.external?'Scene（其它调度器）':f.linked?'Scene（NovaSched Zen Edition）':'WebUI'},sceneActive:${f.external},sceneLinked:${f.linked},phase:${f.external?'suspended':'ready'},heartbeatMs:20,port:31415,socName:Snapdragon 8 Gen 3,socId:SM8650,configProfile:SM8650.json,automaticEnabled:${f.automatic},automaticActive:${f.automatic&&!f.linked&&!f.external},appKind:daily,classificationSource:fixture,fasAvailable:true,sceneInstalled:${f.installed},scenePresence:${f.presence}`;
-  const apps=()=>JSON.stringify({type:'app-modes',rules:f.rules,defaultMode:f.mode,version:'2.2.8',classificationOverrides:{}});
+  const modes=()=>`mode:${f.mode},effective:${f.external?'':f.effective},package:${f.pkg},controller:${f.external?'Scene（其它调度器）':f.linked?'Scene（NovaSched Zen Edition）':'WebUI'},sceneActive:${f.external},sceneLinked:${f.linked},phase:${f.external?'suspended':f.phase},heartbeatMs:20,port:31415,socName:Snapdragon 8 Gen 3,socId:SM8650,configProfile:SM8650.json,automaticEnabled:${f.automatic},automaticActive:${f.automatic&&!f.linked&&!f.external},appKind:daily,classificationSource:fixture,fasAvailable:${['ready','running'].includes(f.fasState)},sceneInstalled:${f.installed},scenePresence:${f.presence}` + (options.legacy ? "" : `,fasState:${f.fasState},fasSync:${f.fasSync},fasMode:${f.fasMode},fasEngine:${f.fasEngine},fasEngineSrc:${f.fasEngineSrc},fasFps:${f.fasFps.toFixed(1)},fasBoost:${f.fasBoost},fasOverride:${f.fasOverride},version:${f.version},pendingControls:${f.pendingControls}`);
+  const apps=()=>JSON.stringify({type:'app-modes',rules:f.rules,defaultMode:f.mode,version:f.version,classificationOverrides:{}});
   const logs='2026-10-13 03:00:00 INFO -> Scene 回调已注册\n2026-10-13 03:00:01 WARN -> 等待节点读回\n';
   function update(message){
     f.messages.push(message);
-    if(['powersave','balance','performance','fast'].includes(message)){f.mode=f.effective=message;f.automatic=false;}
-    else if(message==='auto\ton'){f.automatic=true;f.effective='powersave';}
+    if(['powersave','balance','performance','fast'].includes(message)){f.mode=f.effective=f.fasMode=message;f.automatic=false;}
+    else if(message==='auto\ton'){f.automatic=true;f.effective=f.fasMode='powersave';}
     else if(message==='auto\toff'){f.automatic=false;f.effective=f.mode;}
     else if(message.startsWith('set\t')){const[,pkg,mode]=message.split('\t');f.rules=f.rules.filter(r=>r.package!==pkg);f.rules.push({package:pkg,mode});}
     else if(message.startsWith('delete\t'))f.rules=f.rules.filter(r=>r.package!==message.split('\t')[1]);
@@ -25,9 +29,33 @@ function mockHost(options){
       const raw=command.match(/--request '([^']+)'/)[1],request=JSON.parse(raw);
       if(request.message)update(request.message);
       stdout=JSON.stringify({modes:modes(),apps:apps(),logs:request.logs&&!request.cursor?logs:'',cursor:'test',logsReset:false});
-    }else stdout='scene_presence=available\nscene_detection=fixture PackageManager\nscene_linked=true\n';
+    }else if(command.includes('__NOVA_FAS_ABSENT__'))stdout=f.legacyMode;
+    else stdout='scene_presence=available\nscene_detection=fixture PackageManager\nscene_linked=true\n';
     setTimeout(()=>window[callback]?.(0,stdout,''),0);
   }};
+  if(options.bridgeStyle) {
+    const nativeExec=window.ksu.exec;
+    let counter=0;
+    function reply(command, callback) {
+      nativeExec(command, '{}', callback);
+    }
+    if(options.bridgeStyle==='native0')window.ksu.exec=(...args)=>reply(args[0],args[2]);
+    if(options.bridgeStyle==='callback2')window.ksu.exec=(command, callback)=>reply(command, callback);
+    if(options.bridgeStyle==='promise1')window.ksu.exec=command=>new Promise(resolve=>{
+      const name='fixture_reply_'+(++counter);
+      window[name]=(errno, stdout, stderr)=>{delete window[name];resolve({errno,stdout,stderr});};
+      reply(command, name);
+    });
+    if(options.bridgeStyle==='sync1')window.ksu.exec=command=>{
+      f.commands.push(command);
+      if(command.includes('webui-session'))return {errno:0,stdout:JSON.stringify({port:31415,token:'a'.repeat(64),origin:location.origin,moduleDir:'/data/adb/modules/NovaSched_Zen_Edition'})};
+      const request=JSON.parse(command.match(/--request '([^']+)'/)[1]);
+      if(request.message)update(request.message);
+      return JSON.stringify({errno:0,stdout:JSON.stringify({modes:modes(),apps:apps(),logs:'',cursor:'test'})});
+    };
+  }
+  if(options.insets==='modern')window.ksu.enableEdgeToEdge=enabled=>{f.edgeToEdge=enabled;};
+  if(options.insets==='legacy')window.ksu.enableInsets=enabled=>{f.edgeToEdge=enabled;};
   if(options.labels!==false)window.ksu.getPackagesInfo=packages=>JSON.stringify(JSON.parse(packages).map(packageName=>({packageName,appLabel:labels[packageName]||packageName})));
   class MockSocket{
     static OPEN=1;static CONNECTING=0;

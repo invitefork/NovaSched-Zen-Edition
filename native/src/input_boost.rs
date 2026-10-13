@@ -27,6 +27,10 @@ pub struct InputBoostContext {
 /// Opens every /dev/input/event* device and spawns the boost loop. Returns
 /// None when no input device is readable (feature silently inert).
 pub fn spawn(ctx: InputBoostContext) -> Option<std::thread::JoinHandle<()>> {
+    if !ctx.node.exists() {
+        ctx.logger.debug("内核未提供 top-app uclamp，使用 CPU 频率策略");
+        return None;
+    }
     let mut files = Vec::new();
     let Ok(entries) = fs::read_dir("/dev/input") else {
         ctx.logger.debug("未找到 /dev/input，输入突频未启用");
@@ -41,6 +45,11 @@ pub fn spawn(ctx: InputBoostContext) -> Option<std::thread::JoinHandle<()>> {
         if !is_event {
             continue;
         }
+        let name = path.file_name().unwrap_or_default();
+        let capabilities = PathBuf::from("/sys/class/input").join(name).join("device/capabilities");
+        let abs = crate::util::read_trimmed(capabilities.join("abs")).unwrap_or_default();
+        let key = crate::util::read_trimmed(capabilities.join("key")).unwrap_or_default();
+        if !touchscreen_capabilities(&abs, &key) { continue; }
         match OpenOptions::new()
             .read(true)
             .custom_flags(ffi::O_NONBLOCK | ffi::O_CLOEXEC)
@@ -74,7 +83,8 @@ fn run(ctx: InputBoostContext, mut files: Vec<File>) {
         .collect();
     let mut pulse = Pulse::default();
     while !ctx.stop.load(Ordering::Relaxed) {
-        let readable = unsafe { ffi::poll(poll_fds.as_mut_ptr(), poll_fds.len(), 150) };
+        let timeout = pulse.until.map(|until| until.saturating_duration_since(Instant::now()).as_millis().clamp(1, 150) as i32).unwrap_or(150);
+        let readable = unsafe { ffi::poll(poll_fds.as_mut_ptr(), poll_fds.len(), timeout) };
         let mut activity = false;
         if readable > 0 {
             for (file, entry) in files.iter_mut().zip(poll_fds.iter_mut()) {
@@ -97,10 +107,21 @@ fn run(ctx: InputBoostContext, mut files: Vec<File>) {
         let Ok(state) = ctx.live.inner.lock() else {
             continue;
         };
+        if !state.allowed {
+            pulse = Pulse::default();
+            continue;
+        }
+        if !activity && pulse.value.is_none() { continue; }
         let Ok(current) = crate::util::read_trimmed(&ctx.node) else {
             continue;
         };
-        if let Some(value) = pulse.update(&state, Instant::now(), activity, &current, &ctx.stock) {
+        let mut bounded = state.clone();
+        if let Some(maximum) = crate::util::read_trimmed(ctx.node.with_file_name("cpu.uclamp.max")).ok().and_then(|value| percent(&value)) {
+            if percent(&bounded.boost_min).is_some_and(|value| value > maximum) {
+                bounded.boost_min = format!("{}.{:02}", maximum / 100, maximum % 100);
+            }
+        }
+        if let Some(value) = pulse.update(&bounded, Instant::now(), activity, &current, &ctx.stock) {
             if let Err(error) = ctx.snapshot.write(&ctx.node, &value) {
                 ctx.logger.debug(format!("输入加速写入失败: {error}"));
                 pulse = Pulse::default();
@@ -120,6 +141,15 @@ fn run(ctx: InputBoostContext, mut files: Vec<File>) {
             }
         }
     }
+}
+
+fn touchscreen_capabilities(abs: &str, keys: &str) -> bool {
+    fn has(raw: &str, bit: usize) -> bool {
+        raw.split_whitespace().rev().nth(bit / 64)
+            .and_then(|word| u64::from_str_radix(word, 16).ok())
+            .is_some_and(|word| word & (1u64 << (bit % 64)) != 0)
+    }
+    has(keys, 0x14a) || (has(abs, 0x35) && has(abs, 0x36))
 }
 
 // Linux input_event is 24 bytes on the supported 64-bit targets.
@@ -305,4 +335,13 @@ mod tests {
             assert_eq!(percent(invalid), None, "{invalid}");
         }
     }
+    #[test]
+    fn sensor_and_button_events_cannot_keep_touch_boost_alive() {
+        assert!(!touchscreen_capabilities("7", "0"));
+        assert!(!touchscreen_capabilities("0", "100000 0 0 0 0 0"));
+        assert!(touchscreen_capabilities("60000000000000", "0"));
+        assert!(touchscreen_capabilities("3", "400 0 0 0 0 0"));
+        assert!(!touchscreen_capabilities("", ""));
+    }
+
 }

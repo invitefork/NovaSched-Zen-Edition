@@ -145,6 +145,8 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
     };
     let selected_soc = hardware.soc;
     let input_boost_cfg = config.functions.input_boost.clone();
+    let fas_cfg = config.functions.fas.clone();
+    let fas_policies = config.policy;
     let cpuctl_live = Arc::new(CpuctlLive::default());
     let mut scheduler = match Scheduler::new(
         config,
@@ -180,13 +182,9 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
 
     let runtime = RuntimeState::default();
     runtime.set_profile(selected_soc);
-    // Scene N1 ships FAS (fas-rs) as its own runtime; the dispatcher follows
-    // mode switches through its well-known node whenever the boot exposes it.
-    let fas_available = Path::new("/dev/fas_rs/mode").exists();
-    runtime.set_fas_available(fas_available);
-    if fas_available {
-        logger.info("已检测到 Scene FAS（fas-rs），档位切换将同步写入 /dev/fas_rs/mode");
-    }
+    let mut fas_status = scheduler.refresh_fas(!scene.controls_locked() && last_apply_error.is_empty());
+    runtime.set_fas(&fas_status);
+    let mut fas_probe_at = Instant::now() + Duration::from_secs(10);
     // 接管模型：检测到 Scene（含 N1 改名包）即注册为它的调度回调，Scene 里切
     // 档位由本模块执行；未安装 Scene 时由 WebUI 直接接管。
     runtime.set_scene_installed(scene.availability == crate::scene::SceneAvailability::Available);
@@ -234,7 +232,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
     // pulse on activity and expires back to the dispatcher baseline. Skipped
     // while a foreign scheduler owns the nodes (allowed flag per tick).
     let input_thread = if input_boost_cfg.enabled {
-        let node = PathBuf::from("/dev/cpuctl/top-app/cpu.uclamp.min");
+        let node = scheduler.input_boost_node();
         let stock = snapshot
             .original_value(&node)
             .ok()
@@ -252,6 +250,35 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
             Some(handle) => Some(handle),
             None => {
                 logger.debug("输入突频未启用（无可用输入设备）");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // NovaFAS 帧感知调度引擎：独立线程按帧信号在档位包络内动态调频。
+    // 配置关闭或外部调度器接管时线程自转入待命，不写任何节点。
+    let fas_shared = Arc::new(std::sync::Mutex::new(crate::frame_ctrl::FasShared::default()));
+    let fas_config = Arc::new(std::sync::RwLock::new(fas_cfg.clone()));
+    let fas_status_slot = Arc::new(std::sync::Mutex::new(crate::frame_ctrl::EngineStatus::default()));
+    let fas_thread = if fas_cfg.enabled && !scene.controls_locked() {
+        let ctx = crate::frame_ctrl::EngineCtx {
+            fas: fas_config.clone(),
+            shared: fas_shared.clone(),
+            live: cpuctl_live.clone(),
+            status: fas_status_slot.clone(),
+            stop: web_stop.clone(),
+            snapshot: snapshot.clone(),
+            logger: logger.clone(),
+            policies: fas_policies,
+        };
+        match crate::frame_ctrl::spawn(ctx) {
+            Some(handle) => {
+                logger.info("NovaFAS 帧感知调度引擎已启动");
+                Some(handle)
+            }
+            None => {
+                logger.debug("NovaFAS 未启动（无可调度的 CPU 簇）");
                 None
             }
         }
@@ -312,17 +339,30 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         let mut scene_changed = scene_files_changed;
 
         if forced || config_changed {
-            match Config::load(Path::new(CONFIG_PATH)) {
-                Ok(config) => match scheduler.replace_config(config) {
-                    Ok(()) => {
-                        runtime.set_profile(selected_soc);
-                        logger.info("config.json 已重新载入");
+            let fas_block = match Config::load(Path::new(CONFIG_PATH)) {
+                Ok(config) => {
+                    let fas_block = config.functions.fas.clone();
+                    match scheduler.replace_config(config) {
+                        Ok(()) => {
+                            runtime.set_profile(selected_soc);
+                            logger.info("config.json 已重新载入");
+                            Some(fas_block)
+                        }
+                        Err(error) => {
+                            logger.error(format!("config.json 内核适配失败，保留当前配置: {error}"));
+                            None
+                        }
                     }
-                    Err(error) => {
-                        logger.error(format!("config.json 内核适配失败，保留当前配置: {error}"))
-                    }
-                },
-                Err(error) => logger.error(format!("config.json 无效，保留当前配置: {error}")),
+                }
+                Err(error) => {
+                    logger.error(format!("config.json 无效，保留当前配置: {error}"));
+                    None
+                }
+            };
+            if let Some(fas_block) = fas_block {
+                if let Ok(mut slot) = fas_config.write() {
+                    *slot = fas_block;
+                }
             }
         }
         if rules_changed && !scene_changed {
@@ -466,10 +506,8 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
             );
             (selected, explicit && !pedestal)
         };
-        // The input-boost pulse is a responsiveness feature for marked apps:
-        // it fires only while the foreground app carries an explicit rule.
         if let Ok(mut state) = cpuctl_live.inner.lock() {
-            state.active = explicit;
+            state.active = !package.is_empty() && !scene.controls_locked();
         }
         let force_apply = forced
             || config_changed
@@ -481,9 +519,6 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         if scene.controls_locked() {
             suspended = true;
             scheduler.clear_pending();
-            runtime.set(&package, "", scene.controller(), true, false);
-            runtime.set_automatic_active(false);
-            runtime.tick("suspended", "其它 Scene 调度器已接管，NovaSched 暂停下发");
         } else if Instant::now() >= retry_at || force_apply {
             let mut result = if suspended {
                 scheduler.initialize(&selected)
@@ -508,61 +543,83 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
                     logger.error(format!("调度下发失败: {error}"));
                 }
                 last_apply_error = error;
-                runtime.set(
-                    scheduler.current_package(),
-                    scheduler.current_mode(),
-                    scene.controller(),
-                    scene.controls_locked(),
-                    scene.linked(),
-                );
                 retry_at = Instant::now() + Duration::from_secs(5);
-                runtime.tick("degraded", &last_apply_error);
             } else {
                 suspended = false;
                 last_apply_error.clear();
-                runtime.set_automatic_active(automatic_enabled);
                 if let Err(error) = app_modes.write_current_mode(scheduler.current_mode()) {
                     logger.error(format!("写入 mode.txt 失败: {error}"));
                     last_apply_error = error;
                     retry_at = Instant::now() + Duration::from_secs(5);
                 }
-                runtime.set(
-                    scheduler.current_package(),
-                    scheduler.current_mode(),
-                    scene.controller(),
-                    scene.controls_locked(),
-                    scene.linked(),
-                );
-                runtime.tick(
-                    if last_apply_error.is_empty() {
-                        "ready"
-                    } else {
-                        "degraded"
-                    },
-                    &last_apply_error,
-                );
             }
-        } else {
-            runtime.set(
-                scheduler.current_package(),
-                scheduler.current_mode(),
-                scene.controller(),
-                scene.controls_locked(),
-                scene.linked(),
-            );
-            // Backoff window after an apply error: keep the honest phase
-            // instead of forcing degraded onto a healthy scheduler.
-            let phase = if last_apply_error.is_empty() {
-                "ready"
-            } else {
-                "degraded"
-            };
-            runtime.tick(phase, &last_apply_error);
         }
         if foreground.is_some() || force_apply {
             revision.fetch_add(1, Ordering::Relaxed);
         }
 
+        // NovaFAS 共享上下文：档位、前台包、可写状态与档位频率底线每轮同步。
+        {
+            let allowed = !scene.controls_locked();
+            let ready = allowed && last_apply_error.is_empty();
+            let floors = scheduler.profile_min_floors();
+            if let Ok(mut state) = fas_shared.lock() {
+                if state.mode != scheduler.current_mode()
+                    || state.package != scheduler.current_package()
+                    || state.allowed != allowed
+                    || state.ready != ready
+                    || state.min_floor != floors
+                {
+                    state.mode = scheduler.current_mode().to_string();
+                    state.package = scheduler.current_package().to_string();
+                    state.allowed = allowed;
+                    state.ready = ready;
+                    state.min_floor = floors;
+                }
+            }
+        }
+        let engine_status = fas_status_slot
+            .lock()
+            .map(|status| status.clone())
+            .unwrap_or_default();
+        runtime.set_fas_engine(&engine_status);
+
+        if engine_status.state != "active"
+            && (force_apply
+                || Instant::now() >= fas_probe_at
+                || (fas_status.state == "ready" && fas_status.mode != scheduler.current_mode()))
+        {
+            fas_status = scheduler.refresh_fas(!scene.controls_locked() && last_apply_error.is_empty());
+            fas_probe_at = Instant::now() + Duration::from_secs(10);
+            revision.fetch_add(1, Ordering::Relaxed);
+        }
+        if engine_status.state == "active" && fas_status.sync != "superseded" {
+            // 本引擎接管帧感知调度期间，fas-rs 已被暂停，档位同步随之失效。
+            fas_status.sync = "superseded";
+            revision.fetch_add(1, Ordering::Relaxed);
+        }
+        let policy_error = if scene.controls_locked() {
+            "其它 Scene 调度器已接管，NovaSched 暂停下发".to_string()
+        } else if !last_apply_error.is_empty() {
+            last_apply_error.clone()
+        } else if scheduler.pending_control_count() > 0 {
+            format!("{} 个 CPU 频率上限尚未读回确认，等待系统节点生效", scheduler.pending_control_count())
+        } else { String::new() };
+        let phase = if scene.controls_locked() { "suspended" }
+            else if policy_error.is_empty() { "ready" } else { "degraded" };
+        runtime.publish_policy(crate::websocket::PolicyStatus {
+            package: if scene.controls_locked() { &package } else { scheduler.current_package() },
+            mode: if scene.controls_locked() { "" } else { scheduler.current_mode() },
+            controller: scene.controller(),
+            foreign: scene.controls_locked(),
+            linked: scene.linked(),
+            automatic: automatic_enabled && !scene.controls_locked() && last_apply_error.is_empty(),
+            phase,
+            error: &policy_error,
+            pending: scheduler.pending_control_count(),
+            fas: &fas_status,
+        });
+        revision.fetch_add(1, Ordering::Relaxed);
         runtime.set_power_profile(if scene.controls_locked() {
             ""
         } else {
@@ -573,20 +630,15 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
             util::current_pid(), scheduler.current_mode(), scheduler.current_package(), scene.controller(), scene.linked(), scene.controls_locked(),
             scene.mode.as_deref().unwrap_or(""), snapshot.count(),
             if scene.controls_locked() { "" } else { scheduler.current_power_profile() },
-            fas_available
+            fas_status.available()
         );
         let status = format!(
             "{status}automatic_enabled={}\napp_kind={}\nclassification_source={}\nphase={}\nerror={}\n",
             automatic.enabled(), classification.kind.name(), classification.source,
-            if scene.controls_locked() {
-                "suspended"
-            } else if last_apply_error.is_empty() {
-                "ready"
-            } else {
-                "degraded"
-            },
-            last_apply_error.replace('\n', " ")
+            phase,
+            policy_error.replace('\n', " ")
         );
+        let status = format!("{status}{}pending_controls={}\n", fas_status.report(), scheduler.pending_control_count());
         if status != last_status || status_written.elapsed() >= Duration::from_secs(10) {
             if let Err(error) =
                 util::atomic_write(&state_dir.join("status"), status.as_bytes(), 0o600)
@@ -604,6 +656,11 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
     if let Some(handle) = input_thread {
         if handle.join().is_err() {
             logger.error("输入加速线程异常退出");
+        }
+    }
+    if let Some(handle) = fas_thread {
+        if handle.join().is_err() {
+            logger.error("NovaFAS 引擎线程异常退出");
         }
     }
     if let Some(handle) = web_thread {

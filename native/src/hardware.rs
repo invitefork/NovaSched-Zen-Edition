@@ -386,7 +386,11 @@ fn resolve_cluster(config: &mut Config, cluster: usize, policy: &CpuPolicy) -> R
     for profile in config.modes.values_mut() {
         let data = &mut profile.clusters[cluster];
         data.min_freq = resolve_frequency(&data.min_freq, policy)?;
-        data.max_freq = resolve_frequency(&data.max_freq, policy)?;
+        data.max_freq = if data.max_freq == "0" {
+            policy.max_freq.to_string()
+        } else {
+            resolve_frequency(&data.max_freq, policy)?
+        };
         if data.max_freq != "0"
             && data.min_freq.parse::<u64>().map_err(|e| e.to_string())?
                 > data.max_freq.parse::<u64>().map_err(|e| e.to_string())?
@@ -402,6 +406,12 @@ fn resolve_cluster(config: &mut Config, cluster: usize, policy: &CpuPolicy) -> R
 fn select_governor(requested: &str, policy: &CpuPolicy) -> Result<String> {
     if policy.governors.iter().any(|v| v == requested) {
         return Ok(requested.into());
+    }
+    if requested == "auto" && matches!(policy.current_governor.as_str(), "performance" | "powersave") {
+        if let Some(governor) = ["schedutil", "walt", "interactive", "ondemand", "conservative"].into_iter()
+            .find(|candidate| policy.governors.iter().any(|name| name.as_str() == *candidate)) {
+            return Ok(governor.into());
+        }
     }
     for candidate in [
         &policy.current_governor,
@@ -1201,4 +1211,22 @@ mod tests {
             "1200000"
         );
     }
+    #[test]
+    fn unlimited_mode_ceiling_uses_physical_max_but_optional_boost_zero_stays_off() {
+        let hardware = crate::profiles::test_hardware(Soc::Gen3);
+        let mut config = crate::profiles::test_config(Soc::Gen3);
+        config.modes.get_mut("fast").unwrap().clusters[0].max_freq = "0".into();
+        hardware.adapt_config(&mut config).unwrap();
+        assert_eq!(config.profile("fast").unwrap().clusters[0].max_freq, hardware.policies[0].max_freq.to_string());
+        assert_eq!(config.functions.launch_boost.frequencies[0], "0");
+    }
+    #[test]
+    fn automatic_governor_avoids_a_permanent_fixed_frequency_when_scaling_is_available() {
+        let mut policy = crate::profiles::test_hardware(Soc::Gen3).policies[0].clone();
+        policy.current_governor = "performance".into();
+        policy.governors = vec!["performance".into(), "schedutil".into()];
+        assert_eq!(select_governor("auto", &policy).unwrap(), "schedutil");
+        assert_eq!(select_governor("performance", &policy).unwrap(), "performance");
+    }
+
 }

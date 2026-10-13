@@ -46,12 +46,55 @@ struct RuntimeData {
     app_kind: String,
     classification_source: String,
     automatic_active: bool,
+    pending_controls: usize,
     fas_available: bool,
+    fas_state: String,
+    fas_mode: String,
+    fas_sync: String,
+    fas_engine_state: String,
+    fas_engine_source: String,
+    fas_engine_fps: f32,
+    fas_engine_boost: u32,
+    fas_engine_override: bool,
     scene_installed: bool,
     scene_presence: String,
 }
 
+pub struct PolicyStatus<'a> {
+    pub package: &'a str,
+    pub mode: &'a str,
+    pub controller: &'a str,
+    pub foreign: bool,
+    pub linked: bool,
+    pub automatic: bool,
+    pub phase: &'a str,
+    pub error: &'a str,
+    pub pending: usize,
+    pub fas: &'a crate::fas::Status,
+}
+
 impl RuntimeState {
+    /// Publish one coherent policy result. A WebSocket reader must never see
+    /// a new effective mode paired with the previous tick's successful health.
+    pub fn publish_policy(&self, update: PolicyStatus<'_>) {
+        if let Ok(mut data) = self.inner.lock() {
+            data.package = update.package.into();
+            data.effective_mode = update.mode.into();
+            data.controller = update.controller.into();
+            data.scene_active = update.foreign;
+            data.scene_linked = update.linked;
+            data.automatic_active = update.automatic;
+            data.phase = update.phase.into();
+            data.error = update.error.into();
+            data.pending_controls = update.pending;
+            data.fas_available = update.fas.available();
+            data.fas_state = update.fas.state.into();
+            data.fas_mode = update.fas.mode.clone();
+            data.fas_sync = update.fas.sync.into();
+            data.tick = Some(Instant::now());
+        }
+    }
+
     pub fn set_scene_presence(&self, presence: crate::scene::SceneAvailability) {
         if let Ok(mut data) = self.inner.lock() {
             data.scene_presence = match presence {
@@ -132,11 +175,23 @@ impl RuntimeState {
         }
     }
 
-    /// Whether Scene N1's FAS runtime node is present on this boot. The
-    /// dispatcher follows mode switches through it when available.
-    pub fn set_fas_available(&self, available: bool) {
+    pub fn set_fas(&self, status: &crate::fas::Status) {
         if let Ok(mut data) = self.inner.lock() {
-            data.fas_available = available;
+            data.fas_available = status.available();
+            data.fas_state = status.state.into();
+            data.fas_mode = status.mode.clone();
+            data.fas_sync = status.sync.into();
+        }
+    }
+
+    /// NovaFAS 引擎状态；引擎未运行时保持默认（off）。
+    pub fn set_fas_engine(&self, status: &crate::frame_ctrl::EngineStatus) {
+        if let Ok(mut data) = self.inner.lock() {
+            data.fas_engine_state = status.state.into();
+            data.fas_engine_source = status.source.into();
+            data.fas_engine_fps = status.fps;
+            data.fas_engine_boost = status.boost;
+            data.fas_engine_override = status.override_active;
         }
     }
 
@@ -545,7 +600,7 @@ fn payload(state: &WebState, app_endpoint: bool) -> String {
     };
     if !app_endpoint {
         return format!(
-            "mode:{},effective:{},package:{},controller:{},sceneActive:{},sceneLinked:{},phase:{},heartbeatMs:{},port:{},powerSaveProfile:{},socName:{},socId:{},configProfile:{},automaticEnabled:{},appKind:{},classificationSource:{},automaticActive:{},fasAvailable:{},sceneInstalled:{},scenePresence:{}",
+            "mode:{},effective:{},package:{},controller:{},sceneActive:{},sceneLinked:{},phase:{},heartbeatMs:{},port:{},powerSaveProfile:{},socName:{},socId:{},configProfile:{},automaticEnabled:{},appKind:{},classificationSource:{},automaticActive:{},fasAvailable:{},sceneInstalled:{},scenePresence:{},fasState:{},fasMode:{},fasSync:{},fasEngine:{},fasEngineSrc:{},fasFps:{},fasBoost:{},fasOverride:{},version:{},pendingControls:{}",
             default,
             runtime.effective_mode,
             runtime.package,
@@ -558,6 +613,12 @@ fn payload(state: &WebState, app_endpoint: bool) -> String {
             runtime.soc, runtime.soc_id, runtime.config_profile,
             state.automatic.enabled(), runtime.app_kind, runtime.classification_source, runtime.automatic_active,
             runtime.fas_available, runtime.scene_installed, runtime.scene_presence,
+            runtime.fas_state, runtime.fas_mode, runtime.fas_sync,
+            runtime.fas_engine_state, runtime.fas_engine_source,
+            format!("{:.1}", runtime.fas_engine_fps),
+            runtime.fas_engine_boost,
+            runtime.fas_engine_override,
+            env!("CARGO_PKG_VERSION"), runtime.pending_controls,
         );
     }
     let mut rules = String::new();

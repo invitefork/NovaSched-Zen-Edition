@@ -17,9 +17,11 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / 'module-template'
 DIST = ROOT / 'dist'
 DIST.mkdir(exist_ok=True)
-VERSION = '2.6.0'
-VERSION_CODE = 360
-CONFIG_VERSION = 320  # config schema generation; PROFILE_VERSION in config.rs must match
+# module.prop owns release identity; profile generations are checked separately.
+props = dict(line.split('=', 1) for line in (MODULE/'module.prop').read_text().splitlines() if '=' in line)
+VERSION = props['version'].removeprefix('v')
+VERSION_CODE = int(props['versionCode'])
+CONFIG_VERSION = int(re.search(r'PROFILE_VERSION: i64 = (\d+)', (ROOT/'native/src/config.rs').read_text()).group(1))
 parser = argparse.ArgumentParser()
 parser.add_argument('--source-only', action='store_true', help='Package source without requiring an Android binary')
 args = parser.parse_args()
@@ -57,6 +59,12 @@ for retired in [ROOT/'profile-references',MODULE/'profile-migrations']:
 assert json.loads((MODULE/'vtools/powercfg.json').read_text())['versionCode'] == VERSION_CODE
 assert json.loads((MODULE/'vtools/powercfg.json').read_text())['version'] == f'v{VERSION}', 'powercfg.json version string must track VERSION'
 assert f'version = "{VERSION}"' in (ROOT/'native/Cargo.toml').read_text()
+assert f'version = "{VERSION}"' in (ROOT/'native/Cargo.lock').read_text()
+assert json.loads((ROOT/'package.json').read_text())['version'] == VERSION
+assert json.loads((ROOT/'package-lock.json').read_text())['version'] == VERSION
+release_ui = (MODULE/'webroot/assets/version.js').read_text()
+assert f'version: "{VERSION}"' in release_ui and f'versionCode: {VERSION_CODE}' in release_ui
+assert props['author'] == 'ZenJooo'
 
 ui = (MODULE/'webroot/assets/app.js').read_text()
 html = (MODULE/'webroot/index.html').read_text()
@@ -77,6 +85,9 @@ assert '--origin ${shellQuote(origin)}' in ui, 'Origin-bound root credential req
 # distribution ships in the module.
 assert not (MODULE/'webroot/vendor').exists(), 'vendored glass library should be removed'
 assert 'assets/liquid-glass.js' in html
+assert 'assets/host.js' in html and 'assets/version.js' in html
+assert f'v{VERSION}' in html
+assert not re.search(r'v2\.(?!'+re.escape(VERSION[2:])+r')\d+\.\d+', html)
 assert 'assets/glass.js' not in html and 'stat-pkg-raw' in html
 for page in ['overview', 'modes', 'rules', 'logs', 'about']:
     assert f'id="page-{page}"' in html
@@ -108,8 +119,13 @@ with zipfile.ZipFile(source_zip) as z:
     assert not any('/target/' in name or '/node_modules/' in name or name.endswith('/bin/novasched') for name in z.namelist())
     for soc in SUPPORTED:
         assert f'NovaSched-Zen-Edition/module-template/config/{soc}.json' in z.namelist()
+webui_zip = DIST / f'NovaSched-v{VERSION}-webui-update.zip'
+webui_sources = [path for path in source_paths if path.relative_to(ROOT).as_posix().startswith('module-template/webroot/')]
+webui_sources.extend([ROOT/'scripts/install-webui.sh', ROOT/'docs/fix-v2.6.1.md'])
+archive(webui_zip, [(path, path.relative_to(ROOT).as_posix(), path.suffix == '.sh') for path in sorted(webui_sources)])
 if args.source_only:
-    (DIST/f'NovaSched-v{VERSION}-SHA256SUMS.txt').write_text(digest(source_zip)+'  '+source_zip.name+'\n')
+    (DIST/f'NovaSched-v{VERSION}-SHA256SUMS.txt').write_text(''.join(digest(path)+'  '+path.name+'\n' for path in [source_zip,webui_zip]))
+    print('Source and WebUI update only. No Android ELF exists; these archives are not flashable.')
     raise SystemExit(0)
 
 binary = MODULE / 'bin/novasched'
@@ -148,5 +164,5 @@ with zipfile.ZipFile(flashable) as z:
 print('Final release archive passed CRC, metadata, executable modes, protocol key and ELF consistency checks.')
 
 sums = DIST / f'NovaSched-v{VERSION}-SHA256SUMS.txt'
-sums.write_text(''.join(digest(path)+'  '+path.name+'\n' for path in [source_zip,flashable]))
+sums.write_text(''.join(digest(path)+'  '+path.name+'\n' for path in [source_zip,webui_zip,flashable]))
 print(sums.name)

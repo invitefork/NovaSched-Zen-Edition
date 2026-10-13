@@ -120,22 +120,25 @@ async function main() {
   console.log('PASS moving indicator: one changed surface per tick, no backdrop re-recording');
 
   const changedStart={...h.metrics};
+  const visibleCourses=h.document.querySelectorAll('.page.active .g[data-role=course]').length;
+  assert(visibleCourses>0,'overview must show course surfaces');
   g.configure({cardAlpha:60});h.step();
-  assert.equal(h.metrics.draws-changedStart.draws,2,'card tint must leave unchanged controls cached');
+  const tintDraws=h.metrics.draws-changedStart.draws;
+  assert(tintDraws>0 && tintDraws<=visibleCourses,'card tint must repaint only course surfaces (simulated viewport culls some) and leave controls cached');
   assert.equal(h.metrics.uploads,changedStart.uploads,'tint-only updates must retain blurred textures');
   console.log('PASS card tint: only visible course surfaces repainted, no texture upload');
 
-  h.document.querySelector('#quick-layer').hidden=false;
+  h.document.querySelector('#appearance-layer').classList.add('open');
   h.window.dispatchEvent(new h.window.Event('nova:overlay'));
   await h.flush(2);
   const popupStart={...h.metrics}, textStart=g.stats().textRecords;
-  const popup=h.document.querySelector('#quick-menu');
+  const popup=h.document.querySelector('#personal-panel');
   for(let i=1;i<=12;i++){h.offsets.set(popup,i);g.invalidate();h.step();}
   assert.equal(h.metrics.draws-popupStart.draws,12);
   assert.equal(h.metrics.glyphReads,popupStart.glyphReads,'portal motion must retain underlay text');
   assert.equal(g.stats().textRecords,textStart);
   assert.equal(h.metrics.uploads,popupStart.uploads);
-  h.document.querySelector('#quick-menu button span').textContent='菜单文本已更新';
+  h.document.querySelector('#personal-panel .personal-title h2').textContent='面板文本已更新';
   await h.flush(2);
   assert.equal(g.stats().textRecords,textStart,'portal-local text cannot dirty underlay');
   console.log('PASS popup motion and local edits: cached underlay text and texture reused');

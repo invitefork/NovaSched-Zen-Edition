@@ -40,16 +40,19 @@ async function main(){
       assert(geometry.add.bottom<=geometry.height-7,label+' bottom safe area');
     }
     async function scrollHeaderClear(page,label){
-      await page.evaluate(async()=>{window.scrollTo(0,document.documentElement.scrollHeight);await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
-      const clip=await page.evaluate(()=>{
-        const main=document.querySelector('#main');
-        const header=document.querySelector('.top-bar');
-        const value=getComputedStyle(main).clipPath;
-        return {value,boundary:main.getBoundingClientRect().top+parseFloat(value.replace(/^inset\(/,'')),headerBottom:header.getBoundingClientRect().bottom};
+      const layout = await page.evaluate(async () => {
+        const main = document.querySelector('#main'), header = document.querySelector('.top-bar');
+        main.scrollTop = main.scrollHeight;
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        return { documentScroll: window.scrollY, overflow: getComputedStyle(main).overflowY,
+          mainTop: main.getBoundingClientRect().top, headerBottom: header.getBoundingClientRect().bottom,
+          shell: document.querySelector('#app-scene').getBoundingClientRect().height, height: innerHeight };
       });
-      assert(clip.value.startsWith('inset('),label+' scrolling content clip');
-      assert(Math.abs(clip.boundary-clip.headerBottom)<=1,label+' header clip boundary');
-      await page.evaluate(()=>window.scrollTo(0,0));
+      assert.equal(layout.documentScroll, 0, label + ' fixed document');
+      assert.equal(layout.overflow, 'auto', label + ' content scroller');
+      assert(Math.abs(layout.mainTop - layout.headerBottom) <= 1, label + ' header boundary');
+      assert(Math.abs(layout.shell - layout.height) <= 1, label + ' full screen shell');
+      await page.evaluate(() => { document.querySelector('#main').scrollTop = 0; });
     }
     for(const width of [320,393,768]){
       const {page,errors}=await pageFor({presence:'available',linked:true,automatic:true},width);

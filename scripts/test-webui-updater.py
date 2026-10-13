@@ -23,7 +23,7 @@ with tempfile.TemporaryDirectory(prefix='webui-updater-', dir=ROOT) as temporary
     assert result.returncode==0,result.stderr
     assert (target/'webroot/index.html').read_bytes()==(ROOT/'module-template/webroot/index.html').read_bytes()
     assert (target/'bin/novasched').read_bytes()==b'fixture executable\n'
-    backup=next(target.glob('.webroot-before-sleepdown-*'))
+    backup=next(target.glob('.webroot-before-update-*'))
     assert (backup/'index.html').read_text()=='old UI'
     print('PASS updater: installed UI, retained daemon, backed up previous UI')
     target=module('wrong-id',False)

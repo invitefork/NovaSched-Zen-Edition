@@ -23,13 +23,13 @@ BINARY="$PROJECT_DIR/native/target-static/aarch64-linux-android/release/novasche
 readelf -h "$BINARY" > "$PROJECT_DIR/native/target-static/elf-header.txt"
 readelf -l "$BINARY" > "$PROJECT_DIR/native/target-static/elf-programs.txt"
 readelf -d "$BINARY" > "$PROJECT_DIR/native/target-static/elf-dynamic.txt"
-rg -q AArch64 "$PROJECT_DIR/native/target-static/elf-header.txt"
-rg -q 'EXEC \(Executable file\)' "$PROJECT_DIR/native/target-static/elf-header.txt"
-if rg -q INTERP "$PROJECT_DIR/native/target-static/elf-programs.txt"; then
+grep -q AArch64 "$PROJECT_DIR/native/target-static/elf-header.txt"
+grep -qE 'EXEC (Executable file)' "$PROJECT_DIR/native/target-static/elf-header.txt"
+if grep -q INTERP "$PROJECT_DIR/native/target-static/elf-programs.txt"; then
   echo "ELF unexpectedly needs a dynamic interpreter" >&2
   exit 1
 fi
-if rg -q NEEDED "$PROJECT_DIR/native/target-static/elf-dynamic.txt"; then
+if grep -q NEEDED "$PROJECT_DIR/native/target-static/elf-dynamic.txt"; then
   echo "ELF unexpectedly needs a shared library" >&2
   exit 1
 fi

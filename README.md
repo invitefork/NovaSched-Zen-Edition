@@ -1,81 +1,68 @@
 # NovaSched Zen Edition
 
-作者：**ZenJooo**。当前版本：**v2.6.0 / 360**。
+作者：**ZenJooo** · 版本：**v2.7.0 / 370**
 
-根据处理器和内核能力调整 CPU 策略，提供省电、均衡、性能、极速四档，支持应用规则、Scene 联动和原厂节点恢复。作者为 **ZenJooo**。
+NovaSched 按设备实际 CPU 簇、频率表和内核能力设置四档策略，支持应用规则、Scene 联动，以及带壁纸和液态玻璃材质的 WebUI。v2.7.0 起内置自研 **NovaFAS 帧感知调度引擎**，读取前台应用的渲染帧信号，在档位包络内动态调频。
 
-本次 WebUI 对照用户提供的 SleepDown 课程表 `1.2.7_beta5` 与 APK 对应的构建源码重做。页面采用三项浮动导航、分区卡片、个性化面板和壁纸取景，调度功能仍由 NovaSched 执行。玻璃透镜和色散使用 Kyant Backdrop 公式的 WebGL 移植；APK 的原生 Compose / RuntimeShader 不能直接装入 WebView，不能把本版称为同一原生引擎或已经逐像素一致。完整改动、验证与边界见 [WebUI 改造说明](docs/webui-sleepdown-beta5.md)。
+## 这次改了什么
 
-所有设备端资源随包提供，无需联网加载。
-## 安装与更新
+- 界面重做：底部 dock 改为 概览 / 规则 / 日志 / 设置 四个平级页面，档位切换直接放在首屏；删除课程表式的装饰页头与二级详情栏，操作路径更短。
+- 动画体系统一：页面切换双向转场，弹窗与面板从来源锚点展开、关闭按同一关键帧反向播放（从哪来就从哪回去），切换 Tab 保留各页滚动位置。
+- 四档策略按功耗优先重调（9 款 SoC 各自的甜点表），修复极速档高频常驻导致的功耗失控（骁龙 8 Gen 3 打和平精英可达 10W 的问题）。
+- 全新 NovaFAS 帧感知调度引擎；检测到 Scene 的 fas-rs 时自动接管（SIGSTOP 暂停、退出恢复）。
+- WebUI 增加 NovaFAS 引擎卡：状态、帧信号来源、实时帧率与动态加压比例。
 
-`source.zip` 是源码，不能作为完整模块安装包刷入。本次没有编译或替换原生守护进程。
+## 四档策略（功耗优先）
 
-已有 v2.2.8 模块时，可将解压后的整个源码文件夹放到设备，在 root 终端运行 `sh /实际路径/NovaSched-Zen-Edition/scripts/install-webui.sh` 更新 WebUI。脚本检查已安装模块并自动备份旧界面，更新后关闭页面再重新打开即可。
+| 档位 | 定位 | 策略 |
+|---|---|---|
+| 省电 | 只推荐日用信息流 | 各簇上限压到 44–56%，无底频；输入法靠 15%/100ms 短脉冲保跟手，触控即省电档标准 |
+| 均衡 | 剪映、AI 生产力 | 日用甜点（大核 58–62%），不拉大频率 |
+| 性能 | 王者荣耀稳定 120 帧 | 按每颗芯片的 120 帧甜点分别配置（如 8 Gen 3 约 78–82%），仅 8% 底频 |
+| 极速 | 原神、鸣潮类 3D 游戏 | 中/大核开放到 100%，小核 90–94%；高频由 NovaFAS 按帧需求动态给出，空闲即回落 |
 
-需要完整安装包时，按下面的构建流程生成 `release.zip`，在 root 管理器中安装后重启手机。已有有效配置、应用规则和自动调度偏好会保留。
+NovaFAS 读取 SurfaceFlinger 帧统计（不可用时退回 GPU 负载启发式）：掉帧快速加压（top-app uclamp.min 与各簇最低频率），连续稳定后缓慢回落，把功耗压到"刚好够用"。所有动态写入都被限制在当前档位的频率包络内。配置 `features.fas` 可关闭引擎或改回 fas-rs 跟随模式。
 
-支持 ARM64。安装不按管理器品牌或版本号拦截；Magisk（含 Alpha）、KernelSU 系列与 APatch 使用相同的模块入口。没有内置 WebUI 的管理器需要独立 WebUI 宿主，并授予其 root / Shell 权限。具体分支仍取决于它是否提供标准模块安装、启动和命令接口。
+目前支持 Snapdragon 8 Gen 1、8+ Gen 1、8 Gen 2、8 Gen 3、8 Elite、8 Elite Gen 5、Dimensity 8350、Dimensity 9400+、Xring O3。安装入口按能力兼容 APatch、KernelSU 系列与分支、Magisk 和 Alpha 系列；实际支持仍取决于内核和 WebUI 宿主接口。
 
-支持的处理器：骁龙 8 Gen 1、8+ Gen 1、8 Gen 2、8 Gen 3、8 Elite、8 Elite Gen 5，天玑 8350、9400+，玄戒 O3。实际 CPU policy、频率范围和调速器由设备探测，硬件不支持时会给出原因。
+## 安装
 
-## Scene 联动
+**`dist/NovaSched-v2.7.0-release.zip` 是可刷入的完整模块**（含 Android ELF）。在管理器中刷入后重启手机。覆盖安装保留档位、应用规则和自定义参数；未修改的默认配置随版本自动重调，更新前生成备份。
 
-主要检测包名为 `com.omarea.vtools`。检测按当前 Android 用户查询，依次尝试 `cmd`、`pm` 的安装列表和 APK 路径；服务不可用时核对系统安装记录，并尽可能检查逐用户的卸载与隐藏状态。旧数据目录和进程名称不作为安装证据。
-
-重启后，模块在确认 Scene 安装时尝试注册 `/data/powercfg.sh` 和 `/data/powercfg.json`。已有其它调度器的回调不会被覆盖。WebUI 的 Scene 卡片区分：
-
-- Scene 联动中：Scene 决定档位，NovaSched 执行策略；本地自动调度暂停，偏好保留。
-- 外部调度器接管：NovaSched 暂停节点写入，档位和规则只读。
-- Scene 已安装、待注册：可在「Scene 检测详情」查看原因并重新注册。
-- WebUI 接管：未安装 Scene，本地自动模式或应用规则生效。
-- 检测暂不可用：系统未返回可靠结果，服务会继续检测。
-
-Scene 的 `powersave`、`balance`、`performance`、`fast` 回调，以及 `pedestal`、`standby` 动作沿用现有接口。FAS 模式节点存在时同步档位，不要求安装 FAS 才能使用模块。
-
-## WebUI
-
-「今日」显示实际档位、前台应用和调度来源；「调度」切换四档与本地自动模式；「设置」进入应用规则、运行记录、个性化和模块信息。右下角加号与顶部菜单提供快捷入口。应用规则支持搜索、编辑和左滑删除；日志支持过滤、跟随与复制。
-
-个性化支持壁纸模糊和亮度、横竖屏独立取景、卡片配色和材质、折射、色散以及深浅模式。设置拖动时实时预览，松手保存。
-
-本次性能修正将加号与导航放在同一行，共享底部安全区；滚动内容在固定顶栏下方裁切。玻璃表面、浮层文字与背景纹理按变化更新，复用 WebGL 绘制缓冲，限制背景采样尺寸和纹理缓存内存。实现与验证见 [性能与布局修正](docs/webui-performance-dock.md)。
-
-前台应用每两秒尝试读取 ActivityManager，并在需要时读取 WindowManager、activity top 和多个 top-app 分组。不依赖本地自动模式是否开启。宿主没有应用名称接口时直接显示包名，不再显示泛泛的「未知应用」。
-
-WebUI 的命令、WebSocket 和 root 备用通道保留会话认证和准确的页面来源校验。连接成功后才开放控制，实际读回确认后才显示操作完成。
-
-## 排查 Scene
-
-先覆盖安装并重启，再打开 WebUI → 概览 → Scene 检测详情。也可以在 root 终端执行：
+`NovaSched-v2.7.0-webui-update.zip` 可单独更新已安装模块的界面；解压后在 root 终端执行：
 
 ```sh
-su -c /data/adb/modules/NovaSched_Zen_Edition/bin/novasched scene-diagnose
+su -c 'sh /实际路径/scripts/install-webui.sh'
 ```
 
-诊断会显示模块与二进制版本、安装检测证据、当前回调和联动状态。如果显示外部调度器接管，先在原调度模块或 Scene 中处理现有调度源，再重新检测。
-
-日志位于 `/data/adb/novasched/novasched.log`；开机入口记录位于同目录的 `boot-entry.log`；安装记录位于模块目录的 `install-check.log`。
-
-## 构建与验证
-
-需要 Rust 1.75 以上、`aarch64-linux-android` 标准库与 Android NDK r27d。
+从源码构建需要 Rust 1.75+、`aarch64-linux-android` 标准库和 NDK r27d：
 
 ```sh
-export CARGO=/path/to/cargo
-export ANDROID_NDK_HOME=/path/to/android-ndk-r27d
+export CARGO=cargo
+export ANDROID_NDK_HOME=/实际路径/android-ndk-r27d
 bash scripts/build.sh
-npm ci
-npm run test:webui
-npm run test:performance
-python3 scripts/test-installer.py
 ```
 
-常规 Linux 主机可以设置 `CHROME` 指向 Chromium，再运行 `npm run test:render` 做 320、393、768px 的截图和交互检查。安装 Mesa EGL 的 Linux 主机还可运行 `npm run test:shader` 对比移植着色器与 APK 的透镜和色散公式。
+生成的 `dist/NovaSched-v2.7.0-release.zip` 才是可安装模块。
 
-本次 WebUI 验证见 `docs/webui-sleepdown-beta5.md`、`docs/webui-performance-dock.md` 与对应结果文件。六组 DOM 场景、20 项静态检查、绘制缓存回归、更新与回滚检查和软件 GPU 数值比对通过。当前环境未完成浏览器截图比对，也未连接设备实测。既有原生与安装脚本验证记录保留在 `docs/validation-v2.2.7.md`，不作为本次 UI 的像素验证。
-模块 ELF 为 AArch64 静态可执行文件，不需要动态解释器或共享库，LOAD 段按 16KB 对齐。
+## 检查与诊断
 
-## 许可与来源
+```sh
+bash scripts/validate.sh
+cargo test --manifest-path native/Cargo.toml
+node scripts/test-glass-ui.cjs
+node scripts/test-webui-dom.cjs
+node scripts/check-profiles.cjs
+```
 
-模块作者为 ZenJooo，调度核心沿用 GPL-3.0-only。WebGL 透镜和色散公式来自 Kyant Backdrop，Apache-2.0；界面参考 SleepDown-Schedule，原作者 xiaomanjun233，构建提交与素材来源见 `NOTICE`。测试依赖 LinkeDOM 使用 ISC。模块不是 SleepDown 官方版本，保留了应用内的来源与许可入口。
+Rust 测试与 Android 构建由 GitHub Actions 在 Linux 上执行；DOM 与渲染调度回归使用模拟宿主，不能代替真机的铺屏、功耗或帧率测试。真机验证关注点：NovaFAS 的 timestats 帧信号在部分 ROM 上可能被 SELinux 拒绝（自动退回启发式并在引擎卡注明）、省电档输入法跟手度、极速档功耗曲线。
+
+完整安装后可在 root 终端读取 FAS 状态：
+
+```sh
+su -c '/data/adb/modules/NovaSched_Zen_Edition/bin/novasched fas-diagnose'
+```
+
+## 来源与许可
+
+作者为 ZenJooo。调度核心使用 GPL-3.0-only。液态玻璃保留 Kyant Backdrop 的 WebGL 移植、Apache-2.0；素材和来源保留在 `NOTICE`。测试依赖 LinkeDOM 使用 ISC。

@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f2f4f8">
   <title>NovaSched · ZenJooo</title>
@@ -13,60 +13,61 @@
   <a class="skip-link" href="#main">跳到主要内容</a>
   <div id="app-scene">
     <header class="top-bar">
-      <button class="date-block" id="nav-brand" type="button" aria-label="回到今日">
-        <span class="date-sub" id="hero-week">第—周</span>
-        <h1 class="date-main" id="hero-date">—</h1>
-      </button>
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z"/></svg></span>
+        <div class="brand-copy"><b>NovaSched</b><small>Zen Edition</small></div>
+      </div>
       <div class="top-actions">
+        <button class="status-pill g" id="nav-cta" data-role="accent" data-radius="999" data-state="connecting" type="button"><i class="dot" aria-hidden="true"></i><span id="nav-cta-text">连接中</span></button>
         <button class="chrome-btn g" id="personalize-open" data-role="pill" data-radius="999" type="button" aria-label="个性化" data-sheen>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><path d="M8 3v6M16 9v6M10 15v6"/></svg>
-        </button>
-        <button class="chrome-btn g" id="more-open" data-role="pill" data-radius="999" type="button" aria-label="更多操作" aria-expanded="false" data-sheen>
-          <svg viewBox="0 0 24 24" aria-hidden="true" class="filled"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h12M20 17h0"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="17" r="2"/></svg>
         </button>
       </div>
     </header>
-    <header class="detail-bar" hidden>
-      <button class="chrome-btn g" id="detail-back" data-role="pill" data-radius="999" type="button" aria-label="返回设置"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5-7 7 7 7"/></svg></button>
-      <h1 id="detail-title"></h1>
-      <button class="chrome-btn g" id="detail-action" data-role="pill" data-radius="999" type="button" aria-label="添加应用规则" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
-    </header>
     <main class="content" id="main" tabindex="-1">
-      <section class="page active" id="page-overview" aria-label="今日">
-        <div class="current-period"><button class="status-pill g" id="nav-cta" data-role="accent" data-radius="999" data-state="connecting" type="button"><i class="dot" aria-hidden="true"></i><span id="nav-cta-text">连接中</span></button></div>
-        <article class="assistant-card g" id="overview" data-role="assistant" data-radius="30" data-sheen role="button" tabindex="0" aria-label="查看运行诊断">
-          <div class="assistant-row"><span class="assistant-label" id="stat-mode-label">当前</span><h2 class="assistant-title" id="stat-mode">—</h2><span class="assistant-status" id="foreground-tag">待连接</span></div>
-          <div class="assistant-meta"><span id="stat-ctrl">等待本地服务</span><span id="stat-heartbeat">心跳 —</span></div>
-          <div class="assistant-divider" aria-hidden="true"></div>
-          <p class="assistant-summary" id="hero-sub">正在连接本机调度服务。</p>
-          <div class="assistant-foot"><span class="soc-chip" id="stat-soc-chip"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg><span id="stat-soc-name">—</span></span><span id="stat-mode-note">点击卡片查看诊断</span></div>
+      <section class="page active" id="page-overview" aria-label="概览">
+        <article class="hero-card g" id="overview" data-role="assistant" data-radius="30" data-sheen role="button" tabindex="0" aria-label="查看运行诊断">
+          <div class="hero-top"><span class="hero-label" id="stat-ctrl">等待本地服务</span><span class="hero-status" id="foreground-tag">待连接</span></div>
+          <h1 class="hero-mode" id="stat-mode">—</h1>
+          <p class="hero-sub" id="hero-sub">正在连接本机调度服务。</p>
+          <div class="hero-meta">
+            <span class="soc-chip" id="stat-soc-chip" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg><span id="stat-soc-name">—</span></span>
+            <span class="hero-heartbeat" id="stat-heartbeat">心跳 —</span>
+          </div>
         </article>
-        <div class="section-divider"><span>前台应用</span><i aria-hidden="true"></i><span class="sec-time" id="stat-appkind">每两秒刷新</span></div>
+
+        <div class="section-divider"><span>调度档位</span><i aria-hidden="true"></i><span class="sec-time" id="modes-state">—</span></div>
+        <div class="mode-grid" id="mode-grid" role="group" aria-label="选择调度档位">
+          <button class="mode-card g" data-role="course" data-color-index="2" data-mode="powersave" data-radius="22" data-sheen type="button"><span class="mode-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4C8 3 3 9 7 16c6 6 13 0 13-12ZM4 21 16 9"/></svg></span><span class="mode-copy"><b>省电<small class="badge" hidden>生效中</small></b><small>极限控功耗，信息流与日用，输入不卡顿。</small></span><svg class="mode-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>
+          <button class="mode-card g" data-role="course" data-color-index="0" data-mode="balance" data-radius="22" data-sheen type="button"><span class="mode-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M5 7h14M3 14l3-7 3 7M15 14l3-7 3 7M8 21h8M3 14h6M15 14h6"/></svg></span><span class="mode-copy"><b>均衡<small class="badge" hidden>生效中</small></b><small>日用甜点，剪辑与 AI 生产，不拉大频率。</small></span><svg class="mode-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>
+          <button class="mode-card g" data-role="course" data-color-index="4" data-mode="performance" data-radius="22" data-sheen type="button"><span class="mode-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 2-9 12h7l-1 8 10-13h-8Z"/></svg></span><span class="mode-copy"><b>性能<small class="badge" hidden>生效中</small></b><small>按王者荣耀稳定 120 帧的甜点频率配置。</small></span><svg class="mode-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>
+          <button class="mode-card g" data-role="course" data-color-index="3" data-mode="fast" data-radius="22" data-sheen type="button"><span class="mode-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17a9 9 0 1 1 16 0M12 12l5-5M5 19h14"/><circle cx="12" cy="12" r="2"/></svg></span><span class="mode-copy"><b>极速<small class="badge" hidden>生效中</small></b><small>3D 游戏全频段，NovaFAS 按帧动态调频。</small></span><svg class="mode-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>
+        </div>
+        <p class="section-note" id="mode-note" role="status">手动切档会关闭本地自动模式。</p>
+        <article class="settings-group g" data-role="panel" data-radius="22"><div class="setting-row"><div class="row-copy"><h3>自动调度</h3><p id="auto-note">游戏用极速，日用和桌面用省电。</p></div><button class="switch" id="auto-switch" role="switch" aria-checked="false" aria-label="自动调度" disabled type="button"><span></span></button></div></article>
+
+        <div class="section-divider"><span>NovaFAS 帧感知调度</span><i aria-hidden="true"></i><span class="sec-time" id="fas-engine-badge">待连接</span></div>
+        <article class="course-card g" data-role="course" data-color-index="5" data-radius="22">
+          <div class="card-head"><span class="card-label">引擎状态</span><span class="package-badge" id="fas-engine-source">待连接</span></div>
+          <h3 id="fas-engine-title">等待连接</h3>
+          <p class="course-note" id="fas-engine-desc">连接后读取 NovaFAS 引擎状态。</p>
+          <div class="engine-meter" id="fas-engine-meter" hidden>
+            <div class="engine-meter-row"><span>实时帧率</span><b id="fas-engine-fps">—</b></div>
+            <div class="engine-meter-row"><span>动态加压</span><b id="fas-engine-boost">—</b></div>
+            <div class="engine-bar" aria-hidden="true"><i id="fas-engine-bar"></i></div>
+          </div>
+          <p class="course-note" id="fas-legacy-desc" hidden></p>
+        </article>
+
+        <div class="section-divider"><span>运行环境</span><i aria-hidden="true"></i><span class="sec-time" id="stat-appkind">每两秒刷新</span></div>
         <button class="time-pill g" data-role="pill" data-radius="999" id="foreground-time" type="button" aria-label="为前台应用设置规则">应用策略</button>
         <article class="course-card g" data-role="course" data-color-index="0" data-radius="22" data-sheen id="foreground-card" role="button" tabindex="0" aria-label="查看前台应用规则">
           <div class="course-head"><span class="app-avatar" id="foreground-avatar" aria-hidden="true">—</span><h3 id="stat-pkg">等待连接</h3></div>
           <p class="course-meta mono" id="stat-pkg-raw">连接后显示应用包名</p>
           <p class="course-note" id="stat-pkg-note">前台活动每两秒刷新一次。</p>
         </article>
-        <div class="section-divider"><span>调度来源</span><i aria-hidden="true"></i><span class="sec-time">Scene</span></div>
         <button class="time-pill g" data-role="pill" data-radius="999" id="scene-diagnose" type="button">Scene 检测详情</button>
         <article class="course-card g" data-role="course" data-color-index="1" data-radius="22" data-sheen><h3 id="stat-scene">等待连接</h3><p class="course-meta mono">com.omarea.vtools</p><p class="course-note" id="stat-scene-note">读取 Scene 安装状态和调度回调。</p></article>
-        <button class="btn-capsule ghost g reconnect" id="hero-reconnect" data-role="pill" data-radius="999" type="button">重新连接</button>
-      </section>
-
-      <section class="page" id="page-modes" aria-label="调度">
-        <div class="section-divider head"><span>调度档位</span><i aria-hidden="true"></i><span class="sec-time" id="modes-state">—</span></div>
-        <div class="mode-list" id="mode-grid" role="group" aria-label="选择调度档位">
-          <button class="mode-card g" data-role="course" data-color-index="2" data-mode="powersave" data-radius="22" data-sheen type="button"><span class="mode-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4C8 3 3 9 7 16c6 6 13 0 13-12ZM4 21 16 9"/></svg></span><span class="mode-copy"><b>省电<small class="badge" hidden>当前生效</small></b><small>降低频率上限，减少日常耗电。</small></span><svg class="mode-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>
-          <button class="mode-card g" data-role="course" data-color-index="0" data-mode="balance" data-radius="22" data-sheen type="button"><span class="mode-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M5 7h14M3 14l3-7 3 7M15 14l3-7 3 7M8 21h8M3 14h6M15 14h6"/></svg></span><span class="mode-copy"><b>均衡<small class="badge" hidden>当前生效</small></b><small>兼顾响应与耗电，适合日常使用。</small></span><svg class="mode-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>
-          <button class="mode-card g" data-role="course" data-color-index="4" data-mode="performance" data-radius="22" data-sheen type="button"><span class="mode-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 2-9 12h7l-1 8 10-13h-8Z"/></svg></span><span class="mode-copy"><b>性能<small class="badge" hidden>当前生效</small></b><small>提高响应速度，适度抬高最低频率。</small></span><svg class="mode-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>
-          <button class="mode-card g" data-role="course" data-color-index="3" data-mode="fast" data-radius="22" data-sheen type="button"><span class="mode-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17a9 9 0 1 1 16 0M12 12l5-5M5 19h14"/><circle cx="12" cy="12" r="2"/></svg></span><span class="mode-copy"><b>极速<small class="badge" hidden>当前生效</small></b><small>开放完整频率范围，优先响应。</small></span><svg class="mode-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></button>
-        </div>
-        <div class="section-divider"><span>自动调度</span><i aria-hidden="true"></i></div>
-        <article class="settings-group g" data-role="panel" data-radius="22"><div class="setting-row"><div class="row-copy"><h3>跟随前台应用</h3><p id="auto-note">游戏用极速，日用和桌面用省电。</p></div><button class="switch" id="auto-switch" role="switch" aria-checked="false" aria-label="自动调度" disabled type="button"><span></span></button></div></article>
-        <p class="section-note" id="mode-note" role="status">手动切档会关闭本地自动模式。</p>
-        <article class="course-card g" data-role="course" data-color-index="5" data-radius="22"><div class="card-head"><span class="card-label">Scene FAS</span><span class="package-badge" id="shot-fas-node">待检测</span></div><h3 id="shot-fas-title">等待连接</h3><p class="course-note" id="shot-fas-desc">连接后检测 FAS 模式节点。</p></article>
-        <div class="utility-actions"><button class="chip-btn g" id="hero-auto" data-role="pill" data-radius="999" type="button" aria-label="自动调度" disabled>自动调度</button><button class="chip-btn g" id="hero-diagnose" data-role="pill" data-radius="999" type="button">运行诊断</button></div>
       </section>
 
       <section class="page" id="page-rules" aria-label="应用规则">
@@ -79,41 +80,39 @@
       </section>
 
       <section class="page" id="page-logs" aria-label="运行记录">
-        <p class="page-intro">查看切档、Scene 联动与策略下发结果。</p>
+        <p class="page-intro">查看切档、NovaFAS 与策略下发结果。</p>
         <article class="log-board g" data-role="panel" data-radius="22"><div class="log-tools"><div class="segmented" role="group" aria-label="日志级别"><button data-level="all" class="active" type="button">全部</button><button data-level="info" type="button">信息</button><button data-level="warn" type="button">警告</button><button data-level="error" type="button">错误</button></div><div class="log-controls"><label for="log-follow">跟随</label><button class="switch small" id="log-follow" role="switch" aria-checked="true" aria-label="跟随新记录" type="button"><span></span></button><button class="chip-btn g" id="log-copy" data-role="pill" data-radius="999" type="button">复制</button></div></div><p class="section-note" id="log-count">等待日志</p><div class="log-list" id="log-list" tabindex="0" aria-label="日志列表"></div></article>
       </section>
 
       <section class="page settings-page" id="page-about" aria-label="设置">
         <h1 class="settings-title">设置</h1>
-        <p class="settings-label">调度</p>
-        <div class="settings-group g" data-role="settings" data-radius="18">
-          <button class="setting-row" data-page="modes" type="button"><span class="setting-icon blue"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16M8 3v6M16 9v6M10 15v6"/></svg></span><span class="row-copy"><b>调度设置</b><small>档位、自动模式与 FAS</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button>
-          <button class="setting-row" data-page="rules" type="button"><span class="setting-icon green"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M17.5 14v7M14 17.5h7"/></svg></span><span class="row-copy"><b>应用规则</b><small>为应用设置独立档位</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button>
-          <button class="setting-row" data-page="logs" type="button"><span class="setting-icon orange"><svg viewBox="0 0 24 24"><path d="M6 3h9l5 5v13H6zM14 3v6h6M9 13h6M9 17h6"/></svg></span><span class="row-copy"><b>运行记录</b><small>查看策略执行情况</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button>
-        </div>
         <p class="settings-label">外观</p>
         <div class="settings-group g" data-role="settings" data-radius="18">
           <button class="setting-row" id="appearance-settings" type="button"><span class="setting-icon purple"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18h1a2 2 0 0 0 0-4h-1a1.5 1.5 0 0 1 0-3h4a5 5 0 0 0 0-10z"/><circle cx="7" cy="10" r=".5"/><circle cx="10" cy="7" r=".5"/><circle cx="15" cy="7" r=".5"/></svg></span><span class="row-copy"><b>个性化</b><small>壁纸、配色与卡片材质</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button>
           <button class="setting-row" id="glass-settings" type="button"><span class="setting-icon blue"><svg viewBox="0 0 24 24"><path d="M12 3C9 7 5 10 5 14a7 7 0 0 0 14 0c0-4-4-7-7-11Z"/></svg></span><span class="row-copy"><b>液态玻璃</b><small>折射、模糊与显示效果</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button>
         </div>
+        <p class="settings-label">诊断</p>
+        <div class="settings-group g" data-role="settings" data-radius="18">
+          <button class="setting-row" id="about-diagnose" type="button"><span class="setting-icon green"><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span><span class="row-copy"><b>运行诊断</b><small>读取服务与节点状态</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button>
+          <button class="setting-row" id="scene-diagnose-settings" type="button"><span class="setting-icon orange"><svg viewBox="0 0 24 24"><path d="M6 3h9l5 5v13H6zM14 3v6h6M9 13h6M9 17h6"/></svg></span><span class="row-copy"><b>Scene 检测详情</b><small>安装状态与调度回调</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button>
+          <button class="setting-row" id="about-license" type="button"><span class="setting-icon blue"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg></span><span class="row-copy"><b>来源与许可</b><small>组件与许可证信息</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button>
+        </div>
         <p class="settings-label">模块信息</p>
-        <article class="settings-group g module-info" data-role="settings" data-radius="18"><h3>NovaSched <span>Zen Edition</span></h3><p>根据处理器与内核能力调整 CPU 策略。</p><dl class="fact-list"><div><dt>作者</dt><dd>ZenJooo</dd></div><div><dt>版本</dt><dd id="about-version">v2.6.0</dd></div><div><dt>处理器</dt><dd id="about-soc">待识别</dd></div><div><dt>配置模板</dt><dd id="about-profile">待识别</dd></div><div><dt>Scene FAS</dt><dd id="about-fas">待识别</dd></div></dl><div class="link-list"><button id="about-diagnose" type="button">读取运行诊断<span>›</span></button><button id="about-license" type="button">来源与许可<span>›</span></button></div></article>
+        <article class="settings-group g module-info" data-role="settings" data-radius="18"><h3>NovaSched <span>Zen Edition</span></h3><p>按处理器与内核能力调整 CPU 策略，NovaFAS 按帧动态调度。</p><dl class="fact-list"><div><dt>作者</dt><dd>ZenJooo</dd></div><div><dt>界面版本</dt><dd id="about-version">v2.7.0</dd></div><div><dt>服务版本</dt><dd id="about-engine-version">待连接</dd></div><div><dt>处理器</dt><dd id="about-soc">待识别</dd></div><div><dt>配置模板</dt><dd id="about-profile">待识别</dd></div><div><dt>Scene FAS</dt><dd id="about-fas">待识别</dd></div></dl><p class="version-note" id="version-note" hidden></p></article>
         <p class="section-note">支持 APatch、KernelSU 系列和 Magisk 系列（含 Alpha）。没有内置 WebUI 的管理器可使用独立 WebUI 宿主。</p>
       </section>
-      <footer class="footer"><span id="footer-version">v2.6.0 · ZenJooo</span></footer>
     </main>
   </div>
 
   <div class="dock-wrap" id="dock-wrap">
     <nav class="dock g" data-role="dock" data-radius="999" aria-label="页面切换"><span class="dock-indicator g" data-role="lens" data-radius="999" aria-hidden="true"></span>
-      <button data-page="overview" aria-current="page" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 8h16M8 12h2M14 12h2M8 16h2M14 16h2"/></svg><span>今日</span></button>
-      <button data-page="modes" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 8h18M8 8v13M14 8v13M3 13h18M3 17h18"/></svg><span>调度</span></button>
+      <button data-page="overview" aria-current="page" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z"/></svg><span>概览</span></button>
+      <button data-page="rules" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M17.5 14v7M14 17.5h7"/></svg><span>规则</span></button>
+      <button data-page="logs" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l5 5v13H6zM14 3v6h6M9 13h6M9 17h6"/></svg><span>日志</span></button>
       <button data-page="about" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 3-.8 2.4-2 .8-2.2-1.1-2 3.5 2 1.5V13l-2 1.5 2 3.5 2.2-1.1 2 .8L10 20h4l.8-2.3 2-.8L19 18l2-3.5-2-1.5v-2.9l2-1.5-2-3.5-2.2 1.1-2-.8L14 3Z"/><circle cx="12" cy="11.5" r="3"/></svg><span>设置</span></button>
     </nav>
-    <button class="dock-add g" id="dock-add" data-role="accent" data-radius="999" data-sheen type="button" aria-label="添加与快捷操作" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16M4 12h16"/></svg></button>
   </div>
 
-  <div class="popover-layer" id="quick-layer" hidden><div class="quick-menu g" id="quick-menu" data-role="popup" data-radius="28" role="menu" aria-label="快捷操作"><button data-page="rules" role="menuitem" type="button"><span>应用规则</span><small>管理独立档位</small></button><button id="quick-add-rule" role="menuitem" type="button"><span>添加规则</span><small>输入应用包名</small></button><button data-page="logs" role="menuitem" type="button"><span>运行记录</span><small>查看调度日志</small></button><button id="quick-diagnose" role="menuitem" type="button"><span>运行诊断</span><small>读取服务状态</small></button></div></div>
   <div class="appearance-layer" id="appearance-layer" aria-hidden="true">
     <section class="personal-panel g" id="personal-panel" data-role="popup" data-radius="32" role="dialog" aria-modal="true" aria-label="个性化">
       <div class="personal-title"><h2>个性化</h2><button class="chrome-btn" id="personalize-close" type="button" aria-label="完成个性化"><svg viewBox="0 0 24 24"><path d="m5 12 5 5 9-10"/></svg></button></div>
@@ -130,7 +129,7 @@
           <label class="slider-label" for="card-blur">卡片模糊 <output id="card-blur-val">24</output></label><input class="liquid-range" type="range" id="card-blur" min="0" max="64" value="24" aria-label="卡片模糊">
           <label class="slider-label" for="card-radius">卡片圆角 <output id="card-radius-val">22</output></label><input class="liquid-range" type="range" id="card-radius" min="10" max="34" value="22" aria-label="卡片圆角">
         </div>
-        <div class="personal-section" id="glass-controls"><b>液态玻璃</b><div class="dock-preview" aria-hidden="true"><span>今日</span><span>调度</span><span>设置</span></div>
+        <div class="personal-section" id="glass-controls"><b>液态玻璃</b><div class="dock-preview" aria-hidden="true"><span>概览</span><span>规则</span><span>日志</span><span>设置</span></div>
           <label class="slider-label" for="glass-level">折射强度 <output id="glass-value">50</output></label><input class="liquid-range" type="range" id="glass-level" min="0" max="100" value="50" aria-label="折射强度">
           <label class="slider-label" for="chrome-blur">控件模糊 <output id="chrome-blur-val">100%</output></label><input class="liquid-range" type="range" id="chrome-blur" min="0" max="200" value="100" aria-label="控件模糊">
           <div class="personal-row"><span>光谱色散</span><button class="switch" id="dispersion-switch" role="switch" aria-checked="true" aria-label="光谱色散" type="button"><span></span></button></div>
@@ -143,6 +142,8 @@
   <div class="dialog-layer" id="dialog-layer" aria-hidden="true"><div class="dialog g" data-role="dialog" data-radius="39" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div id="dialog-body"></div></div></div>
   <div class="snackbar" id="snackbar" role="status"></div>
   <input type="file" id="wall-input" accept="image/*" hidden>
+  <script src="./assets/version.js"></script>
+  <script src="./assets/host.js"></script>
   <script src="./assets/liquid-glass.js"></script>
   <script src="./assets/app.js"></script>
 </body>

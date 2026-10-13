@@ -376,8 +376,8 @@ void main(){
     context.clip();
   }
   function mainClipTop() {
-    const header = document.querySelector(".detail-bar:not([hidden]),.top-bar:not([hidden])");
-    return header ? Math.max(0, Math.min(height, header.getBoundingClientRect().bottom)) : 0;
+    const main = document.getElementById("main");
+    return main ? Math.max(0, Math.min(height, main.getBoundingClientRect().top)) : 0;
   }
   function recordText(clipTop) {
     if (!textDirty || !textContext?.drawImage) return;
@@ -539,13 +539,15 @@ void main(){
   }) : null;
   initialize(); if (!available) fallback(); scan();
   resizeObserver?.observe(document.documentElement);
-  for (const id of ["app-scene", "dock-wrap", "appearance-layer", "dialog-layer", "quick-layer"]) {
-    mutationObserver?.observe(document.getElementById(id), {
+  for (const id of ["app-scene", "dock-wrap", "appearance-layer", "dialog-layer"]) {
+    const target = document.getElementById(id);
+    if (!target) continue;
+    mutationObserver?.observe(target, {
       childList: true, subtree: true, characterData: true, attributes: true,
       attributeFilter: ["hidden", "aria-pressed", "aria-checked", "data-state", "data-role", "data-color-index"],
     });
   }
-  for (const name of ["resize", "orientationchange"]) window.addEventListener(name, () => {
+  for (const name of ["resize", "orientationchange", "nova:viewport"]) window.addEventListener(name, () => {
     sourceDirty = sceneDirty = textDirty = true;
     invalidate(500);
   }, { passive: true });
