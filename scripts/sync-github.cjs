@@ -50,9 +50,8 @@ function walk(dir, base = '') {
     const rel = base ? `${base}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
       if (entry.name === '.git') continue;
-      if (['node_modules', 'target', 'target-static', 'dist', 'validation', 'ui-preview', '__pycache__', 'bin', 'build', '.gradle', '.kotlin', '.idea'].includes(entry.name)) continue;
+      if (['node_modules', 'target', 'target-static', 'dist', 'validation', 'ui-preview', '__pycache__', 'bin'].includes(entry.name) && base === '') continue;
       if (rel === 'native/target' || rel === 'native/target-static' || rel === 'module-template/bin') continue;
-      if (entry.isFile() && entry.name === 'local.properties') continue;
       out.push(...walk(path.join(dir, entry.name), rel));
     } else {
       out.push(rel);
@@ -60,19 +59,6 @@ function walk(dir, base = '') {
   }
   return out;
 }
-
-const COMMIT_MESSAGE = [
-  'Release v2.5.0 (350): rebuild the app on AndroidLiquidGlass + miuix',
-  '',
-  "Ports the bundled Compose client to the reference app's own stack:",
-  'Kyant0/AndroidLiquidGlass 2.0.1 for the liquid-glass pipeline (Backdrop +',
-  'lens + highlight), Kyant0 Shapes 1.2.1 for G2 continuous corners, miuix',
-  '0.9.4 for HyperOS switch/slider, shiguang_warehouse bundled under assets,',
-  'and a user-supplied adaptive launcher icon. Toolchain moves to AGP 9.3.2',
-  '(built-in Kotlin) + Kotlin 2.4.10 + Gradle 9.8.1 + compileSdk 37 as',
-  'required by the dependency tree. Versions track v2.5.0 - 350; config',
-  'schema unchanged (CONFIG_VERSION 320).',
-].join('\n');
 
 async function main() {
   const push = process.argv.includes('--push');
@@ -133,9 +119,17 @@ async function main() {
     method: 'POST',
     body: { base_tree: baseTreeSha, tree: entries },
   });
+  const message = [
+    'Bump version to v2.2.8 (328)',
+    '',
+    'module.prop / powercfg.json / package.json / Cargo.toml / packaging script',
+    'and the WebUI fallback strings now track v2.2.8 · 328. The changelog entry',
+    'for the SleepDown-mirrored WebUI rebuild and native fixes ships under this',
+    'version; scheduling core and config schema unchanged (CONFIG_VERSION 320).',
+  ].join('\n');
   const commit = await api('/git/commits', {
     method: 'POST',
-    body: { message: COMMIT_MESSAGE, tree: newTree.sha, parents: [baseCommitSha] },
+    body: { message, tree: newTree.sha, parents: [baseCommitSha] },
   });
   await api('/git/refs/heads/main', {
     method: 'PATCH',

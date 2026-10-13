@@ -1,13 +1,14 @@
 {
   "name": "novasched-zen-ui-validation",
   "private": true,
-  "version": "2.5.0",
+  "version": "2.6.0",
   "scripts": {
     "test:webui": "node scripts/test-glass-ui.cjs && node scripts/test-webui-dom.cjs",
-    "test:render": "node scripts/verify-ui-render.cjs"
+    "test:performance": "node scripts/test-glass-performance.cjs",
+    "test:render": "node scripts/verify-ui-render.cjs",
+    "test:shader": "python3 scripts/test-glass-shader.py"
   },
   "devDependencies": {
-    "jsdom": "^26.1.0",
     "playwright-core": "1.62.1"
   }
 }

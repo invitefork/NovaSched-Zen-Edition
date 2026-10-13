@@ -2,13 +2,12 @@
 
 模块名称：NovaSched Zen Edition。模块作者：ZenJooo。模块 ID：NovaSched_Zen_Edition。
 
-现有调度核心与 Scene 联动设计源于 LittleYouran/LittleYouran_CTS_3，上游作者 LittleYouran，基线提交 3ecd526b72a08d97429376e519869aa464d50a39。相关代码沿用 GPL-3.0-only 许可证，原文见 LICENSE。
+调度核心与 Scene 联动设计源于 LittleYouran/LittleYouran_CTS_3，上游作者 LittleYouran，基线提交 3ecd526b72a08d97429376e519869aa464d50a39。相关代码沿用 GPL-3.0-only，原文见 LICENSE。
 
-本版本重新定义配置格式与默认策略，并修改硬件识别、配置迁移和 WebUI。WebUI 的液态玻璃渲染器（assets/liquid-glass.js）移植自 LiquidGlassView，基于 QmDeve/AndroidLiquidGlassView（MIT 许可）的折射着色器；界面布局语言借鉴 xiaomanjun233/SleepDown-Schedule，未复制其代码。模块作者为 ZenJooo。
+本次 WebUI 由 ZenJooo 重写，参照用户提供的 SleepDown 课程表 1.2.7_beta5。原项目作者为 xiaomanjun233，链接为 https://github.com/xiaomanjun233/SleepDown-Schedule ，APK 构建提交为 5ed891bc4563d9a0dd56edb63902bcfaf5d88a2c。本模块并非其官方版本，不包含其课程、教务或 AI 助手业务代码。界面内的来源与许可保留原作者及原项目链接。
 
-## 第三方组件（v2.5.0 起）
+WebGL 透镜与七通道色散公式适配自 Kyant0/AndroidLiquidGlass 的 kyant/backdrop AGSL 着色器，Apache-2.0；源码位于 module-template/webroot/assets/liquid-glass.js，许可位于 webroot/licenses/kyant-backdrop-APACHE-2.0.txt。其 Android 渲染器没有作为可执行引擎装入 WebView。
 
-- NovaSched 应用（module-template/app/NovaSched.apk）的液态玻璃渲染基于 Kyant0/AndroidLiquidGlass（Apache License 2.0，https://github.com/Kyant0/AndroidLiquidGlass ），圆角形状基于同作者的 Kyant0 Shapes（Apache License 2.0）。
-- 组件层的开关与滑杆来自 miuix（Apache License 2.0，https://github.com/compose-miuix-ui/miuix ）。
-- 应用 assets 内置 shiguang_warehouse 数据仓库（随 SleepDown-Schedule 分发，源仓库 https://github.com/ShiGuangSchedule/shiguang_warehouse ），仅作为参考应用同源的数据资产保留。
-- 上述组件的许可文本见各上游仓库；本模块其余部分沿用 GPL-3.0-only。
+默认日间、夜间壁纸原样提取自所提供 APK。原项目展示壁纸标注来源为 @Rabbit_candy_i 与 @kieed，素材版权归原作者；SleepDown 的许可说明位于 webroot/licenses/SleepDown-LICENSE-1.1.txt。未使用其图标或名称作为模块身份。
+
+测试使用 LinkeDOM v0.18.12，作者 Andrea Giammarchi / WebReflection，ISC。测试源码和许可位于 scripts/test-support，测试依赖不会进入设备端 WebUI。

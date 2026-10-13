@@ -6,7 +6,7 @@ function mockHost(options){
   const f=window.fixture;
   const labels={'com.omarea.vtools':'Scene','com.example.chat':'聊天'};
   const modes=()=>`mode:${f.mode},effective:${f.external?'':f.effective},package:${f.pkg},controller:${f.external?'Scene（其它调度器）':f.linked?'Scene（NovaSched Zen Edition）':'WebUI'},sceneActive:${f.external},sceneLinked:${f.linked},phase:${f.external?'suspended':'ready'},heartbeatMs:20,port:31415,socName:Snapdragon 8 Gen 3,socId:SM8650,configProfile:SM8650.json,automaticEnabled:${f.automatic},automaticActive:${f.automatic&&!f.linked&&!f.external},appKind:daily,classificationSource:fixture,fasAvailable:true,sceneInstalled:${f.installed},scenePresence:${f.presence}`;
-  const apps=()=>JSON.stringify({type:'app-modes',rules:f.rules,defaultMode:f.mode,version:'2.3.0',classificationOverrides:{}});
+  const apps=()=>JSON.stringify({type:'app-modes',rules:f.rules,defaultMode:f.mode,version:'2.2.8',classificationOverrides:{}});
   const logs='2026-10-13 03:00:00 INFO -> Scene 回调已注册\n2026-10-13 03:00:01 WARN -> 等待节点读回\n';
   function update(message){
     f.messages.push(message);

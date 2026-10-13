@@ -12,9 +12,9 @@ const ws = read('native/src/websocket.rs');
 let count=0;
 function check(name,fn) { fn();count++;console.log('PASS:',name); }
 check('liquid glass renderer ships the refraction shader with no vendored copy',()=>{
-  for(const marker of ['sdRoundedRect','gradSdRoundedRect','circleMap','saturateColor','uDisp','backgroundEdge','uWallMeta'])
+  for(const marker of ['sdRoundedRect','gradSdRoundedRect','circleMap','refractContent','dispersionIntensity','recordScene','getTexture'])
     assert.ok(glass.includes(marker),'shader marker missing: '+marker);
-  assert.ok(glass.includes('MIT'),'upstream attribution missing');
+  assert.ok(glass.includes('Apache-2.0'),'upstream attribution missing');
   assert.ok(!fs.existsSync(path.join(root,'module-template/webroot/vendor')),'vendor directory should be gone');
 });
 check('all five pages, foreground package and Scene diagnostics present',()=>{

@@ -7,9 +7,3 @@
 /ui-preview/
 __pycache__/
 *.pyc
-# Android Compose 客户端构建产物（keystore 随源码提交以保证覆盖安装签名一致）
-/app/build/
-/app/.gradle/
-/app/local.properties/
-/app/app/build/
-/app/.kotlin/

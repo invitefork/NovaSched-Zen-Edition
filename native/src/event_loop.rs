@@ -12,9 +12,6 @@ use crate::ffi;
 
 pub const FOREGROUND_FALLBACK: Duration = Duration::from_secs(2);
 
-/// 息屏时前台应用基本不变：看门狗兜底拉长到 30 秒，等一次背光变化或文件事件即可。
-pub const IDLE_FALLBACK: Duration = Duration::from_secs(30);
-
 const WATCH_MASK: u32 = ffi::IN_MODIFY
     | ffi::IN_ATTRIB
     | ffi::IN_CLOSE_WRITE
@@ -76,16 +73,7 @@ impl EventLoop {
     }
 
     pub fn wait(&mut self, timeout: Duration) -> WakeReason {
-        self.wait_inner(timeout.min(FOREGROUND_FALLBACK))
-    }
-
-    /// 息屏专用：不按 2 秒兜底截断，让看门狗按调用方给的长周期休眠。
-    /// inotify / cgroup 事件仍会立即唤醒，配置和规则变化不受影响。
-    pub fn wait_idle(&mut self, timeout: Duration) -> WakeReason {
-        self.wait_inner(timeout)
-    }
-
-    fn wait_inner(&mut self, timeout: Duration) -> WakeReason {
+        let timeout = timeout.min(FOREGROUND_FALLBACK);
         let mut fds = Vec::with_capacity(2);
         if let Some(fd) = self.inotify_fd {
             fds.push(ffi::PollFd {
@@ -228,28 +216,6 @@ fn open_cgroup_events() -> Option<File> {
         file.read_to_string(&mut initial).ok()?;
         Some(file)
     })
-}
-
-/// 背光亮度 > 0 即认为亮屏。所有节点都不可读（个别内核没暴露背光）时
-/// 假定亮屏，保持原有的 2 秒行为，绝不因为检测不到而漏扫。
-pub fn screen_on() -> bool {
-    let mut checked = false;
-    let mut on = false;
-    let mut probe = |path: &str| {
-        if let Ok(value) = std::fs::read_to_string(path) {
-            checked = true;
-            if value.trim().parse::<u32>().map(|v| v > 0).unwrap_or(true) {
-                on = true;
-            }
-        }
-    };
-    if let Ok(entries) = std::fs::read_dir("/sys/class/backlight") {
-        for entry in entries.flatten() {
-            probe(&format!("{}/brightness", entry.path().to_string_lossy()));
-        }
-    }
-    probe("/sys/class/leds/lcd-backlight/brightness");
-    !checked || on
 }
 
 #[cfg(test)]

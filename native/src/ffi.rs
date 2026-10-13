@@ -26,19 +26,12 @@ pub const POLLPRI: i16 = 0x0002;
 pub const POLLERR: i16 = 0x0008;
 pub const POLLHUP: i16 = 0x0010;
 pub const POLLNVAL: i16 = 0x0020;
-pub const PRIO_PROCESS: c_int = 0;
-pub const SCHED_BATCH: c_int = 3;
 
 #[repr(C)]
 pub struct PollFd {
     pub fd: c_int,
     pub events: i16,
     pub revents: i16,
-}
-
-#[repr(C)]
-pub struct SchedParam {
-    pub sched_priority: c_int,
 }
 
 #[repr(C)]
@@ -84,8 +77,6 @@ extern "C" {
     pub fn poll(fds: *mut PollFd, nfds: usize, timeout: c_int) -> c_int;
     pub fn inotify_init1(flags: c_int) -> c_int;
     pub fn inotify_add_watch(fd: c_int, pathname: *const c_char, mask: c_uint) -> c_int;
-    pub fn setpriority(which: c_int, who: c_uint, prio: c_int) -> c_int;
-    pub fn sched_setscheduler(pid: c_int, policy: c_int, param: *const SchedParam) -> c_int;
 }
 
 #[cfg(target_os = "android")]

@@ -239,11 +239,6 @@ fn bind_listener() -> Result<(TcpListener, u16)> {
     bind_listener_range(PORT_START, PORT_END)
 }
 
-/// RFC 6455 Sec-WebSocket-Accept 计算（WebUI 与 JSON API 共用）。
-pub(crate) fn websocket_accept(client_key: &str) -> String {
-    base64(&sha1(format!("{client_key}{WS_GUID}").as_bytes()))
-}
-
 fn bind_listener_range(start: u16, end: u16) -> Result<(TcpListener, u16)> {
     let mut failures = Vec::new();
     for port in start..=end {
@@ -541,7 +536,7 @@ fn handle_state(
     Ok(())
 }
 
-pub(crate) fn payload(state: &WebState, app_endpoint: bool) -> String {
+fn payload(state: &WebState, app_endpoint: bool) -> String {
     let runtime = state.runtime.get();
     let default = if runtime.scene_active && !runtime.effective_mode.is_empty() {
         runtime.effective_mode.clone()
@@ -593,7 +588,7 @@ pub(crate) fn payload(state: &WebState, app_endpoint: bool) -> String {
     result.strip_suffix('}').unwrap_or(&result).to_string() + &extra
 }
 
-pub(crate) enum Frame {
+enum Frame {
     Text(String),
     Ping(Vec<u8>),
     Close,
@@ -601,7 +596,7 @@ pub(crate) enum Frame {
     Ignore,
 }
 
-pub(crate) fn read_frame(stream: &mut TcpStream) -> Result<Frame> {
+fn read_frame(stream: &mut TcpStream) -> Result<Frame> {
     let mut header = [0u8; 2];
     match stream.read_exact(&mut header[..1]) {
         Ok(()) => {}
@@ -657,11 +652,11 @@ pub(crate) fn read_frame(stream: &mut TcpStream) -> Result<Frame> {
     }
 }
 
-pub(crate) fn send_text(stream: &mut TcpStream, text: &str) -> Result<()> {
+fn send_text(stream: &mut TcpStream, text: &str) -> Result<()> {
     send_frame(stream, text.as_bytes())
 }
 
-pub(crate) fn send_frame(stream: &mut TcpStream, data: &[u8]) -> Result<()> {
+fn send_frame(stream: &mut TcpStream, data: &[u8]) -> Result<()> {
     // 服务端→客户端帧不掩码，允许 RFC 6455 的 64 位长度编码。
     // 应用规则数量没有上限，/app-modes 状态载荷不能被 16 位长度的 64 KiB 上限卡死，
     // 否则规则一旦超限所有客户端会永久握手后即断。上限对齐 read_frame 的 1 MiB。
@@ -684,7 +679,7 @@ pub(crate) fn send_frame(stream: &mut TcpStream, data: &[u8]) -> Result<()> {
         .map_err(|e| format!("发送 WebSocket 帧失败: {e}"))
 }
 
-pub(crate) fn send_control(stream: &mut TcpStream, opcode: u8, data: &[u8]) -> Result<()> {
+fn send_control(stream: &mut TcpStream, opcode: u8, data: &[u8]) -> Result<()> {
     if data.len() > 125 {
         return Err("WebSocket 控制帧过大".to_string());
     }

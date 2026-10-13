@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / 'module-template'
 DIST = ROOT / 'dist'
 DIST.mkdir(exist_ok=True)
-VERSION = '2.5.0'
-VERSION_CODE = 350
+VERSION = '2.6.0'
+VERSION_CODE = 360
 CONFIG_VERSION = 320  # config schema generation; PROFILE_VERSION in config.rs must match
 parser = argparse.ArgumentParser()
 parser.add_argument('--source-only', action='store_true', help='Package source without requiring an Android binary')
@@ -58,26 +58,34 @@ assert json.loads((MODULE/'vtools/powercfg.json').read_text())['versionCode'] ==
 assert json.loads((MODULE/'vtools/powercfg.json').read_text())['version'] == f'v{VERSION}', 'powercfg.json version string must track VERSION'
 assert f'version = "{VERSION}"' in (ROOT/'native/Cargo.toml').read_text()
 
-# v2.4.0：WebUI 已移除，控制面为内置 Compose 应用 + 守护进程 JSON API。
-assert not (MODULE/'webroot').exists(), 'webroot must be removed in v2.4.0'
-jsonapi = (ROOT/'native/src/jsonapi.rs').read_text()
-assert '127.0.0.1' in jsonapi and 'json_escape' in jsonapi
+ui = (MODULE/'webroot/assets/app.js').read_text()
+html = (MODULE/'webroot/index.html').read_text()
+css = (MODULE/'webroot/assets/app.css').read_text()
 ws = (ROOT/'native/src/websocket.rs').read_text()
+key = re.search(r'const KEY = "([^"]+)"', ui).group(1)
+assert f'"{key}"' in ws, 'UI and Rust WebSocket keys do not match'
+auth = (ROOT/'native/src/web_auth.rs').read_text()
+prefix = re.search(r'const AUTH_PREFIX = "([^"]+)"', ui).group(1)
+assert f'"{prefix}"' in auth, 'UI and Rust authentication prefixes do not match'
+assert '[KEY, AUTH_PREFIX + sessionToken]' in ui, 'Authenticated WebSocket setup missing'
+assert 'moduleCommand("webui-session"' in ui, 'Root credential getter missing'
 assert 'session.accepts(item)' in ws, 'Server token verification missing'
-apk_module = MODULE/'app/NovaSched.apk'
-assert apk_module.exists(), 'bundled NovaSched.apk missing'
-assert apk_module.read_bytes()[:2] == b'PK', 'bundled APK is not a zip'
-manifest = (ROOT/'app/app/src/main/AndroidManifest.xml').read_text()
-assert 'android.permission.INTERNET' in manifest and '31416' in (ROOT/'app/app/src/main/java/com/zenjooo/novasched/core/NovaSocket.kt').read_text(), 'APK must target the loopback JSON API'
-service_sh = (MODULE/'service.sh').read_text()
-assert 'pm install -r "$NOVA_APK"' in service_sh, 'boot-time forced APK install missing'
-customize_sh = (MODULE/'customize.sh').read_text()
-assert 'pm install -r "$NOVA_APK"' in customize_sh, 'flash-time APK install attempt missing'
+assert 'web_auth::origin_is_allowed' in ws and 'origin_allowed(value)' in ws, 'Exact dynamic Origin validation missing'
+assert 'register_origin(Path::new(STATE_DIR), origin)' in auth, 'Root Origin registration missing'
+assert '--origin ${shellQuote(origin)}' in ui, 'Origin-bound root credential request missing'
+# The liquid glass renderer is the only glass engine; no vendored third-party
+# distribution ships in the module.
+assert not (MODULE/'webroot/vendor').exists(), 'vendored glass library should be removed'
+assert 'assets/liquid-glass.js' in html
+assert 'assets/glass.js' not in html and 'stat-pkg-raw' in html
+for page in ['overview', 'modes', 'rules', 'logs', 'about']:
+    assert f'id="page-{page}"' in html
+assert 'scenePresence' in ui
 
 # Explicit source roots work both in a checkout and an extracted source archive.
 # Build output, dependencies and runtime state are never part of the source ZIP.
 source_paths = set()
-for directory in ['native/src', 'native/tests', 'module-template', 'scripts', 'docs', '.github', 'app']:
+for directory in ['native/src', 'native/tests', 'module-template', 'scripts', 'docs', '.github']:
     base = ROOT / directory
     if base.exists():
         source_paths.update(path for path in base.rglob('*') if path.is_file())
@@ -89,10 +97,7 @@ for name in ['.gitignore', 'README.md', 'CHANGELOG.md', 'LICENSE', 'NOTICE',
 source_entries = []
 for path in sorted(source_paths):
     name = path.relative_to(ROOT).as_posix()
-    parts_lower = [part.lower() for part in path.parts]
     if (name.startswith('module-template/bin/') or '__pycache__' in path.parts
-            or 'build' in parts_lower or '.gradle' in parts_lower or '.kotlin' in parts_lower
-            or '.idea' in parts_lower or path.name == 'local.properties'
             or path.suffix == '.pyc' or name.endswith('.log') or name.endswith('webui.session')):
         continue
     source_entries.append((path, f'NovaSched-Zen-Edition/{name}', path.suffix == '.sh' or path.name == 'update-binary'))
@@ -103,7 +108,6 @@ with zipfile.ZipFile(source_zip) as z:
     assert not any('/target/' in name or '/node_modules/' in name or name.endswith('/bin/novasched') for name in z.namelist())
     for soc in SUPPORTED:
         assert f'NovaSched-Zen-Edition/module-template/config/{soc}.json' in z.namelist()
-    assert 'NovaSched-Zen-Edition/app/keystore/novasched-release.keystore' in z.namelist(), 'release keystore must ship with source for update signing'
 if args.source_only:
     (DIST/f'NovaSched-v{VERSION}-SHA256SUMS.txt').write_text(digest(source_zip)+'  '+source_zip.name+'\n')
     raise SystemExit(0)
