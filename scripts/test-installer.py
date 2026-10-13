@@ -10,6 +10,9 @@ with tempfile.TemporaryDirectory(prefix='nova-installer-', dir=os.environ.get('T
     root = Path(folder)
     module = root / 'module'
     (module / 'bin').mkdir(parents=True)
+    props = (project/'module-template/module.prop').read_text()
+    version = dict(line.split('=', 1) for line in props.splitlines() if '=' in line)['version']
+    (module / 'module.prop').write_text(props)
     state = root / 'state'
     script = root / 'customize.sh'
     script.write_text((project/'module-template/customize.sh').read_text().replace(
@@ -51,8 +54,24 @@ getprop() { echo 'Fixture phone'; }
         run=install(**flags)
         assert run.returncode==0,(name,run.stdout,run.stderr)
         assert (module/'calls').read_text().splitlines()==['self-test','probe','prepare-config','prepare-auto','scene-status']
+        assert f'NovaSched Zen Edition {version}' in run.stdout
+        assert f'NovaSched {version} · ZenJooo' in run.stdout
+        assert 'v2.6.1' not in run.stdout
         assert '已确认安装 Scene' in run.stdout
         print('PASS:',name)
+    next_version = 'v9.8.7'
+    (module/'module.prop').write_text(props.replace(f'version={version}', f'version={next_version}'))
+    run=install()
+    assert run.returncode==0
+    assert f'NovaSched Zen Edition {next_version}' in run.stdout
+    assert f'NovaSched {next_version} · ZenJooo' in run.stdout
+    print('PASS: both installation banners follow module.prop')
+    (module/'module.prop').unlink()
+    run=install()
+    assert run.returncode==70 and '无法读取模块版本' in run.stdout
+    assert not (module/'calls').exists()
+    print('PASS: missing module version stops before core execution')
+    (module/'module.prop').write_text(props)
     for phase in ['self-test','probe','prepare-config','prepare-auto']:
         run=install(NOVA_FAIL=phase)
         assert run.returncode==70,(phase,run.stdout)

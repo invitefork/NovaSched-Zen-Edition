@@ -15,7 +15,7 @@
     if (match) { MODULE = match[1]; MODULE_CANDIDATES.unshift(MODULE); }
   } catch (_) {}
   const STORAGE = "novasched.zen.ui.v2";
-  const UI_VERSION = window.NovaRelease?.version || "2.6.1";
+  const UI_VERSION = window.NovaRelease?.version || "2.7.1";
 
   const MODES = {
     powersave:   { name: "省电", copy: "极限控功耗，适合信息流和日用，输入保持跟手。" },
@@ -695,7 +695,7 @@
     } else {
       engineTitle = ENGINE_TITLES.off;
       engineSource = "未启用";
-      engineDesc = "当前配置未启用 NovaFAS；安装完整 v2.7.0 并重启后生效。";
+      engineDesc = "当前配置未启用 NovaFAS；安装完整模块并重启后生效。";
     }
     present("#fas-engine-title", engineTitle);
     present("#fas-engine-source", engineSource);
@@ -711,7 +711,7 @@
     if (legacy) {
       const showLegacy = s.online && !s.fasEngineState;
       legacy.hidden = !showLegacy;
-      if (showLegacy) legacy.textContent = `fas-rs 接口：${{ ready: "已检测到", running: "进程运行中", absent: "未检测到", unreadable: "不可读", invalid: "待就绪" }[s.fasState] || "待确认"}${s.fasSync === "synced" ? " · 档位已同步" : ""}。这是旧版服务；完整安装 v2.7.0 后由 NovaFAS 引擎接管。`;
+      if (showLegacy) legacy.textContent = `fas-rs 接口：${{ ready: "已检测到", running: "进程运行中", absent: "未检测到", unreadable: "不可读", invalid: "待就绪" }[s.fasState] || "待确认"}${s.fasSync === "synced" ? " · 档位已同步" : ""}。这是旧版服务；完整更新模块后由 NovaFAS 引擎接管。`;
     }
 
     /* 前台应用分区 */

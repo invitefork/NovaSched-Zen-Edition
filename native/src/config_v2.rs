@@ -7,7 +7,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const SCHEMA: &str = "novasched/2";
 
 fn string(node: &Value, key: &str) -> Result<String> {
-    Ok(node.get(key)?.as_str()?.to_owned())
+    node.get(key)?
+        .as_str()
+        .map(str::to_owned)
+        .map_err(|error| format!("{key}: {error}"))
 }
 fn flag(node: &Value, key: &str) -> Result<bool> {
     node.get(key)?.as_bool()
@@ -25,10 +28,14 @@ fn array(node: &Value, len: usize) -> Result<&[Value]> {
     }
 }
 fn number(node: &Value, key: &str) -> Result<String> {
-    let value = string(node, key)?;
+    let value = match node.get(key)? {
+        Value::String(value) => value.clone(),
+        Value::Number(value) if *value >= 0 => value.to_string(),
+        _ => return Err(format!("{key} 必须为非负整数或整数字符串")),
+    };
     value
         .parse::<u64>()
-        .map_err(|_| format!("{key} 必须为非负整数字符串"))?;
+        .map_err(|_| format!("{key} 必须为非负整数或整数字符串"))?;
     Ok(value)
 }
 fn clamp(node: &Value, key: &str) -> Result<String> {
@@ -333,13 +340,17 @@ pub fn parse(root: &Value) -> Result<Config> {
                 .map(|value| value.as_bool())
                 .transpose()?
                 .unwrap_or(true);
-            let step_ms = number(block, "step_ms")?.parse::<u64>().map_err(|e| e.to_string())?;
-            let sample_ms = number(block, "sample_ms")?.parse::<u64>().map_err(|e| e.to_string())?;
+            let step_ms = number(block, "step_ms")
+                .map_err(|error| format!("features.fas.{error}"))?
+                .parse::<u64>().map_err(|e| e.to_string())?;
+            let sample_ms = number(block, "sample_ms")
+                .map_err(|error| format!("features.fas.{error}"))?
+                .parse::<u64>().map_err(|e| e.to_string())?;
             if !(100..=2000).contains(&step_ms) {
-                return Err("fas.step_ms 必须在 100..2000 ms".into());
+                return Err("features.fas.step_ms 必须在 100..2000 ms".into());
             }
             if !(250..=10000).contains(&sample_ms) {
-                return Err("fas.sample_ms 必须在 250..10000 ms".into());
+                return Err("features.fas.sample_ms 必须在 250..10000 ms".into());
             }
             let mut modes = BTreeMap::new();
             if let Some(Value::Object(entries)) = field(block, "modes") {
@@ -347,8 +358,10 @@ pub fn parse(root: &Value) -> Result<Config> {
                     if !crate::config::MODES.contains(&mode.as_str()) {
                         return Err(format!("fas.modes 含未知档位: {mode}"));
                     }
-                    let ceiling = percent_number(value, "ceiling")?;
-                    let freq_scale = percent_number(value, "freq_scale")?;
+                    let ceiling = percent_number(value, "ceiling")
+                        .map_err(|error| format!("features.fas.modes.{mode}.{error}"))?;
+                    let freq_scale = percent_number(value, "freq_scale")
+                        .map_err(|error| format!("features.fas.modes.{mode}.{error}"))?;
                     modes.insert(
                         mode.clone(),
                         FasMode { ceiling, freq_scale },
@@ -544,8 +557,8 @@ pub fn encode(config: &Config, soc: Soc) -> Value {
                 (
                     mode.clone(),
                     object([
-                        ("ceiling", Value::Number(value.ceiling as i64)),
-                        ("freq_scale", Value::Number(value.freq_scale as i64)),
+                        ("ceiling", text(&value.ceiling.to_string())),
+                        ("freq_scale", text(&value.freq_scale.to_string())),
                     ]),
                 )
             })
@@ -554,8 +567,8 @@ pub fn encode(config: &Config, soc: Soc) -> Value {
     let fas_out = object([
         ("enabled", Value::Bool(f.fas.enabled)),
         ("override_scene", Value::Bool(f.fas.override_scene)),
-        ("step_ms", Value::Number(f.fas.step_ms as i64)),
-        ("sample_ms", Value::Number(f.fas.sample_ms as i64)),
+        ("step_ms", text(&f.fas.step_ms.to_string())),
+        ("sample_ms", text(&f.fas.sample_ms.to_string())),
         ("modes", fas_modes),
     ]);
     let features = object([
@@ -929,6 +942,88 @@ pub fn legacy_fixture(soc: Soc) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn at_mut<'a>(root: &'a mut Value, keys: &[&str]) -> &'a mut Value {
+        let mut value = root;
+        for key in keys {
+            let Value::Object(fields) = value else {
+                panic!("test fixture is not an object at {key}");
+            };
+            value = fields.get_mut(*key).unwrap();
+        }
+        value
+    }
+
+    #[test]
+    fn fas_encoding_matches_shipped_templates() {
+        for soc in crate::soc::SUPPORTED {
+            let config = crate::profiles::test_config(soc);
+            let encoded = encode(&config, soc);
+            let fas = encoded.get("features").unwrap().get("fas").unwrap();
+            assert_eq!(fas.get("step_ms").unwrap().as_str().unwrap(), "200");
+            assert_eq!(fas.get("sample_ms").unwrap().as_str().unwrap(), "1000");
+            for mode in MODES {
+                let values = fas.get("modes").unwrap().get(mode).unwrap();
+                assert!(values.get("ceiling").unwrap().as_str().is_ok());
+                assert!(values.get("freq_scale").unwrap().as_str().is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn fas_accepts_integers_written_by_the_previous_encoder() {
+        for soc in crate::soc::SUPPORTED {
+            let config = crate::profiles::test_config(soc);
+            let mut root = encode(&config, soc);
+            for key in ["step_ms", "sample_ms"] {
+                let value = at_mut(&mut root, &["features", "fas", key]);
+                *value = Value::Number(value.as_str().unwrap().parse().unwrap());
+            }
+            for mode in MODES {
+                for key in ["ceiling", "freq_scale"] {
+                    let value = at_mut(&mut root, &["features", "fas", "modes", mode, key]);
+                    *value = Value::Number(value.as_str().unwrap().parse().unwrap());
+                }
+            }
+            let saved = crate::json::stringify(&root).unwrap();
+            assert_eq!(Config::from_text(&saved).unwrap().functions.fas, config.functions.fas);
+        }
+    }
+
+    #[test]
+    fn fas_numeric_compatibility_keeps_type_and_range_checks() {
+        let config = crate::profiles::test_config(Soc::Elite);
+        let original = encode(&config, Soc::Elite);
+        let invalid = [
+            Value::Number(-1), Value::Bool(true), Value::Null,
+            Value::String("".into()), Value::String("1.5".into()),
+            Value::String("200ms".into()), Value::Array(vec![]), object([]),
+        ];
+        for (key, below, above) in [("step_ms", 99, 2001), ("sample_ms", 249, 10001)] {
+            for bad in invalid.iter().cloned().chain([Value::Number(below), Value::Number(above)]) {
+                let mut root = original.clone();
+                *at_mut(&mut root, &["features", "fas", key]) = bad;
+                let error = parse(&root).unwrap_err();
+                assert!(error.contains(&format!("features.fas.{key}")), "{error}");
+            }
+        }
+        for mode in MODES {
+            for key in ["ceiling", "freq_scale"] {
+                for bad in invalid.iter().cloned().chain([Value::Number(101)]) {
+                    let mut root = original.clone();
+                    *at_mut(&mut root, &["features", "fas", "modes", mode, key]) = bad;
+                    let error = parse(&root).unwrap_err();
+                    assert!(error.contains(&format!("features.fas.modes.{mode}.{key}")), "{error}");
+                }
+                for allowed in [0, 100] {
+                    let mut root = original.clone();
+                    *at_mut(&mut root, &["features", "fas", "modes", mode, key]) = Value::Number(allowed);
+                    assert!(parse(&root).is_ok());
+                }
+            }
+        }
+    }
+
     #[test]
     fn migration_keeps_user_extensions_that_collide_with_new_field_names() {
         let text = legacy_fixture(Soc::Gen3);

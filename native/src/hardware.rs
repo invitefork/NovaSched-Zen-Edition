@@ -801,9 +801,9 @@ mod tests {
             assert_eq!(
                 config.profile("powersave").unwrap().clusters[0].max_freq,
                 match soc {
-                    Soc::Gen1 | Soc::Dimensity8350 => "1860000",
-                    Soc::Gen1Plus | Soc::Gen2 | Soc::XringO3 => "1800000",
-                    Soc::Gen3 | Soc::Elite | Soc::Elite5 | Soc::Dimensity9400Plus => "1740000",
+                    Soc::Gen1 | Soc::Gen1Plus | Soc::Gen2 | Soc::XringO3 => "1620000",
+                    Soc::Dimensity8350 => "1680000",
+                    Soc::Gen3 | Soc::Elite | Soc::Elite5 | Soc::Dimensity9400Plus => "1560000",
                 }
             );
         }
@@ -814,7 +814,7 @@ mod tests {
         config.modes.get_mut("fast").unwrap().clusters[1].min_freq = "25%".into();
         let mut original = config.profile("fast").unwrap().clusters[1].clone();
         original.min_freq = "750000".into();
-        original.max_freq = "3000000".into();
+        original.max_freq = "2940000".into();
         original.governor = "schedutil".into();
         let hw = Hardware {
             soc: Soc::Gen2,
@@ -989,7 +989,7 @@ mod tests {
         assert_ne!(before, format!("{config:?}"));
         assert_eq!(
             config.profile("powersave").unwrap().clusters[0].max_freq,
-            "1740000"
+            "1560000"
         );
     }
     #[test]
@@ -1008,7 +1008,7 @@ mod tests {
             .all(|p| p.clusters[1].governor == "schedutil"));
         assert_eq!(
             config.profile("powersave").expect("mode").clusters[1].max_freq,
-            "1440000"
+            "1320000"
         );
     }
     #[test]

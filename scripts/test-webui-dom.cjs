@@ -148,7 +148,7 @@ for(const bridgeStyle of ['native0','callback2','promise1','sync1']) {
   const {w,d,cleanup}=fixture({version:'2.2.8',legacy:true,legacyMode:'balance'});
   try {
     await until(()=>d.querySelector('#about-engine-version').textContent==='v2.2.8');
-    assert.equal(d.querySelector('#about-version').textContent,'v2.7.0');
+    assert.equal(d.querySelector('#about-version').textContent,'v2.7.1');
     assert.equal(d.querySelector('#version-note').hidden,false);
     await until(()=>d.querySelector('#fas-legacy-desc').textContent.includes('旧版服务'));
     assert(d.querySelector('#fas-legacy-desc').textContent.includes('fas-rs'));

@@ -75,7 +75,7 @@ function archive(target, entries) {
     chunks.push(local, nameBytes, deflated);
     const dir = Buffer.alloc(46);
     dir.writeUInt32LE(0x02014b50, 0);
-    dir.writeUInt16LE(20, 4);
+    dir.writeUInt16LE((3 << 8) | 20, 4); /* Unix creator: retain executable modes */
     dir.writeUInt16LE(20, 6);
     dir.writeUInt16LE(0, 8);
     dir.writeUInt16LE(8, 10);
@@ -127,10 +127,15 @@ assert(JSON.parse(fs.readFileSync(path.join(ROOT, "package-lock.json"), "utf8"))
 const releaseUi = fs.readFileSync(path.join(MODULE, "webroot/assets/version.js"), "utf8");
 assert(releaseUi.includes(`version: "${VERSION}"`) && releaseUi.includes(`versionCode: ${VERSION_CODE}`), "version.js identity");
 assert(props.author === "ZenJooo", "author");
+const installer = fs.readFileSync(path.join(MODULE, "customize.sh"), "utf8");
+assert(installer.includes('"$MODPATH/module.prop"'), "Installer must read release metadata");
+assert(installer.includes("NovaSched Zen Edition $NOVA_VERSION") && installer.includes("NovaSched $NOVA_VERSION · ZenJooo"), "Installer banners must follow metadata");
+assert(!/NovaSched[^\n]*v\d+\.\d+\.\d+/.test(installer), "Hardcoded installer version");
 
 const ui = fs.readFileSync(path.join(MODULE, "webroot/assets/app.js"), "utf8");
 const html = fs.readFileSync(path.join(MODULE, "webroot/index.html"), "utf8");
 const css = fs.readFileSync(path.join(MODULE, "webroot/assets/app.css"), "utf8");
+assert(ui.includes(`const UI_VERSION = window.NovaRelease?.version || "${VERSION}";`), "Stale UI version fallback");
 const ws = fs.readFileSync(path.join(ROOT, "native/src/websocket.rs"), "utf8");
 const key = ui.match(/const KEY = "([^"]+)"/)[1];
 assert(ws.includes(`"${key}"`), "UI and Rust WebSocket keys do not match");
@@ -186,7 +191,7 @@ archive(sourceZip, sourceEntries);
 /* ---- WebUI 更新包 ---- */
 const webuiSources = [...sourcePaths]
   .filter((file) => path.relative(ROOT, file).split(path.sep).join("/").startsWith("module-template/webroot/"))
-  .concat([path.join(ROOT, "scripts/install-webui.sh"), path.join(ROOT, "docs/fix-v2.7.0.md")]);
+  .concat([path.join(ROOT, "scripts/install-webui.sh"), path.join(ROOT, `docs/fix-v${VERSION}.md`)]);
 const webuiZip = path.join(DIST, `NovaSched-v${VERSION}-webui-update.zip`);
 archive(webuiZip, webuiSources.sort().map((file) => [file, path.relative(ROOT, file).split(path.sep).join("/"), file.endsWith(".sh")]));
 
@@ -209,13 +214,32 @@ assert(built, "Android ELF not found; build it first");
 assert(Buffer.compare(fs.readFileSync(binary), fs.readFileSync(built)) === 0, "Module ELF differs from build output");
 const elf = fs.readFileSync(binary);
 assert(elf.subarray(0, 4).toString("binary") === "\x7fELF", "not an ELF");
+assert(elf.length >= 64 && elf[4] === 2 && elf[5] === 1, "ELF must be 64-bit little-endian");
+assert(elf.readUInt16LE(16) === 2 && elf.readUInt16LE(18) === 183, "ELF must be an AArch64 executable");
+const programOffset = Number(elf.readBigUInt64LE(32));
+const programSize = elf.readUInt16LE(54), programCount = elf.readUInt16LE(56);
+assert(Number.isSafeInteger(programOffset) && programOffset >= 64 && programSize === 56 && programCount > 0
+  && programOffset + programSize * programCount <= elf.length, "Invalid ELF program header table");
+let loadCount = 0;
+for (let index = 0; index < programCount; index++) {
+  const offset = programOffset + index * programSize;
+  const type = elf.readUInt32LE(offset);
+  assert(type !== 2 && type !== 3, "ELF must have no dynamic section or interpreter");
+  if (type === 1) {
+    loadCount++;
+    assert(elf.readBigUInt64LE(offset + 48) === 0x4000n, "ELF LOAD alignment is not 16KB");
+  }
+}
+assert(loadCount > 0, "ELF has no LOAD program headers");
 const readelf = process.env.NOVA_READELF;
 if (readelf) {
   const run = (flags) => spawnSync(readelf, [...flags, built], {encoding: "utf8"}).stdout;
   const header = run(["-h"]), programs = run(["-l"]), dynamic = run(["-d"]);
   assert(header.includes("AArch64") && header.includes("EXEC (Executable file)"), "ELF class/machine");
   assert(!programs.includes("INTERP") && !dynamic.includes("NEEDED"), "ELF must be fully static");
-  const loadRecords = programs.split("\n").filter((line) => line.trim().startsWith("LOAD"));
+  const programLines = programs.split("\n");
+  const loadRecords = programLines.flatMap((line, index) => line.trim().startsWith("LOAD")
+    ? [line.trim().split(/\s+/).length === 4 ? line + " " + programLines[index + 1] : line] : []);
   assert(loadRecords.length > 0, "ELF has no readable LOAD program headers");
   for (const record of loadRecords) assert(record.trim().split(/\s+/).at(-1) === "0x4000", "ELF LOAD alignment is not 16KB");
   fs.mkdirSync(path.join(ROOT, "native/target-static"), {recursive: true});

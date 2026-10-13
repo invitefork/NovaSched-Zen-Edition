@@ -43,7 +43,7 @@ function serialize(value, depth = 0) {
 function fingerprint(root) {
   const copy = JSON.parse(JSON.stringify(root));
   for (const key of OWNED_META) delete copy.meta[key];
-  return fnv1a64(Buffer.from(serialize(copy), "utf8"));
+  return fnv1a64(Buffer.from(serialize(copy) + "\n", "utf8"));
 }
 
 const out = {};

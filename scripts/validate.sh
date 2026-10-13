@@ -8,10 +8,16 @@ node scripts/test-webui-dom.cjs
 node scripts/test-glass-performance.cjs
 python3 scripts/generate-profiles.py --check
 node scripts/check-profiles.cjs
+python3 scripts/test-profiles.py
 python3 scripts/test-installer.py
 python3 scripts/test-webui-updater.py
 if command -v cargo >/dev/null 2>&1; then
-  cargo test --manifest-path native/Cargo.toml --locked --offline
+  TEST_ARGS=()
+  if [ ! -r /proc/self/stat ]; then
+    echo "NOT RUN: live-process identity test (build host has no /proc)." >&2
+    TEST_ARGS=(-- --skip process_identity::regression_tests::live_unrelated_process_is_not_accepted_as_daemon)
+  fi
+  cargo test --manifest-path native/Cargo.toml --locked --offline "${TEST_ARGS[@]}"
 else
   echo "NOT RUN: Rust tests (cargo is missing). Android build requires Rust and NDK." >&2
 fi

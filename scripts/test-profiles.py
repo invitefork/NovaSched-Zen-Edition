@@ -4,14 +4,16 @@ This validates configuration, not phone power consumption or frame pacing.
 """
 from pathlib import Path
 import json
+import re
 
 root = Path(__file__).resolve().parents[1]
 modes = ("powersave", "balance", "performance", "fast")
+generation = int(re.search(r'PROFILE_VERSION: i64 = (\d+)', (root/'native/src/config.rs').read_text()).group(1))
 count = 0
 for path in sorted((root / "module-template/config").glob("*.json")):
     config = json.loads(path.read_text())
     assert config["meta"]["author"] == "ZenJooo"
-    assert config["meta"]["version"] == 361
+    assert config["meta"]["version"] == generation
     assert set(config["modes"]) == set(modes)
     for slot, policy in enumerate(config["policies"]):
         limits = []
@@ -33,7 +35,8 @@ for path in sorted((root / "module-template/config").glob("*.json")):
             assert profile["governors"][slot] == "auto"
         if policy >= 0:
             assert all(a < b for a, b in zip(limits, limits[1:])), limits
-            assert limits[-1] == 100
+            assert 90 <= limits[-1] <= 100
+    assert max(int(value[:-1]) for value, policy in zip(config["modes"]["fast"]["max"], config["policies"]) if policy >= 0) == 100
     features = config["features"]
     assert not features["disable_gpu_boost"]
     assert not features["perf_lock"]["enabled"] and not features["perf_lock"]["services"]

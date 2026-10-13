@@ -46,15 +46,15 @@ const STOCK_FINGERPRINTS: &[u64] = &[
     0x7281d3cce7742fba,
     0x8ef9f2339863c33f,
     // v2.7.0 / 370 出厂默认（四档重调 + NovaFAS）
-    0x92e9a41722e2ee60,
-    0x872b816b5dba7962,
-    0xa9b3361360220f3e,
-    0x0e53fc1001e5605d,
-    0x7fa9a11fb8d804ce,
-    0xb7c6585c29ae61c7,
-    0xff3861fff889e34b,
-    0xaa5c443f5dd402a4,
-    0x1cf376805d3c56a1,
+    0x85f03d50479b1e1e,
+    0x6966517043dc4bb8,
+    0x7d9416ec59dfd55c,
+    0x3e15a63338c2b3d5,
+    0xc5418ce71710190c,
+    0xf469f19ad3502f57,
+    0x36b1c6f3524d2773,
+    0x4ecaa5ac6f408daa,
+    0x6e09071e6d874491,
 ];
 const OWNED_META: &[&str] = &[
     "name",
@@ -327,7 +327,7 @@ mod tests {
             let default = json::stringify(&old).unwrap();
             fs::write(state.join("config.default.json"), &default).unwrap();
             let text = if custom {
-                default.replace("58%", "57%").replace("50%", "49%")
+                default.replace("52%", "51%")
             } else {
                 default
             };
@@ -338,7 +338,7 @@ mod tests {
             assert_eq!(parsed.meta.version, crate::config::PROFILE_VERSION);
             assert_eq!(
                 parsed.profile("powersave").unwrap().clusters[0].max_freq,
-                if custom { "57%" } else { "58%" }
+                if custom { "51%" } else { "52%" }
             );
             let root = json::parse(&saved).unwrap();
             assert!(root.get("features").unwrap().get("extreme").is_err());
@@ -354,6 +354,79 @@ mod tests {
             fs::remove_dir_all(state).unwrap();
         }
     }
+
+    #[test]
+    fn upgrade_handles_missing_and_numeric_fas_without_losing_custom_config() {
+        for soc in SUPPORTED {
+            for numeric_fas in [false, true] {
+                let state = state();
+                util::create_dir(&state).unwrap();
+                let mut root = json::parse(&fs::read_to_string(module().join("config").join(soc.file())).unwrap()).unwrap();
+                let Value::Object(fields) = &mut root else { unreachable!() };
+                fields.insert("custom_note".into(), Value::String("保留我的配置".into()));
+                let Some(Value::Object(meta)) = fields.get_mut("meta") else { unreachable!() };
+                meta.insert("version".into(), Value::Number(361));
+                meta.insert("loglevel".into(), Value::String("DEBUG".into()));
+                let Some(Value::Object(features)) = fields.get_mut("features") else { unreachable!() };
+                if numeric_fas {
+                    let Some(Value::Object(fas)) = features.get_mut("fas") else { unreachable!() };
+                    fas.insert("step_ms".into(), Value::Number(200));
+                    fas.insert("sample_ms".into(), Value::Number(1000));
+                    let Some(Value::Object(modes)) = fas.get_mut("modes") else { unreachable!() };
+                    for values in modes.values_mut() {
+                        let Value::Object(values) = values else { unreachable!() };
+                        for key in ["ceiling", "freq_scale"] {
+                            let number = values.get(key).unwrap().as_str().unwrap().parse().unwrap();
+                            values.insert(key.into(), Value::Number(number));
+                        }
+                    }
+                } else {
+                    features.remove("fas");
+                }
+                let Some(Value::Object(modes)) = fields.get_mut("modes") else { unreachable!() };
+                let Some(Value::Object(powersave)) = modes.get_mut("powersave") else { unreachable!() };
+                let Some(Value::Array(max)) = powersave.get_mut("max") else { unreachable!() };
+                max[0] = Value::String("43%".into());
+                let text = json::stringify(&root).unwrap();
+                let before = Config::from_text(&text).unwrap();
+                fs::write(state.join("config.json"), &text).unwrap();
+                fs::write(state.join("mode.txt"), "balance\n").unwrap();
+                fs::write(state.join("options.txt"), "extreme_powersave=1\n").unwrap();
+                let report = initialize(&module(), &test_hardware(soc), &state).unwrap();
+                assert!(report.contains("config=upgraded_preserved"), "{report}");
+                let saved = fs::read_to_string(state.join("config.json")).unwrap();
+                let after = Config::from_text(&saved).unwrap();
+                assert_eq!(after.meta.version, crate::config::PROFILE_VERSION);
+                assert_eq!(after.meta.loglevel, "DEBUG");
+                assert_eq!(after.functions.fas, before.functions.fas);
+                assert_eq!(after.profile("powersave").unwrap().clusters[0].max_freq, "43%");
+                assert_eq!(json::parse(&saved).unwrap().get("custom_note").unwrap().as_str().unwrap(), "保留我的配置");
+                let backup = report.lines().find_map(|line| line.strip_prefix("backup=")).unwrap();
+                assert_eq!(fs::read_to_string(backup).unwrap(), text);
+                assert_eq!(fs::read_to_string(state.join("mode.txt")).unwrap(), "balance\n");
+                assert_eq!(fs::read_to_string(state.join("options.txt")).unwrap(), "extreme_powersave=1\n");
+                assert!(initialize(&module(), &test_hardware(soc), &state).unwrap().contains("config=preserved"));
+                assert_eq!(fs::read_to_string(state.join("config.json")).unwrap(), saved);
+                fs::remove_dir_all(state).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_fas_config_reports_its_file_and_leaves_it_untouched() {
+        let state = state();
+        util::create_dir(&state).unwrap();
+        let text = fs::read_to_string(module().join("config/SM8750.json")).unwrap()
+            .replace("\"step_ms\": \"200\"", "\"step_ms\": true");
+        fs::write(state.join("config.json"), &text).unwrap();
+        let error = initialize(&module(), &test_hardware(Soc::Elite), &state).unwrap_err();
+        assert!(error.contains(&state.join("config.json").display().to_string()), "{error}");
+        assert!(error.contains("features.fas.step_ms"), "{error}");
+        assert_eq!(fs::read_to_string(state.join("config.json")).unwrap(), text);
+        assert!(!state.join("config.profile").exists());
+        assert!(!state.join("config.default.json").exists());
+        fs::remove_dir_all(state).unwrap();
+    }
 }
 fn restore(path: &Path, previous: &Option<String>) -> Result<()> {
     match previous {
@@ -364,7 +437,8 @@ fn restore(path: &Path, previous: &Option<String>) -> Result<()> {
 pub fn initialize(module: &Path, hardware: &Hardware, state: &Path) -> Result<String> {
     let source = module.join("config").join(hardware.soc.file());
     let template = util::read_text(&source)?;
-    let mut candidate = Config::from_text(&template)?;
+    let mut candidate = Config::from_text(&template)
+        .map_err(|error| format!("模板 {} 校验失败: {error}", source.display()))?;
     if candidate.meta.profile_soc != Some(hardware.soc) {
         return Err(format!(
             "模板 {} 缺少或使用错误的 NovaSched 处理器身份",
@@ -385,7 +459,13 @@ pub fn initialize(module: &Path, hardware: &Hardware, state: &Path) -> Result<St
                 .ok_or_else(|| format!("config.profile 处理器标识无效: {}", id.trim()))
         })
         .transpose()?;
-    let parsed = current.as_deref().map(Config::from_text).transpose()?;
+    let parsed = current
+        .as_deref()
+        .map(|text| {
+            Config::from_text(text)
+                .map_err(|error| format!("已有配置 {} 校验失败: {error}；原文件已保留", path.display()))
+        })
+        .transpose()?;
     let current_root = current.as_deref().map(json::parse).transpose()?;
     if installed.is_some()
         && parsed
@@ -436,7 +516,8 @@ pub fn initialize(module: &Path, hardware: &Hardware, state: &Path) -> Result<St
         let merged =
             crate::config_v2::migrate(old, parsed.as_ref().ok_or("配置不存在")?, hardware.soc)?;
         let rendered = json::stringify(&merged)?;
-        let mut retained = Config::from_text(&rendered)?;
+        let mut retained = Config::from_text(&rendered)
+            .map_err(|error| format!("迁移后的配置校验失败: {error}；原文件已保留"))?;
         hardware.adapt_config(&mut retained)?;
         if &merged != old {
             next = Some(rendered);

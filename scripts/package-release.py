@@ -65,6 +65,10 @@ assert json.loads((ROOT/'package-lock.json').read_text())['version'] == VERSION
 release_ui = (MODULE/'webroot/assets/version.js').read_text()
 assert f'version: "{VERSION}"' in release_ui and f'versionCode: {VERSION_CODE}' in release_ui
 assert props['author'] == 'ZenJooo'
+installer = (MODULE/'customize.sh').read_text()
+assert '"$MODPATH/module.prop"' in installer, 'Installer must read release metadata'
+assert 'NovaSched Zen Edition $NOVA_VERSION' in installer and 'NovaSched $NOVA_VERSION · ZenJooo' in installer
+assert not re.search(r'NovaSched[^\n]*v\d+\.\d+\.\d+', installer), 'Hardcoded installer version'
 
 ui = (MODULE/'webroot/assets/app.js').read_text()
 html = (MODULE/'webroot/index.html').read_text()
@@ -89,9 +93,12 @@ assert 'assets/host.js' in html and 'assets/version.js' in html
 assert f'v{VERSION}' in html
 assert not re.search(r'v2\.(?!'+re.escape(VERSION[2:])+r')\d+\.\d+', html)
 assert 'assets/glass.js' not in html and 'stat-pkg-raw' in html
-for page in ['overview', 'modes', 'rules', 'logs', 'about']:
+for page in ['overview', 'rules', 'logs', 'about']:
     assert f'id="page-{page}"' in html
+assert 'id="page-modes"' not in html, 'Mode grid lives on overview'
 assert 'scenePresence' in ui
+assert 'data.fasEngine' in ui and 'fasEngine:{}' in ws, 'NovaFAS status wiring missing'
+assert f'const UI_VERSION = window.NovaRelease?.version || "{VERSION}";' in ui, 'Stale UI version fallback'
 
 # Explicit source roots work both in a checkout and an extracted source archive.
 # Build output, dependencies and runtime state are never part of the source ZIP.
@@ -121,7 +128,7 @@ with zipfile.ZipFile(source_zip) as z:
         assert f'NovaSched-Zen-Edition/module-template/config/{soc}.json' in z.namelist()
 webui_zip = DIST / f'NovaSched-v{VERSION}-webui-update.zip'
 webui_sources = [path for path in source_paths if path.relative_to(ROOT).as_posix().startswith('module-template/webroot/')]
-webui_sources.extend([ROOT/'scripts/install-webui.sh', ROOT/'docs/fix-v2.6.1.md'])
+webui_sources.extend([ROOT/'scripts/install-webui.sh', ROOT/f'docs/fix-v{VERSION}.md'])
 archive(webui_zip, [(path, path.relative_to(ROOT).as_posix(), path.suffix == '.sh') for path in sorted(webui_sources)])
 if args.source_only:
     (DIST/f'NovaSched-v{VERSION}-SHA256SUMS.txt').write_text(''.join(digest(path)+'  '+path.name+'\n' for path in [source_zip,webui_zip]))

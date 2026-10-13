@@ -24,7 +24,7 @@ readelf -h "$BINARY" > "$PROJECT_DIR/native/target-static/elf-header.txt"
 readelf -l "$BINARY" > "$PROJECT_DIR/native/target-static/elf-programs.txt"
 readelf -d "$BINARY" > "$PROJECT_DIR/native/target-static/elf-dynamic.txt"
 grep -q AArch64 "$PROJECT_DIR/native/target-static/elf-header.txt"
-grep -qE 'EXEC (Executable file)' "$PROJECT_DIR/native/target-static/elf-header.txt"
+grep -qF 'EXEC (Executable file)' "$PROJECT_DIR/native/target-static/elf-header.txt"
 if grep -q INTERP "$PROJECT_DIR/native/target-static/elf-programs.txt"; then
   echo "ELF unexpectedly needs a dynamic interpreter" >&2
   exit 1

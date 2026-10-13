@@ -1,4 +1,4 @@
-/* ZenJooo · NovaSched WebUI · v2.7.0
+/* ZenJooo · NovaSched WebUI · v2.7.1
    动效体系：所有进出共用同一组缓动与时长——打开走 ease-out，关闭按同一
    关键帧反向播放（从哪来就从哪回去），由 app.js 的 WAAPI 驱动。 */
 :root{
