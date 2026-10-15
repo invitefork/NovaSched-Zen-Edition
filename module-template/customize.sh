@@ -94,16 +94,22 @@ DEVICE_NAME=$(getprop ro.product.model 2>/dev/null)
 DEVICE_BRAND=$(getprop ro.product.brand 2>/dev/null)
 [ -z "$DEVICE_NAME" ] || ui_print "  ✓ 设备 ${DEVICE_BRAND:-?} $DEVICE_NAME"
 
-# 二进制必须存在且可执行——否则后面所有自检只会给出难懂的报错
-if [ ! -x "$MODPATH/bin/novasched" ]; then
-  install_fail "模块包缺少 bin/novasched，请重新下载完整安装包"
-fi
-[ -f "$MODPATH/bin/cloud-update.sh" ] && set_perm "$MODPATH/bin/cloud-update.sh" 0 0 0755
+# 权限先行：KernelSU 等管理器解压时不保留 zip 内的可执行位，
+# 必须 chmod 之后才能检查/执行二进制（v2.9.3 曾因先 -x 后 chmod 在
+# KernelSU 上误报"缺少二进制"）。
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 for NOVA_SCRIPT in action.sh service.sh uninstall.sh vtools/powercfg.sh; do
   set_perm "$MODPATH/$NOVA_SCRIPT" 0 0 0755
 done
+[ -f "$MODPATH/bin/cloud-update.sh" ] && set_perm "$MODPATH/bin/cloud-update.sh" 0 0 0755
+# 二进制必须存在且可执行——否则后面所有自检只会给出难懂的报错
+if [ ! -f "$MODPATH/bin/novasched" ]; then
+  install_fail "模块包缺少 bin/novasched，请重新下载完整安装包"
+fi
 set_perm "$MODPATH/bin/novasched" 0 0 0755
+if [ ! -x "$MODPATH/bin/novasched" ]; then
+  install_fail "bin/novasched 无法赋予执行权限，请反馈机型与管理器版本"
+fi
 
 CHECK_LOG="$MODPATH/install-check.log"
 : > "$CHECK_LOG" || install_fail "无法创建安装日志"
