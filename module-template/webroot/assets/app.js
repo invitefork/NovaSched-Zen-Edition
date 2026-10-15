@@ -15,7 +15,7 @@
     if (match) { MODULE = match[1]; MODULE_CANDIDATES.unshift(MODULE); }
   } catch (_) {}
   const STORAGE = "novasched.zen.ui.v2";
-  const UI_VERSION = window.NovaRelease?.version || "2.9.1";
+  const UI_VERSION = window.NovaRelease?.version || "2.9.2";
 
   const MODES = {
     powersave:   { name: "省电", copy: "极限控功耗，适合信息流和日用，输入保持跟手。" },
@@ -1029,7 +1029,7 @@
   function currentCrop(){return window.innerWidth>window.innerHeight?ui.landscape:ui.portrait;}
   function loadWallpaperFromStorage(force=false) {
     const dark=document.documentElement.dataset.theme==="dark";
-    const key=ui.wallData || (dark?"./assets/wallpapers/dark.webp":"./assets/wallpapers/light.webp");
+    const key=ui.wallData || (dark?"./assets/wallpapers/dark.jpg":"./assets/wallpapers/light.jpg");
     if(key===wallpaperKey&&!force)return;wallpaperKey=key;
     const epoch=++wallpaperEpoch;
     if(wallpaperCache.has(key)){window.NovaGlass?.setWallpaper(wallpaperCache.get(key));return;}
@@ -1040,7 +1040,7 @@
   function applyTheme() {
     const dark=ui.theme==="dark" || ui.theme==="system"&&!!darkQuery?.matches;
     const root=document.documentElement;root.dataset.theme=dark?"dark":"light";root.dataset.accent=ui.accent;root.dataset.motion=ui.reduceMotion?"reduce":"full";
-    $("meta[name=theme-color]").content=dark?"#121212":"#f2f4f8";
+    $("meta[name=theme-color]").content=dark?"#0d1015":"#e9eef5";
     $$(".theme-picker button").forEach(button=>button.classList.toggle("active",button.dataset.themeChoice===ui.theme));
     $$(".swatch-row button").forEach(button=>button.classList.toggle("active",button.dataset.accentChoice===ui.accent));
     $$("[data-color-mode]").forEach(button=>{button.classList.toggle("active",button.dataset.colorMode===ui.colorMode);button.setAttribute("aria-pressed",String(button.dataset.colorMode===ui.colorMode));});
