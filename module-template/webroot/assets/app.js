@@ -15,13 +15,13 @@
     if (match) { MODULE = match[1]; MODULE_CANDIDATES.unshift(MODULE); }
   } catch (_) {}
   const STORAGE = "novasched.zen.ui.v2";
-  const UI_VERSION = window.NovaRelease?.version || "2.7.1";
+  const UI_VERSION = window.NovaRelease?.version || "2.8.0";
 
   const MODES = {
     powersave:   { name: "省电", copy: "极限控功耗，适合信息流和日用，输入保持跟手。" },
-    balance:     { name: "均衡", copy: "日用甜点频率，剪辑与 AI 生产可用，不拉大频率。" },
+    balance:     { name: "均衡", copy: "比省电档略放宽的日用甜点；剪辑等持续重负载建议性能档。" },
     performance: { name: "性能", copy: "按王者荣耀稳定 120 帧的甜点频率配置。" },
-    fast:        { name: "极速", copy: "3D 游戏全频段，NovaFAS 按帧动态调频。" },
+    fast:        { name: "极速", copy: "游戏专用：3D 全频段 + NovaFAS 按帧动态调频；日用选均衡更省电。" },
   };
   const ENGINE_TITLES = {
     off: "NovaFAS 未启用", idle: "NovaFAS 待命", active: "NovaFAS 已接管", paused: "NovaFAS 已暂停",
@@ -37,7 +37,8 @@
     page: "overview", pendingControls: 0, online: false, connecting: true, phase: "", error: "", connectionError: "", version: "",
     mode: "", effective: "", pkg: "", controller: "", external: false, linked: false,
     heartbeat: null, soc: "", socId: "", configProfile: "", fasAvailable: false, fasState: "unknown", fasMode: "", fasSync: "", fasLegacy: false, sceneInstalled: false, scenePresence: "unknown",
-    fasEngineState: "", fasEngineSource: "", fasFps: 0, fasBoost: 0, fasOverride: false,
+    fasEngineState: "", fasEngineSource: "", fasFps: 0, fasBoost: 0, fasOverride: false, fasGpu: 0, fasTick: 0, samsungSafe: false,
+    freqs: [],
     automatic: false, automaticActive: false, appKind: "", classificationSource: "",
     rules: [], rulesLoaded: false, overrides: {},
     pending: null, sockets: {}, suspended: false, retry: 0, epoch: 0, probes: new Set(),
@@ -494,6 +495,7 @@
     s.pkg = data.package || ""; s.controller = data.controller || "NovaSched";
     s.external = data.sceneActive === "true"; s.linked = data.sceneLinked === "true";
     s.pendingControls = /^\d+$/.test(data.pendingControls || "") ? Number(data.pendingControls) : 0;
+    s.samsungSafe = data.samsungSafe === "true";
     s.phase = data.phase; s.heartbeat = Number(data.heartbeatMs);
     s.online = s.heartbeat < 30000; s.connecting = false;
     s.soc = data.socName || ""; s.socId = data.socId || ""; s.configProfile = data.configProfile || "";
@@ -515,15 +517,19 @@
       s.fasEngineState = data.fasEngine;
       s.fasEngineSource = ["timestats", "heuristic", "none"].includes(data.fasEngineSrc) ? data.fasEngineSrc : "none";
       s.fasFps = Number(data.fasFps) || 0;
+      s.fasGpu = Number(data.fasGpu) || 0;
       s.fasBoost = /^\d+$/.test(data.fasBoost || "") ? Number(data.fasBoost) : 0;
       s.fasOverride = data.fasOverride === "true";
+      s.fasTick = /^\d+$/.test(data.fasTick || "") ? Number(data.fasTick) : 0;
     }
+    s.freqs = String(data.freqs || "").split(";").map(Number).filter(value => Number.isFinite(value) && value > 0);
     s.automatic = data.automaticEnabled === "true";
     s.automaticActive = data.automaticActive === "true";
     s.appKind = ["game", "daily", "unknown"].includes(data.appKind) ? data.appKind : "";
     s.classificationSource = data.classificationSource || "";
     if (Number(data.port) >= 1024) { s.port = Number(data.port); s.host = "127.0.0.1"; }
     loadLabels([s.pkg]); confirmPending(); render();
+    if (!welcomeShown && s.online) { welcomeShown = true; setTimeout(maybeShowWelcome, 800); }
   }
   function receiveApps(text) {
     try {
@@ -652,6 +658,9 @@
     present("#stat-soc-name", s.soc || "—");
     const heartbeat = s.online && Number.isFinite(s.heartbeat) ? `心跳 ${(Math.round(s.heartbeat / 100) / 10).toFixed(1)}s` : "心跳 —";
     present("#stat-heartbeat", heartbeat);
+    /* 各簇实时频率：守护进程每 2 秒从 scaling_cur_freq 读取 */
+    present("#live-freqs", !s.online ? "实时频率 —"
+      : s.freqs.length ? "实时 " + s.freqs.map(f => (f / 1000).toFixed(2)).join(" / ") + " GHz" : "实时频率 —");
 
     /* 档位网格 */
     $$("#mode-grid .mode-card").forEach(button => {
@@ -673,14 +682,22 @@
     autoSwitch.setAttribute("aria-busy", String(s.pending?.kind === "auto"));
 
     /* NovaFAS 引擎卡：引擎状态与 fas-rs 接口状态分开呈现 */
+    $("#samsung-compat").hidden = !s.online || !s.samsungSafe;
     const engineRunning = s.online && s.fasEngineState === "active";
     present("#fas-engine-badge", !s.online ? "待连接" : engineRunning ? (s.fasOverride ? "已接管 fas-rs" : "运行中") : s.fasEngineState === "idle" ? "待命" : "未启用");
     let engineTitle, engineDesc, engineSource;
     if (!s.online) {
       engineTitle = "等待连接"; engineDesc = "连接后读取 NovaFAS 引擎状态。"; engineSource = "待连接";
+    } else if (s.samsungSafe) {
+      engineTitle = "三星兼容策略"; engineSource = "已暂停";
+      engineDesc = "保留系统的帧调度与 uclamp，NovaFAS 不采样 SurfaceFlinger，也不写入动态底频。四档 CPU 频率策略仍可使用。";
     } else if (s.fasEngineState === "active") {
       engineTitle = ENGINE_TITLES.active;
-      engineSource = s.fasEngineSource === "timestats" ? "帧信号 · SurfaceFlinger" : "负载启发式";
+      engineSource = s.fasEngineSource === "timestats"
+        ? "帧信号 · SurfaceFlinger"
+        : s.fasEngineSource === "heuristic"
+          ? `负载启发式 · GPU ${s.fasGpu.toFixed(0)}%`
+          : "无信号源 · 仅档位包络";
       engineDesc = s.fasOverride
         ? "读取前台应用渲染帧信号，在档位包络内动态调频；Scene 的 fas-rs 已被暂停，由本引擎接管。"
         : "读取前台应用渲染帧信号，在档位包络内动态调频：掉帧快速加压，稳定后缓慢回落省电。";
@@ -702,8 +719,12 @@
     present("#fas-engine-desc", engineDesc);
     const meter = $("#fas-engine-meter");
     if (meter) meter.hidden = !engineRunning;
-    present("#fas-engine-fps", engineRunning ? `${s.fasFps.toFixed(1)} fps` : "—");
+    const frameSource = s.fasEngineSource === "timestats";
+    present("#fas-engine-fps", engineRunning && frameSource ? `${s.fasFps.toFixed(1)} fps` : "—");
+    present("#fas-engine-gpu", engineRunning ? (s.fasGpu > 0 || s.fasEngineSource === "heuristic" ? `${Math.min(100, s.fasGpu).toFixed(0)}%` : "—") : "—");
     present("#fas-engine-boost", engineRunning ? `${s.fasBoost}%` : "—");
+    /* 引擎拍数每次心跳都在增长：数值稳定不动时，它是区分“稳定”与“卡死”的唯一信号 */
+    present("#fas-engine-tick", engineRunning ? `第 ${s.fasTick} 拍` : "—");
     const bar = $("#fas-engine-bar");
     if (bar) bar.style.width = `${Math.min(100, s.fasBoost)}%`;
     /* 旧版服务没有引擎字段时，退回展示 fas-rs 模式接口状态 */
@@ -1232,8 +1253,44 @@
   });
   $("#add-rule").onclick = () => showRuleEditor("");
 
-  function showDiagnostics(sceneOnly = false) {
-    const command = sceneOnly ? "scene-diagnose" : s.online ? "game-diagnose" : "diagnose";
+  /* ---------------- 捐赠与欢迎 ---------------- */
+  const WELCOME_KEY = "novasched.welcome.v280";
+  function showDonate() {
+    openDialog(`
+      <p class="eyebrow">SUPPORT</p>
+      <h3 id="dialog-title">请作者喝杯奶茶</h3>
+      <p class="dialog-sub">NovaSched 与 NovaFAS 完全免费开源，没有任何解锁或付费项。如果调度够稳、游戏够顺、续航有改善，欢迎请作者喝一杯奶茶——每一份心意都是逐颗处理器继续打磨的动力。</p>
+      <p class="dialog-sub">捐赠完全自愿，不捐也丝毫不影响使用；提交反馈和日志同样是最好的支持。</p>
+      <div class="donate-grid">
+        <figure class="donate-item"><img src="./assets/donate/wechat.jpg" alt="微信赞赏码" loading="lazy"><figcaption>微信 · 赞赏码</figcaption></figure>
+        <figure class="donate-item"><img src="./assets/donate/alipay.jpg" alt="支付宝收款码" loading="lazy"><figcaption>支付宝 · 收款码</figcaption></figure>
+      </div>
+      <div class="dialog-actions"><button class="btn-capsule ghost" type="button" id="dialog-cancel">关闭</button></div>
+    `);
+    $("#dialog-cancel").onclick = () => closeDialog();
+  }
+  function maybeShowWelcome() {
+    let seen = false;
+    try { seen = localStorage.getItem(WELCOME_KEY) === "1"; } catch (_) { return; }
+    if (seen || !s.online) return;
+    try { localStorage.setItem(WELCOME_KEY, "1"); } catch (_) { return; }
+    openDialog(`
+      <p class="eyebrow">WELCOME</p>
+      <h3 id="dialog-title">NovaSched v${UI_VERSION}</h3>
+      <p class="dialog-sub">四档策略已按你的处理器逐频点适配；Scene 联动时，省电 / 均衡 / 性能 / 极速四个档位都由本模块执行下发。</p>
+      <p class="dialog-sub">NovaFAS 接管 Scene FAS / FEAS / FAS Lite 的职责：掉帧快速加压、稳定缓慢回落。使用本模块时建议在 Scene 里关闭它的 FAS 与调度，避免两个帧调度器争抢节点。</p>
+      <p class="dialog-sub">下拉通知栏与超级岛动画会按需临时抬频——省电、均衡档也不卡。概览页顶部可看各簇实时频率。</p>
+      <div class="dialog-actions">
+        <button class="btn-capsule ghost" type="button" id="welcome-donate">支持开发</button>
+        <button class="btn-capsule accent" type="button" id="welcome-close">开始使用</button>
+      </div>
+    `);
+    $("#welcome-close").onclick = () => closeDialog();
+    $("#welcome-donate").onclick = () => showDonate();
+  }
+  let welcomeShown = false;
+
+  function showDiagnostics(sceneOnly = false) {    const command = sceneOnly ? "scene-diagnose" : s.online ? "game-diagnose" : "diagnose";
     openDialog(`
       <p class="eyebrow">${sceneOnly ? "SCENE" : "DIAGNOSTICS"}</p>
       <h3 id="dialog-title">${sceneOnly ? "Scene 检测详情" : "运行诊断"}</h3>
@@ -1279,6 +1336,7 @@
   $("#scene-diagnose").onclick = () => showDiagnostics(true);
   $("#scene-diagnose-settings").onclick = () => showDiagnostics(true);
   $("#about-diagnose").onclick = event => { event.preventDefault(); showDiagnostics(); };
+  $("#about-donate").onclick = () => showDonate();
   $("#about-license").onclick = event => { event.preventDefault(); openDialog(`<h3 id="dialog-title">来源与许可</h3><p class="dialog-sub">模块作者：ZenJooo。调度核心沿用 GPL-3.0-only。</p><p class="dialog-sub">NovaFAS 为本模块原创的帧感知调度引擎，读取 SurfaceFlinger 帧统计并在档位包络内动态调频。</p><p class="dialog-sub">界面布局沿用其早期版本的玻璃设计语言；玻璃透镜与色散公式来自 Kyant Backdrop，Apache-2.0。</p><p class="dialog-sub"><a href="https://github.com/Kyant0/AndroidLiquidGlass" target="_blank" rel="noopener noreferrer">Kyant0/AndroidLiquidGlass</a></p><div class="dialog-actions"><button class="btn-capsule ghost" id="license-close" type="button">关闭</button></div>`);$("#license-close").onclick=()=>closeDialog(); };
   $("#nav-cta").onclick = () => { if (s.online) showDiagnostics(); else if (!s.connecting) { clearTimeout(s.retry); discover(); toast("正在连接模块服务"); } else toast("正在连接，请稍候"); };
   $(".hero-card").onclick = () => showDiagnostics();

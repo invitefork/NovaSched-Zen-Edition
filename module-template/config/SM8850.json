@@ -4,7 +4,7 @@
   "meta": {
     "name": "NovaSched Zen Edition",
     "author": "ZenJooo",
-    "version": 370,
+    "version": 380,
     "soc": "SM8850",
     "loglevel": "INFO"
   },
@@ -31,7 +31,7 @@
           "background_max": "65"
         },
         "balance": {
-          "background_max": "85"
+          "background_max": "75"
         }
       }
     },
@@ -156,8 +156,8 @@
         "0"
       ],
       "max": [
-        "66%",
         "58%",
+        "50%",
         "0",
         "0"
       ],

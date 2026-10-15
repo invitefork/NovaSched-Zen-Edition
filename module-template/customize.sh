@@ -1,5 +1,16 @@
 #!/system/bin/sh
 SKIPUNZIP=0
+NOVA_STATE="/data/adb/novasched"
+
+install_fail() {
+  if [ -r "$MODPATH/install-check.log" ] && mkdir -p "$NOVA_STATE"; then
+    if cp -f "$MODPATH/install-check.log" "$NOVA_STATE/install-last.log"; then
+      set_perm "$NOVA_STATE/install-last.log" 0 0 0600
+      ui_print "  安装失败记录已保留：$NOVA_STATE/install-last.log"
+    fi
+  fi
+  abort "$1"
+}
 
 stage() {
   ui_print " "
@@ -14,7 +25,8 @@ ui_print " "
 ui_print "✦ NovaSched Zen Edition $NOVA_VERSION"
 ui_print "  作者 ZenJooo"
 stage 1 "检查运行环境" "根据内核能力适配 Magisk、Alpha、KernelSU 系列和 APatch。"
-if [ "$ARCH" != "arm64" ] && [ "$ARCH" != "arm64-v8a" ]; then
+[ -n "$ARCH" ] || ARCH=$(getprop ro.product.cpu.abi 2>/dev/null)
+if [ "$ARCH" != "arm64" ] && [ "$ARCH" != "arm64-v8a" ] && [ "$ARCH" != "aarch64" ]; then
   abort "! 仅支持 arm64-v8a，安装已停止。"
 fi
 LEGACY_MODULE="/data/adb/modules/LittleYouran_CTS_Rust"
@@ -54,16 +66,18 @@ run_check() {
 }
 
 stage 2 "核心自检" "检查二进制与运行权限。"
-run_check self-test || abort "! 二进制自检失败，请保留 install-check.log。"
+run_check self-test || install_fail "! 二进制自检失败，请保留 install-last.log。"
 ui_print "  ✓ 核心自检通过。"
 stage 3 "检测处理器" "读取实际 CPU 策略、频率范围和内核接口。"
-run_check probe || abort "! 硬件检测未通过，具体原因见上方输出和 install-check.log。"
+run_check probe || install_fail "! 硬件检测未通过，具体原因见上方输出和 install-last.log。"
 ui_print "  ✓ 处理器与内核能力已确认。"
+if [ "$(sed -n 's/^compatibility=//p' "$MODPATH/install-probe.log")" = "samsung" ]; then
+  ui_print "  三星保守策略：保留原厂调速器，暂停 NovaFAS 与额外调度控制。"
+fi
 stage 4 "准备配置" "保留已有有效配置和自动调度偏好。"
-NOVA_STATE="/data/adb/novasched"
 mkdir -p "$NOVA_STATE" || abort "! 无法创建运行时目录。"
-run_check prepare-config || abort "! 配置初始化失败；原配置已保留。"
-run_check prepare-auto || abort "! 自动调度偏好初始化失败。"
+run_check prepare-config || install_fail "! 配置初始化失败；原配置已保留。"
+run_check prepare-auto || install_fail "! 自动调度偏好初始化失败。"
 if [ ! -f "$NOVA_STATE/mode.txt" ]; then
   printf 'powersave\n' > "$NOVA_STATE/mode.txt" || abort "! 无法初始化默认档位。"
 fi
@@ -87,8 +101,10 @@ esac
 ui_print "  Scene 联动期间由 Scene 决定档位，本地自动调度暂停。"
 stage 6 "安装完成" "请重启手机，使新版核心与配置生效。"
 ui_print "  原厂节点会在首次写入前保存；卸载时恢复。"
+ui_print "  首次解锁后等待 30 秒再启动；启动异常重启时，下次自动停用。"
 ui_print "  管理器没有 WebUI 时，可使用独立 WebUI 宿主并授予 root。"
 ui_print "  安装记录：$CHECK_LOG"
 ui_print "  运行记录：/data/adb/novasched/novasched.log"
+cp -f "$CHECK_LOG" "$NOVA_STATE/install-last.log" && set_perm "$NOVA_STATE/install-last.log" 0 0 0600
 ui_print " "
 ui_print "✦ NovaSched $NOVA_VERSION · ZenJooo"

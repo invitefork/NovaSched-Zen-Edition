@@ -21,6 +21,7 @@ fn root() -> Result<()> {
 pub fn start(module: &Path, restart: bool) -> Result<()> {
     root()?;
     ensure_not_removing(module)?;
+    crate::boot_guard::ensure_ready()?;
     let state = Path::new(STATE_DIR);
     let _control = util::acquire_flock(&state.join("control.lock"))?;
     ensure_not_removing(module)?;
@@ -130,6 +131,9 @@ pub fn supervise(module: &Path) -> Result<()> {
             }
         };
         let exit = wait_child(&mut child, module, state)?;
+        if module.join("disable").exists() {
+            return Err("启动保护已停用模块，本次不再重试".into());
+        }
         if stop_requested(state) {
             logger.info("收到停止标记，取消守护重启");
             finish_requested_stop(state)?;
@@ -259,7 +263,9 @@ pub(crate) fn stop_inner(module: &Path) -> Result<()> {
     Err("停止/回滚超时；未发送 SIGKILL，未删除锁，未启动第二实例".into())
 }
 fn ensure_not_removing(module: &Path) -> Result<()> {
-    if !module.is_dir() || module.join(".uninstalling").exists() || module.join("remove").exists() {
+    if module.join("disable").exists() {
+        Err("模块已停用，请先查看启动保护和诊断记录".into())
+    } else if !module.is_dir() || module.join(".uninstalling").exists() || module.join("remove").exists() {
         Err("模块正在卸载，不能启动".into())
     } else {
         Ok(())
@@ -284,6 +290,7 @@ pub fn diagnose(module: &Path) -> Result<()> {
     );
     for name in [
         "startup",
+        "boot-guard",
         "daemon.identity",
         "last_error",
         "options.txt",

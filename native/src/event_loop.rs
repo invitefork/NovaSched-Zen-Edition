@@ -36,26 +36,38 @@ impl WakeReason {
     }
 }
 
-/// Blocks on cgroup / config changes instead of waking every few hundred ms.
-/// Android kernels do not expose the same notification capabilities everywhere,
-/// so a two-second foreground scan is retained even when cgroup.events opens.
-/// Its populated notification is not a notification of every member change.
+/// Blocks on cgroup / config / touch changes instead of waking every few
+/// hundred ms. Android kernels do not expose the same notification
+/// capabilities everywhere, so a two-second foreground scan is retained even
+/// when cgroup.events opens. Its populated notification is not a notification
+/// of every member change. The touch signal (eventfd written by the input
+/// thread) wakes the loop immediately so UI bursts like the notification
+/// shade are recognised within one frame instead of two seconds.
 pub struct EventLoop {
     inotify_fd: Option<c_int>,
     watch_count: usize,
     cgroup_events: Option<File>,
+    touch_signal: Option<File>,
+    touch_pending: bool,
 }
 
 impl EventLoop {
-    pub fn new(paths: &[PathBuf]) -> Self {
+    pub fn new(paths: &[PathBuf], touch_signal: Option<File>) -> Self {
         let fd = unsafe { ffi::inotify_init1(ffi::IN_NONBLOCK | ffi::IN_CLOEXEC) };
         let mut event_loop = Self {
             inotify_fd: (fd >= 0).then_some(fd),
             watch_count: 0,
             cgroup_events: open_cgroup_events(),
+            touch_signal,
+            touch_pending: false,
         };
         event_loop.watch_paths(paths);
         event_loop
+    }
+
+    /// Consumes the pending touch wake (if any). Call once per loop turn.
+    pub fn take_touch_signal(&mut self) -> bool {
+        std::mem::take(&mut self.touch_pending)
     }
 
     pub fn describe(&self) -> String {
@@ -74,7 +86,7 @@ impl EventLoop {
 
     pub fn wait(&mut self, timeout: Duration) -> WakeReason {
         let timeout = timeout.min(FOREGROUND_FALLBACK);
-        let mut fds = Vec::with_capacity(2);
+        let mut fds = Vec::with_capacity(3);
         if let Some(fd) = self.inotify_fd {
             fds.push(ffi::PollFd {
                 fd,
@@ -86,6 +98,13 @@ impl EventLoop {
             fds.push(ffi::PollFd {
                 fd: file.as_raw_fd(),
                 events: ffi::POLLPRI,
+                revents: 0,
+            });
+        }
+        if let Some(file) = &self.touch_signal {
+            fds.push(ffi::PollFd {
+                fd: file.as_raw_fd(),
+                events: ffi::POLLIN,
                 revents: 0,
             });
         }
@@ -143,6 +162,24 @@ impl EventLoop {
                     eprintln!("novasched: cgroup 通知读取失败，继续使用 2 秒前台扫描: {error}");
                     self.cgroup_events = None;
                     broken = true;
+                }
+            }
+        }
+        if let Some(file) = self.touch_signal.as_mut() {
+            let flags = fds
+                .iter()
+                .find(|entry| entry.fd == file.as_raw_fd())
+                .map(|e| e.revents)
+                .unwrap_or(0);
+            if flags & (ffi::POLLIN | ffi::POLLERR) != 0 {
+                let mut value = [0u8; 8];
+                // 信号是电平触发的；读掉计数值即可。读失败按坏描述符处理。
+                if file.read_exact(&mut value).is_err() {
+                    unsafe { ffi::close(file.as_raw_fd()) };
+                    self.touch_signal = None;
+                    broken = true;
+                } else {
+                    self.touch_pending = true;
                 }
             }
         }
@@ -235,6 +272,8 @@ mod tests {
             inotify_fd: None,
             watch_count: 0,
             cgroup_events: None,
+            touch_signal: None,
+            touch_pending: false,
         };
         let start = std::time::Instant::now();
         assert_eq!(
@@ -255,12 +294,38 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config");
         std::fs::write(&path, "old").unwrap();
-        let mut watcher = EventLoop::new(&[path.clone()]);
+        let mut watcher = EventLoop::new(&[path.clone()], None);
         assert!(watcher.watch_count > 0, "test requires Linux inotify");
         std::fs::write(&path, "new").unwrap();
         let start = std::time::Instant::now();
         assert_eq!(watcher.wait(FOREGROUND_FALLBACK), WakeReason::Event);
         assert!(start.elapsed() < FOREGROUND_FALLBACK);
+        drop(watcher);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn touch_signal_wakes_the_loop_and_is_consumed_once() {
+        // 本测试依赖 Linux eventfd；其它平台跳过。
+        let fd = unsafe { ffi::eventfd(0, ffi::O_NONBLOCK | ffi::O_CLOEXEC) };
+        if fd < 0 {
+            return;
+        }
+        use std::os::fd::FromRawFd;
+        let read_end = unsafe { File::from_raw_fd(fd) };
+        let dir = std::env::temp_dir().join(format!("nova-touch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut watcher = EventLoop::new(&[], Some(read_end));
+        let value: u64 = 1;
+        let written = unsafe {
+            ffi::write(fd, &value as *const u64 as *const ffi::c_void, std::mem::size_of::<u64>())
+        };
+        assert_eq!(written, 8, "test requires eventfd");
+        let start = std::time::Instant::now();
+        assert_eq!(watcher.wait(FOREGROUND_FALLBACK), WakeReason::Event);
+        assert!(start.elapsed() < FOREGROUND_FALLBACK);
+        assert!(watcher.take_touch_signal());
+        assert!(!watcher.take_touch_signal(), "signal must be consumed once");
         drop(watcher);
         std::fs::remove_dir_all(dir).unwrap();
     }

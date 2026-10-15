@@ -1,4 +1,6 @@
-use std::os::raw::{c_char, c_int, c_long, c_uint, c_void};
+use std::os::raw::{c_char, c_int, c_long, c_uint};
+
+pub use std::os::raw::c_void;
 
 pub const LOCK_EX: c_int = 2;
 pub const LOCK_NB: c_int = 4;
@@ -74,6 +76,8 @@ extern "C" {
     pub fn time(tloc: *mut c_long) -> c_long;
     pub fn close(fd: c_int) -> c_int;
     pub fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
+    pub fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
+    pub fn eventfd(init: c_uint, flags: c_int) -> c_int;
     pub fn poll(fds: *mut PollFd, nfds: usize, timeout: c_int) -> c_int;
     pub fn inotify_init1(flags: c_int) -> c_int;
     pub fn inotify_add_watch(fd: c_int, pathname: *const c_char, mask: c_uint) -> c_int;

@@ -18,6 +18,7 @@ pub struct CpuPolicy {
 #[derive(Clone, Debug)]
 pub struct Hardware {
     pub soc: Soc,
+    pub samsung: bool,
     pub device: String,
     pub evidence: String,
     pub policies: Vec<CpuPolicy>,
@@ -84,6 +85,12 @@ pub fn detect() -> Result<Hardware> {
     let (soc, evidence) = identify_soc(&properties, &compatibles)?;
     let hardware = Hardware {
         soc,
+        samsung: samsung_firmware(&[
+            util::getprop("ro.product.manufacturer"),
+            util::getprop("ro.product.brand"),
+            util::getprop("ro.product.vendor.manufacturer"),
+            util::getprop("ro.build.version.oneui"),
+        ]),
         device: util::getprop("ro.product.device"),
         evidence,
         policies: inspect_policies(Path::new("/sys/devices/system/cpu/cpufreq"))?,
@@ -97,6 +104,9 @@ pub fn identify_soc(
 ) -> Result<(Soc, String)> {
     let mut matches: BTreeMap<Soc, Vec<String>> = BTreeMap::new();
     let mut negative = Vec::new();
+    let xring_vendor = properties.iter().any(|(key, value)| {
+        key.ends_with("soc.manufacturer") && value.trim().eq_ignore_ascii_case("xring")
+    });
     let qualcomm = compatibles.iter().any(|v| v.starts_with("qcom,"))
         || properties.iter().any(|(_, v)| {
             v.to_ascii_lowercase().contains("qualcomm") || v.trim().eq_ignore_ascii_case("qcom")
@@ -108,13 +118,16 @@ pub fn identify_soc(
             let model = parts.next().unwrap_or("");
             let valid_suffix = parts
                 .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric()));
-            if let Some(soc) = Soc::from_id(model).filter(|_| valid_suffix) {
-                matches
+            // qcom,sm8750 与 qcom,sm8750-ayn 指同一家族；qcom,sm8750p 同理。
+            match soc::sm_token(model) {
+                soc::SmToken::Match(soc) if valid_suffix => matches
                     .entry(soc)
                     .or_default()
-                    .push(format!("device-tree={value}"));
-            } else if id.starts_with("sm") && id.as_bytes().get(2).is_some_and(u8::is_ascii_digit) {
-                negative.push(format!("device-tree={value}"));
+                    .push(format!("device-tree={value}")),
+                soc::SmToken::Match(_) | soc::SmToken::Unsupported => {
+                    negative.push(format!("device-tree={value}"));
+                }
+                soc::SmToken::NotSm => {}
             }
         } else if let Some((vendor, model)) = lower.split_once(',') {
             if ["mediatek", "xring", "xiaomi"].contains(&vendor) {
@@ -132,6 +145,17 @@ pub fn identify_soc(
     }
     for (key, value) in properties.iter().filter(|(_, v)| !v.trim().is_empty()) {
         let evidence = format!("{key}={}", value.trim());
+        let lower = value.trim().to_ascii_lowercase();
+        if ((key.ends_with("soc.model") || key.ends_with("soc_model"))
+            && lower == "o3" && xring_vendor)
+            || ((key.ends_with("board.platform") || key == "ro.hardware")
+                && matches!(lower.as_str(), "xring_o3" | "xring_o3_asic" | "xring-o3"))
+        {
+            let evidence = if lower == "o3" {
+                format!("{evidence}, ro.soc.manufacturer=XRing")
+            } else { evidence.clone() };
+            matches.entry(Soc::XringO3).or_default().push(evidence);
+        }
         if key.ends_with("soc_id") && qualcomm {
             if let Some(soc) = value.trim().parse::<u32>().ok().and_then(soc::kernel_id) {
                 matches.entry(soc).or_default().push(evidence.clone());
@@ -143,18 +167,12 @@ pub fn identify_soc(
                 matches.entry(soc).or_default().push(evidence.clone());
             }
             for token in lower.split(|c: char| !c.is_ascii_alphanumeric() && c != '-') {
-                if token.starts_with("sm")
-                    && token.as_bytes().get(2).is_some_and(u8::is_ascii_digit)
-                {
-                    let mut parts = token.split('-');
-                    let id = parts.next().unwrap_or("");
-                    let suffix_valid = parts
-                        .all(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric()));
-                    if let Some(soc) = Soc::from_id(id).filter(|_| suffix_valid) {
+                match soc::sm_token(token) {
+                    soc::SmToken::Match(soc) => {
                         matches.entry(soc).or_default().push(evidence.clone());
-                    } else {
-                        negative.push(evidence.clone());
                     }
+                    soc::SmToken::Unsupported => negative.push(evidence.clone()),
+                    soc::SmToken::NotSm => {}
                 }
             }
             if ["snapdragon", "dimensity", "xring"]
@@ -191,7 +209,7 @@ pub fn identify_soc(
         .map(|(soc, e)| (soc, e.join(", ")))
         .ok_or_else(|| {
             format!(
-                "未识别到支持的处理器（骁龙 8 系列、天玑 8350 / 9400+、玄戒 O3）；检测值: {}",
+                "未识别到支持的处理器（骁龙 8 系列、天玑 8350 / 8400 / 9400+、玄戒 O3）；检测值: {}",
                 properties
                     .iter()
                     .filter(|(_, v)| !v.trim().is_empty())
@@ -240,6 +258,10 @@ fn marketing_identity(value: &str) -> Option<String> {
     } else {
         Some(selected.join(" "))
     }
+}
+fn samsung_firmware(values: &[String; 4]) -> bool {
+    values[..3].iter().any(|value| value.trim().eq_ignore_ascii_case("samsung"))
+        || !values[3].trim().is_empty()
 }
 pub(crate) fn parse_cpu_list(raw: &str) -> Result<BTreeSet<u32>> {
     let mut cpus = BTreeSet::new();
@@ -382,8 +404,8 @@ fn resolve_frequency(raw: &str, policy: &CpuPolicy) -> Result<String> {
         .clamp(policy.min_freq, policy.max_freq)
         .to_string())
 }
-fn resolve_cluster(config: &mut Config, cluster: usize, policy: &CpuPolicy) -> Result<()> {
-    for profile in config.modes.values_mut() {
+fn resolve_cluster(config: &mut Config, cluster: usize, policy: &CpuPolicy, soc: Soc) -> Result<()> {
+    for (mode, profile) in config.modes.iter_mut() {
         let data = &mut profile.clusters[cluster];
         data.min_freq = resolve_frequency(&data.min_freq, policy)?;
         data.max_freq = if data.max_freq == "0" {
@@ -397,26 +419,39 @@ fn resolve_cluster(config: &mut Config, cluster: usize, policy: &CpuPolicy) -> R
         {
             data.min_freq = data.max_freq.clone();
         }
-        data.governor = select_governor(&data.governor, policy)?;
+        data.governor = select_governor(&data.governor, policy, prefer_walt(soc, mode))?;
     }
     config.functions.launch_boost.frequencies[cluster] =
         resolve_frequency(&config.functions.launch_boost.frequencies[cluster], policy)?;
     Ok(())
 }
-fn select_governor(requested: &str, policy: &CpuPolicy) -> Result<String> {
+/// 骁龙平台的性能/极速档优先 walt：WALT 窗口负载跟踪在重载下提频更快，
+/// 服务于游戏 burst。省电/均衡保留 OEM 调速器（多为 schedutil），配合
+/// 贴近省电档的上限把日用功耗压住；天玑/玄戒所有档位都保留原厂。
+pub(crate) fn prefer_walt(soc: Soc, mode: &str) -> bool {
+    soc.qualcomm() && matches!(mode, "performance" | "fast")
+}
+fn select_governor(requested: &str, policy: &CpuPolicy, prefer_walt: bool) -> Result<String> {
     if policy.governors.iter().any(|v| v == requested) {
         return Ok(requested.into());
     }
-    if requested == "auto" && matches!(policy.current_governor.as_str(), "performance" | "powersave") {
-        if let Some(governor) = ["schedutil", "walt", "interactive", "ondemand", "conservative"].into_iter()
-            .find(|candidate| policy.governors.iter().any(|name| name.as_str() == *candidate)) {
-            return Ok(governor.into());
+    if requested == "auto" {
+        // 骁龙平台的 walt 调速器与内核 WALT 窗口联动，重载提频比 schedutil
+        // 更快；天玑 / 玄戒保留 OEM 调速器，避免破坏原厂调校。
+        if prefer_walt && policy.governors.iter().any(|v| v == "walt") {
+            return Ok("walt".into());
+        }
+        if matches!(policy.current_governor.as_str(), "performance" | "powersave") {
+            if let Some(governor) = ["walt", "schedutil", "interactive", "ondemand", "conservative"].into_iter()
+                .find(|candidate| policy.governors.iter().any(|name| name.as_str() == *candidate)) {
+                return Ok(governor.into());
+            }
         }
     }
     for candidate in [
         &policy.current_governor,
-        "schedutil",
         "walt",
+        "schedutil",
         "interactive",
         "ondemand",
         "conservative",
@@ -463,6 +498,24 @@ impl Hardware {
                 self.soc.id()
             ));
         }
+        if self.samsung {
+            config.functions.node_watchdog = false;
+            config.functions.cpuset.enable = false;
+            config.functions.cpuctl.enable = false;
+            config.functions.input_boost.enabled = false;
+            config.functions.launch_boost.enable = false;
+            config.functions.disable_gpu_boost = false;
+            config.functions.scheduler.enable = false;
+            config.functions.perf_service_lock.enable = false;
+            config.functions.fas.enabled = false;
+            for profile in config.modes.values_mut() {
+                profile.online = [true; 8];
+                for cluster in &mut profile.clusters {
+                    cluster.governor = "auto".into();
+                    cluster.sched_params.clear();
+                }
+            }
+        }
         let reference = config.policy == self.soc.anchors();
         let original = config.clone();
         let original_policy = config.policy;
@@ -498,7 +551,8 @@ impl Hardware {
             config.policy[cluster] = policy.id;
             for (mode, profile) in &mut config.modes {
                 let data = &mut profile.clusters[cluster];
-                let effective = select_governor(&data.governor, policy)?;
+                let effective =
+                    select_governor(&data.governor, policy, prefer_walt(self.soc, mode))?;
                 if effective != data.governor {
                     changes.push(format!(
                         "{mode}.c{cluster}: {} → {effective}",
@@ -507,7 +561,7 @@ impl Hardware {
                     data.governor = effective;
                 }
             }
-            resolve_cluster(config, cluster, policy)?;
+            resolve_cluster(config, cluster, policy, self.soc)?;
         }
         for cluster in 0..4 {
             if config.policy[cluster] < 0 {
@@ -577,11 +631,11 @@ impl Hardware {
                 profile.clusters[free] =
                     original.modes.get(mode).ok_or("配置缺少原始档位")?.clusters[source].clone();
                 profile.clusters[free].governor =
-                    select_governor(&profile.clusters[free].governor, policy)?;
+                    select_governor(&profile.clusters[free].governor, policy, prefer_walt(self.soc, mode))?;
             }
             config.functions.launch_boost.frequencies[free] =
                 original.functions.launch_boost.frequencies[source].clone();
-            resolve_cluster(config, free, policy)?;
+            resolve_cluster(config, free, policy, self.soc)?;
             config.policy[free] = policy.id;
             changes.push(format!(
                 "policy{} 分拆自 c{source}，使用 c{free} 下发",
@@ -640,6 +694,16 @@ impl Hardware {
                 };
             }
             changes.push("七核 Elite：按实际核心范围映射 CpuSet 与 online".into());
+        }
+        if self.samsung {
+            for profile in config.modes.values_mut() {
+                for (cluster, data) in profile.clusters.iter_mut().enumerate() {
+                    if let Some(policy) = self.policies.iter().find(|p| p.id == config.policy[cluster]) {
+                        data.governor = policy.current_governor.clone();
+                    }
+                }
+            }
+            changes.push("三星保守策略：保留原厂调速器，仅设置 CPU 频率范围；暂停 NovaFAS、uclamp、输入加速、节点修复与性能服务接管".into());
         }
         Ok(changes)
     }
@@ -755,9 +819,9 @@ mod tests {
         let mut policy = crate::profiles::test_hardware(Soc::Gen3).policies[0].clone();
         policy.governors = vec!["schedutil".into(), "walt".into()];
         policy.current_governor = "walt".into();
-        assert_eq!(select_governor("auto", &policy).unwrap(), "walt");
-        assert_eq!(select_governor("schedutil", &policy).unwrap(), "schedutil");
-        assert_eq!(select_governor("unavailable", &policy).unwrap(), "walt");
+        assert_eq!(select_governor("auto", &policy, false).unwrap(), "walt");
+        assert_eq!(select_governor("schedutil", &policy, false).unwrap(), "schedutil");
+        assert_eq!(select_governor("unavailable", &policy, false).unwrap(), "walt");
     }
     #[test]
     fn all_reference_layouts_and_split_gen2_policy_keep_original_parameters() {
@@ -784,6 +848,7 @@ mod tests {
                 })
                 .collect();
             let hw = Hardware {
+                samsung: false,
                 soc,
                 device: "test".into(),
                 evidence: "test".into(),
@@ -802,8 +867,10 @@ mod tests {
                 config.profile("powersave").unwrap().clusters[0].max_freq,
                 match soc {
                     Soc::Gen1 | Soc::Gen1Plus | Soc::Gen2 | Soc::XringO3 => "1620000",
-                    Soc::Dimensity8350 => "1680000",
-                    Soc::Gen3 | Soc::Elite | Soc::Elite5 | Soc::Dimensity9400Plus => "1560000",
+                    Soc::Dimensity8350 | Soc::Dimensity8400 => "1680000",
+                    // SM8650 按真机 OPP 逐档重调：省电小核 65%（无表夹取）。
+                    Soc::Gen3 => "1950000",
+                    Soc::Elite | Soc::Elite5 | Soc::Dimensity9400Plus => "1560000",
                 }
             );
         }
@@ -815,8 +882,10 @@ mod tests {
         let mut original = config.profile("fast").unwrap().clusters[1].clone();
         original.min_freq = "750000".into();
         original.max_freq = "2940000".into();
-        original.governor = "schedutil".into();
+        // Gen2 的 fast 档在骁龙上优先 walt（WALT 提频更快，服务游戏 burst）。
+        original.governor = "walt".into();
         let hw = Hardware {
+            samsung: false,
             soc: Soc::Gen2,
             device: "test".into(),
             evidence: "test".into(),
@@ -849,6 +918,7 @@ mod tests {
             )
             .unwrap();
             let mut hw = Hardware {
+                samsung: false,
                 soc,
                 device: "test".into(),
                 evidence: "test".into(),
@@ -957,6 +1027,7 @@ mod tests {
             vec![(0, "0-1"), (2, "2-4"), (5, "5-6"), (7, "7")]
         };
         Hardware {
+            samsung: false,
             soc: Soc::Gen3,
             device: "any-oem".into(),
             evidence: "SM8650".into(),
@@ -989,7 +1060,7 @@ mod tests {
         assert_ne!(before, format!("{config:?}"));
         assert_eq!(
             config.profile("powersave").unwrap().clusters[0].max_freq,
-            "1560000"
+            "1950000"
         );
     }
     #[test]
@@ -1008,7 +1079,8 @@ mod tests {
             .all(|p| p.clusters[1].governor == "schedutil"));
         assert_eq!(
             config.profile("powersave").expect("mode").clusters[1].max_freq,
-            "1320000"
+            // 共享 policy 的两簇取更紧的上限：min(52%,51%) = 51% × 3000000。
+            "1530000"
         );
     }
     #[test]
@@ -1133,6 +1205,7 @@ mod tests {
                 .unwrap_or(soc.name());
             assert_eq!(identify_soc(&props(model), &[]).unwrap().0, soc);
             let hardware = Hardware {
+                samsung: false,
                 soc,
                 device: "fixture".into(),
                 evidence: "provided cpuinfo; simulated policies".into(),
@@ -1225,8 +1298,119 @@ mod tests {
         let mut policy = crate::profiles::test_hardware(Soc::Gen3).policies[0].clone();
         policy.current_governor = "performance".into();
         policy.governors = vec!["performance".into(), "schedutil".into()];
-        assert_eq!(select_governor("auto", &policy).unwrap(), "schedutil");
-        assert_eq!(select_governor("performance", &policy).unwrap(), "performance");
+        assert_eq!(select_governor("auto", &policy, true).unwrap(), "schedutil");
+        assert_eq!(select_governor("performance", &policy, true).unwrap(), "performance");
+    }
+
+    #[test]
+    fn leading_version_bins_and_dimensity8400_install_on_their_family_profile() {
+        // 一加 Pad 2 Pro（骁龙 8 至尊版领先版）报告 SM8750P。
+        for value in ["SM8750P", "sm8750p", "Snapdragon 8 Elite Leading Version", "骁龙8至尊版领先版"] {
+            assert_eq!(identify_soc(&props(value), &[]).unwrap().0, Soc::Elite, "{value}");
+        }
+        // 红米 K80 至尊版（天玑 8400-Ultra）。
+        for value in ["Dimensity 8400-Ultra", "dimensity8400", "天玑8400", "天玑8400Ultra"] {
+            assert_eq!(
+                identify_soc(&props(value), &[]).unwrap().0,
+                Soc::Dimensity8400,
+                "{value}"
+            );
+        }
+        assert_eq!(
+            identify_soc(&props("SM8850AC"), &["qcom,sm8850-qrd".into(), "qcom,sm8850".into()])
+                .unwrap()
+                .0,
+            Soc::Elite5
+        );
+        // 同属性内的营销名与型号冲突仍然拒绝（8s Gen 3 不是 SM8650）。
+        assert!(identify_soc(&props("Snapdragon 8s Gen 3 (SM8650)"), &[]).is_err());
+        assert!(identify_soc(&props("SM8750P"), &["qcom,sm8635".into()]).is_err());
+    }
+
+    #[test]
+    fn xring_o3_split_vendor_properties_match_the_failed_installation() {
+        let properties = vec![
+            ("ro.soc.model".into(), "O3".into()),
+            ("ro.soc.manufacturer".into(), "XRing".into()),
+            ("ro.board.platform".into(), "xring_o3_asic".into()),
+            ("ro.hardware".into(), "xring_o3_asic".into()),
+        ];
+        assert_eq!(identify_soc(&properties, &[]).unwrap().0, Soc::XringO3);
+        assert_eq!(identify_soc(&properties[..2], &[]).unwrap().0, Soc::XringO3);
+        assert!(identify_soc(&properties[..1], &[]).is_err());
+        assert_eq!(identify_soc(&properties[2..3], &[]).unwrap().0, Soc::XringO3);
+        let mut conflict = properties.clone();
+        conflict.push(("ro.vendor.soc.model".into(), "SM8550".into()));
+        assert!(identify_soc(&conflict, &[]).is_err());
+        let unrelated = vec![("ro.soc.model".into(), "O3".into()), ("ro.soc.manufacturer".into(), "Other".into())];
+        assert!(identify_soc(&unrelated, &[]).is_err());
+    }
+
+    #[test]
+    fn qualcomm_auto_prefers_walt_while_other_platforms_keep_the_oem_governor() {
+        // walt 优先只服务骁龙的性能/极速档；省电/均衡与天玑/玄戒保留 OEM。
+        assert!(prefer_walt(Soc::Gen3, "fast"));
+        assert!(prefer_walt(Soc::Elite, "performance"));
+        assert!(!prefer_walt(Soc::Gen3, "balance"));
+        assert!(!prefer_walt(Soc::Gen3, "powersave"));
+        assert!(!prefer_walt(Soc::Dimensity9400Plus, "fast"));
+        assert!(!prefer_walt(Soc::XringO3, "fast"));
+        let mut policy = crate::profiles::test_hardware(Soc::Gen3).policies[0].clone();
+        policy.governors = vec!["performance".into(), "schedutil".into(), "walt".into()];
+        policy.current_governor = "performance".into();
+        assert_eq!(select_governor("auto", &policy, true).unwrap(), "walt");
+        policy.current_governor = "schedutil".into();
+        // 骁龙性能/极速：OEM 的 schedutil 让位于 walt（WALT 窗口负载跟踪提频更快）。
+        assert_eq!(select_governor("auto", &policy, true).unwrap(), "walt");
+        // 省电/均衡：保留 OEM 正在使用的调速器，不破坏原厂调校。
+        assert_eq!(select_governor("auto", &policy, false).unwrap(), "schedutil");
+        assert_eq!(select_governor("walt", &policy, false).unwrap(), "walt");
+        policy.governors.retain(|value| value != "walt");
+        assert_eq!(select_governor("walt", &policy, true).unwrap(), "schedutil");
+    }
+
+    #[test]
+    fn samsung_keeps_the_factory_governor_and_blocks_extra_controls_after_legacy_config() {
+        for soc in crate::soc::SUPPORTED {
+            let mut hardware = crate::profiles::test_hardware(soc);
+            hardware.samsung = true;
+            for policy in &mut hardware.policies {
+                policy.current_governor = "performance".into();
+                policy.governors = vec!["performance".into(), "walt".into(), "schedutil".into()];
+            }
+            let mut config = crate::profiles::test_config(soc);
+            config.functions.cpuset.enable = true;
+            config.functions.cpuctl.enable = true;
+            config.functions.input_boost.enabled = true;
+            config.functions.scheduler.enable = true;
+            config.functions.launch_boost.enable = true;
+            config.functions.perf_service_lock.enable = true;
+            config.functions.disable_gpu_boost = true;
+            for profile in config.modes.values_mut() {
+                profile.online = [false; 8];
+                for data in &mut profile.clusters { data.governor = "schedutil".into(); }
+            }
+            hardware.adapt_config(&mut config).unwrap();
+            assert!(!config.functions.cpuset.enable);
+            assert!(!config.functions.cpuctl.enable);
+            assert!(!config.functions.input_boost.enabled);
+            assert!(!config.functions.scheduler.enable);
+            assert!(!config.functions.launch_boost.enable);
+            assert!(!config.functions.perf_service_lock.enable);
+            assert!(!config.functions.disable_gpu_boost);
+            assert!(!config.functions.node_watchdog);
+            assert!(!config.functions.fas.enabled);
+            for profile in config.modes.values() {
+                assert!(profile.online.iter().all(|online| *online));
+                for (index, data) in profile.clusters.iter().enumerate() {
+                    if config.policy[index] >= 0 { assert_eq!(data.governor, "performance"); }
+                    assert!(data.sched_params.is_empty());
+                }
+            }
+            let first = format!("{config:?}");
+            hardware.adapt_config(&mut config).unwrap();
+            assert_eq!(first, format!("{config:?}"));
+        }
     }
 
 }

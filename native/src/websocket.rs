@@ -54,10 +54,14 @@ struct RuntimeData {
     fas_engine_state: String,
     fas_engine_source: String,
     fas_engine_fps: f32,
+    fas_engine_gpu: f32,
     fas_engine_boost: u32,
     fas_engine_override: bool,
+    fas_engine_ticks: u64,
+    frequencies: [u32; 4],
     scene_installed: bool,
     scene_presence: String,
+    samsung: bool,
 }
 
 pub struct PolicyStatus<'a> {
@@ -74,6 +78,9 @@ pub struct PolicyStatus<'a> {
 }
 
 impl RuntimeState {
+    pub fn set_samsung(&self, enabled: bool) {
+        if let Ok(mut data) = self.inner.lock() { data.samsung = enabled; }
+    }
     /// Publish one coherent policy result. A WebSocket reader must never see
     /// a new effective mode paired with the previous tick's successful health.
     pub fn publish_policy(&self, update: PolicyStatus<'_>) {
@@ -125,13 +132,6 @@ impl RuntimeState {
     pub fn set_power_profile(&self, profile: &str) {
         if let Ok(mut data) = self.inner.lock() {
             data.power_profile = profile.into();
-        }
-    }
-    pub fn tick(&self, phase: &str, error: &str) {
-        if let Ok(mut data) = self.inner.lock() {
-            data.phase = phase.into();
-            data.error = error.into();
-            data.tick = Some(Instant::now());
         }
     }
     pub fn set(
@@ -190,8 +190,17 @@ impl RuntimeState {
             data.fas_engine_state = status.state.into();
             data.fas_engine_source = status.source.into();
             data.fas_engine_fps = status.fps;
+            data.fas_engine_gpu = status.gpu;
             data.fas_engine_boost = status.boost;
             data.fas_engine_override = status.override_active;
+            data.fas_engine_ticks = status.ticks;
+        }
+    }
+
+    /// 各簇实时频率（kHz），供 WebUI 概览展示。
+    pub fn set_frequencies(&self, frequencies: [u32; 4]) {
+        if let Ok(mut data) = self.inner.lock() {
+            data.frequencies = frequencies;
         }
     }
 
@@ -600,7 +609,7 @@ fn payload(state: &WebState, app_endpoint: bool) -> String {
     };
     if !app_endpoint {
         return format!(
-            "mode:{},effective:{},package:{},controller:{},sceneActive:{},sceneLinked:{},phase:{},heartbeatMs:{},port:{},powerSaveProfile:{},socName:{},socId:{},configProfile:{},automaticEnabled:{},appKind:{},classificationSource:{},automaticActive:{},fasAvailable:{},sceneInstalled:{},scenePresence:{},fasState:{},fasMode:{},fasSync:{},fasEngine:{},fasEngineSrc:{},fasFps:{},fasBoost:{},fasOverride:{},version:{},pendingControls:{}",
+            "mode:{},effective:{},package:{},controller:{},sceneActive:{},sceneLinked:{},phase:{},heartbeatMs:{},port:{},powerSaveProfile:{},socName:{},socId:{},configProfile:{},automaticEnabled:{},appKind:{},classificationSource:{},automaticActive:{},fasAvailable:{},sceneInstalled:{},scenePresence:{},fasState:{},fasMode:{},fasSync:{},fasEngine:{},fasEngineSrc:{},fasFps:{},fasGpu:{},fasBoost:{},fasOverride:{},fasTick:{},freqs:{},version:{},pendingControls:{},samsungSafe:{}",
             default,
             runtime.effective_mode,
             runtime.package,
@@ -616,9 +625,12 @@ fn payload(state: &WebState, app_endpoint: bool) -> String {
             runtime.fas_state, runtime.fas_mode, runtime.fas_sync,
             runtime.fas_engine_state, runtime.fas_engine_source,
             format!("{:.1}", runtime.fas_engine_fps),
+            format!("{:.0}", runtime.fas_engine_gpu),
             runtime.fas_engine_boost,
             runtime.fas_engine_override,
-            env!("CARGO_PKG_VERSION"), runtime.pending_controls,
+            runtime.fas_engine_ticks,
+            runtime.frequencies.iter().map(u32::to_string).collect::<Vec<_>>().join(";"),
+            env!("CARGO_PKG_VERSION"), runtime.pending_controls, runtime.samsung,
         );
     }
     let mut rules = String::new();

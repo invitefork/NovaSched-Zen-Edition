@@ -43,9 +43,10 @@ pub struct Scheduler {
     last_explicit: bool,
     hardware: Hardware,
     pending_note: String,
-    /// Ceilings the kernel or a vendor service refused; re-written every tick
-    /// until they stick, so a refused value never rolls back the dispatch.
+    /// Keep unconfirmed ceilings visible after the retry budget is spent.
     pending_enforcement: Vec<(PathBuf, String)>,
+    enforcement_attempts: u8,
+    enforcement_after: std::time::Instant,
     cpuctl_live: Arc<CpuctlLive>,
     open_drift: Option<Vec<String>>,
     /// Last mode pushed to Scene N1's FAS node, for change-only logging.
@@ -79,6 +80,15 @@ enum OptionalWriteOutcome {
     Failed,
 }
 
+/// SystemUI 前台（下拉通知栏、超级岛、控制中心）时的突发借用：省电/均衡
+/// 档位下临时使用性能档的频率包络。HyperOS 超级岛的通知展开动画需要
+/// burst CPU，低档位上限会把 SystemUI 动画压出掉帧；性能/极速档本身不受
+/// 限。只借包络不改档位状态——通知栏收起、真实应用回到前台后立即回到
+/// 原档位包络。三星保守策略不参与。
+pub(crate) fn shell_burst(samsung: bool, package: &str, mode: &str) -> bool {
+    !samsung && package == "com.android.systemui" && matches!(mode, "powersave" | "balance")
+}
+
 impl Scheduler {
     pub fn new(
         mut config: Config,
@@ -102,6 +112,8 @@ impl Scheduler {
             hardware,
             pending_note: String::new(),
             pending_enforcement: Vec::new(),
+            enforcement_attempts: 0,
+            enforcement_after: std::time::Instant::now(),
             cpuctl_live,
             open_drift: None,
             fas_mode: None,
@@ -138,6 +150,9 @@ impl Scheduler {
 
     pub fn ignored_packages(&self) -> &BTreeSet<String> {
         &self.config.functions.foreground_monitor.ignored_packages
+    }
+    pub fn fas_config(&self) -> crate::config::FasConfig {
+        self.config.functions.fas.clone()
     }
 
     pub fn current_mode(&self) -> &str {
@@ -193,9 +208,11 @@ impl Scheduler {
         explicit: bool,
     ) -> Result<()> {
         let snapshot = self.snapshot.clone();
-        snapshot.apply_transaction(|| {
+        let result = snapshot.apply_transaction(|| {
             self.apply_inner(package, mode, launch_boost, force, explicit, false)
-        })
+        });
+        if result.is_err() { self.clear_pending(); }
+        result
     }
     fn apply_inner(
         &mut self,
@@ -206,6 +223,7 @@ impl Scheduler {
         explicit: bool,
         preserve_lower_caps: bool,
     ) -> Result<()> {
+        let burst = shell_burst(self.hardware.samsung, package, mode);
         if !force
             && package == self.current_package
             && mode == self.current_mode
@@ -213,7 +231,10 @@ impl Scheduler {
         {
             return Ok(());
         }
-        let mut profile = self.config.profile(mode)?.clone();
+        let mut profile = self
+            .config
+            .profile(if burst { "performance" } else { mode })?
+            .clone();
         let package_changed = package != self.current_package;
         let mode_changed = mode != self.current_mode;
         let boost = launch_boost
@@ -221,8 +242,12 @@ impl Scheduler {
             && !package.is_empty()
             && self.config.functions.launch_boost.enable;
 
+        // 切应用不切档时通常无需写节点；但 SystemUI 突发状态的进出意味着
+        // 频率包络变化，必须真实下发一次。
+        let previous_burst = shell_burst(self.hardware.samsung, &self.current_package, mode);
         if !force
             && !mode_changed
+            && burst == previous_burst
             && !self.current_mode.is_empty()
             && explicit == self.last_explicit
             && !boost
@@ -267,6 +292,8 @@ impl Scheduler {
             ));
         }
         self.pending_enforcement.clear();
+        self.enforcement_attempts = 0;
+        self.enforcement_after = std::time::Instant::now() + Duration::from_secs(10);
         self.apply_frequency(&profile)?;
         self.apply_sched_params(&profile)?;
         self.apply_online(&profile)?;
@@ -306,7 +333,13 @@ impl Scheduler {
         self.current_package = package.to_string();
         self.last_explicit = explicit;
         if package_changed || mode_changed || force {
-            self.logger.info(format!("情景模式: {mode} 已启用"));
+            if burst {
+                self.logger.info(format!(
+                    "情景模式: {mode} 已启用（SystemUI 突发：借用性能档频率包络）"
+                ));
+            } else {
+                self.logger.info(format!("情景模式: {mode} 已启用"));
+            }
         }
         Ok(())
     }
@@ -314,7 +347,7 @@ impl Scheduler {
     /// Refresh independently of CPU writes: FAS can start or restart after boot.
     pub fn refresh_fas(&mut self, allowed: bool) -> crate::fas::Status {
         let mut status = crate::fas::inspect(&self.kernel_root);
-        if !allowed {
+        if !allowed || !self.config.functions.fas.enabled {
             status.sync = "paused";
             return status;
         }
@@ -371,6 +404,25 @@ impl Scheduler {
         }
     }
 
+    /// 各簇当前实际频率（kHz），供 WebUI 实时展示；读取失败为 0。
+    /// 每个 tick 最多四次小文件读取，代价可忽略。
+    pub fn live_frequencies(&self) -> [u32; 4] {
+        let mut out = [0u32; 4];
+        for (slot, policy) in self.config.policy.iter().enumerate() {
+            if *policy < 0 {
+                continue;
+            }
+            out[slot] = util::read_trimmed(
+                self.node(format!("/sys/devices/system/cpu/cpufreq/policy{policy}"))
+                    .join("scaling_cur_freq"),
+            )
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        }
+        out
+    }
+
     fn cpuctl_path(&self, group: &str, field: &str) -> PathBuf {
         let paths = [
             self.node(format!("/dev/cpuctl/{group}/cpu.uclamp.{field}")),
@@ -425,7 +477,7 @@ impl Scheduler {
             None
         } else {
             self.logger.warn(format!(
-                "部分节点仍未生效，持续重试: {}",
+                "部分节点仍未生效，保留诊断状态: {}",
                 remaining
                     .iter()
                     .map(|item| item.describe())
@@ -437,13 +489,19 @@ impl Scheduler {
         Ok(self.open_drift.is_none())
     }
 
-    /// Re-assert ceilings that the kernel or a vendor service refused, once
-    /// per loop tick, until they stick. Silent by design: only state
-    /// transitions are logged, never per-attempt errors.
+    pub fn pending_retry_exhausted(&self) -> bool {
+        self.hardware.samsung || self.enforcement_attempts >= 3
+    }
+
+    /// At most three retries, ten seconds apart. Samsung keeps the first
+    /// readback and yields immediately instead of competing with its HAL.
     pub fn enforce_pending(&mut self) -> bool {
-        if self.pending_enforcement.is_empty() {
+        if self.pending_enforcement.is_empty() || self.pending_retry_exhausted()
+            || std::time::Instant::now() < self.enforcement_after {
             return false;
         }
+        self.enforcement_attempts += 1;
+        self.enforcement_after = std::time::Instant::now() + Duration::from_secs(10);
         let mut still = Vec::new();
         let mut resolved = false;
         for (path, value) in std::mem::take(&mut self.pending_enforcement) {
@@ -463,7 +521,10 @@ impl Scheduler {
         if resolved {
             self.report_pending();
         }
-        resolved
+        if self.pending_retry_exhausted() && !self.pending_enforcement.is_empty() {
+            self.logger.warn("系统未接受频率上限，三次重试已用完；保留降级状态，停止自动重写");
+        }
+        true
     }
 
     /// Drops the enforcement queue; used while a foreign scheduler owns the
@@ -500,7 +561,7 @@ impl Scheduler {
         if self.pending_note != note {
             self.pending_note = note.clone();
             self.logger.info(format!(
-                "部分频率上限被系统服务占用，守护将每 2 秒自动重写直至生效: {note}"
+                "部分频率上限被系统服务占用，最多重试三次（三星不重试）: {note}"
             ));
         }
     }
@@ -551,17 +612,22 @@ impl Scheduler {
                 ControlKind::FrequencyCeiling,
                 true,
             );
-            add(
-                base.join("scaling_governor"),
-                data.governor.clone(),
-                ControlKind::Text,
-                true,
-            );
+            if !self.hardware.samsung {
+                add(
+                    base.join("scaling_governor"),
+                    data.governor.clone(),
+                    ControlKind::Text,
+                    true,
+                );
+            }
         }
         let cpuset = &self.config.functions.cpuset;
-        // Must mirror apply_mode_cpuset's precedence: the per-app rule (only
-        // while an explicitly ruled app is foreground), then the per-mode override, then the static values.
-        let rule = if explicit {
+        // 功能停用时相应节点不进审计：模块没有接管它们，Scene 的 fas-rs 或
+        // 厂商 powerhal 改写全局 uclamp / cpuset 属于正常外部行为。把原厂值
+        // 留在期望列表里会造成“检测到节点漂移”→修复→再漂移的拉锯告警。
+        // 必须镜像 apply_mode_cpuset 的优先级：应用规则（仅显式规则应用在前台
+        // 时），然后档位覆盖，最后静态值。
+        let rule = if explicit && cpuset.enable {
             cpuset.app_rule.as_ref()
         } else {
             None
@@ -586,25 +652,24 @@ impl Scheduler {
                 });
                 Some(rule_value.or(mode_override).unwrap_or(normal).clone())
             } else {
-                self.snapshot.original_value(&path)?
+                None
             };
             if let Some(value) = value {
                 add(path, value, ControlKind::CpuList, false);
             }
         }
         let sched = &self.config.functions.scheduler;
-        for (name, normal) in [
-            ("sched_util_clamp_min", &sched.util_clamp_min),
-            ("sched_util_clamp_max", &sched.util_clamp_max),
-        ] {
-            let path = self.node(format!("/proc/sys/kernel/{name}"));
-            let value = if !sched.enable {
-                self.snapshot.original_value(&path)?
-            } else {
-                Some(normal.clone())
-            };
-            if let Some(value) = value {
-                add(path, value, ControlKind::Number, false);
+        if sched.enable {
+            for (name, normal) in [
+                ("sched_util_clamp_min", &sched.util_clamp_min),
+                ("sched_util_clamp_max", &sched.util_clamp_max),
+            ] {
+                add(
+                    self.node(format!("/proc/sys/kernel/{name}")),
+                    normal.clone(),
+                    ControlKind::Number,
+                    false,
+                );
             }
         }
         Ok(controls)
@@ -620,6 +685,7 @@ impl Scheduler {
                 }
                 let base = self.node(format!("/sys/devices/system/cpu/cpufreq/policy{policy}"));
                 for name in ["scaling_min_freq", "scaling_max_freq", "scaling_governor"] {
+                    if self.hardware.samsung && name == "scaling_governor" { continue; }
                     paths.insert(base.join(name));
                 }
                 for (name, _) in &data.sched_params {
@@ -843,30 +909,17 @@ impl Scheduler {
     }
 
     fn apply_mode_uclamp(&self) -> Result<()> {
+        if !self.config.functions.scheduler.enable {
+            // 功能停用时不再回写原厂全局 uclamp：模块没有接管这些节点，
+            // 每次切档都把 fas-rs / powerhal 的设置改回去只会互相拉锯。
+            // 原厂值由模块停止时的快照回滚负责恢复。
+            return Ok(());
+        }
         let minimum = &self.node("/proc/sys/kernel/sched_util_clamp_min");
         let maximum = &self.node("/proc/sys/kernel/sched_util_clamp_max");
-        if self.config.functions.scheduler.enable {
-            let min = &self.config.functions.scheduler.util_clamp_min;
-            let max = &self.config.functions.scheduler.util_clamp_max;
-            write_uclamp_range(&self.snapshot, minimum, maximum, min, max)?;
-        } else {
-            let min_stock = self.snapshot.original_value(minimum)?;
-            let max_stock = self.snapshot.original_value(maximum)?;
-            if min_stock.is_some() || max_stock.is_some() {
-                let min = match min_stock {
-                    Some(value) => value,
-                    None if minimum.exists() => util::read_trimmed(minimum)?,
-                    None => "0".into(),
-                };
-                let max = match max_stock {
-                    Some(value) => value,
-                    None if maximum.exists() => util::read_trimmed(maximum)?,
-                    None => "1024".into(),
-                };
-                write_uclamp_range(&self.snapshot, minimum, maximum, min.trim(), max.trim())?;
-            }
-        }
-        Ok(())
+        let min = &self.config.functions.scheduler.util_clamp_min;
+        let max = &self.config.functions.scheduler.util_clamp_max;
+        write_uclamp_range(&self.snapshot, minimum, maximum, min, max)
     }
 
     fn write_frequency(
@@ -889,25 +942,13 @@ impl Scheduler {
         }
         // An OEM may already use the requested governor. Avoid an unnecessary
         // driver callback without weakening the snapshot for changed values.
-        if util::read_trimmed(base.join("scaling_governor"))? != governor {
+        if !self.hardware.samsung && util::read_trimmed(base.join("scaling_governor"))? != governor {
             self.required_write(base.join("scaling_governor"), governor)?;
         }
-        // A vendor thermal/perf service can rewrite the ceiling between our
-        // write and the readback, especially around mode switches. Re-assert
-        // with a short backoff inside this dispatch; whatever still refuses
-        // goes into the enforcement queue and is re-written on every loop
-        // tick until the kernel accepts it — never a rollback, never a
-        // failed dispatch, and the watchdog/audit keeps watching too.
+        // One readback per dispatch. A lower vendor limit is accepted; a
+        // higher limit remains visible with a bounded retry budget.
         let ceiling = base.join("scaling_max_freq");
-        let mut observed_max = util::read_trimmed(&ceiling)?;
-        for delay in [15, 30, 60, 120] {
-            if frequency_ceiling_matches(&observed_max, &effective_max) {
-                break;
-            }
-            util::sleep(Duration::from_millis(delay));
-            self.required_write(base.join("scaling_max_freq"), &effective_max)?;
-            observed_max = util::read_trimmed(&ceiling)?;
-        }
+        let observed_max = util::read_trimmed(&ceiling)?;
         if !frequency_ceiling_matches(&observed_max, &effective_max) {
             let target = effective_max.clone();
             if !self
@@ -919,12 +960,12 @@ impl Scheduler {
             }
         }
         let observed_governor = util::read_trimmed(base.join("scaling_governor"))?;
-        if observed_governor != governor {
+        if !self.hardware.samsung && observed_governor != governor {
             return Err(format!(
                 "CPU policy{policy} 调速器未按请求生效: 请求={governor} 读回={observed_governor}"
             ));
         }
-        self.logger.debug(format!("CPU簇: {policy} (c{cluster}) 最小频率: {effective_min} 最大频率: {effective_max} 调速器: {governor}"));
+        self.logger.debug(format!("CPU簇: {policy} (c{cluster}) 最小频率: {effective_min} 最大频率: {effective_max} 调速器: {observed_governor}"));
         Ok(())
     }
 
@@ -1746,6 +1787,7 @@ mod daemon_policy_tests {
             let logger = Logger::new(&root.join("state"));
             let snapshot = Snapshot::load(&root.join("state"), logger.clone()).unwrap();
             let hardware = Hardware {
+                samsung: false,
                 soc,
                 device: "test".into(),
                 evidence: "fake sysfs".into(),
@@ -1875,6 +1917,7 @@ mod daemon_policy_tests {
             let logger = Logger::new(&root.join("state"));
             let snapshot = Snapshot::load(&root.join("state"), logger.clone()).unwrap();
             let hardware = Hardware {
+                samsung: false,
                 soc: crate::soc::Soc::Gen3,
                 device: "fixture".into(),
                 evidence: "fake node tree".into(),
@@ -1906,6 +1949,53 @@ mod daemon_policy_tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn shell_burst_borrows_performance_envelope_for_systemui_only() {
+        assert!(shell_burst(false, "com.android.systemui", "powersave"));
+        assert!(shell_burst(false, "com.android.systemui", "balance"));
+        assert!(!shell_burst(false, "com.android.systemui", "fast"));
+        assert!(!shell_burst(false, "com.miui.home", "balance"));
+        assert!(!shell_burst(true, "com.android.systemui", "balance"));
+    }
+
+    #[test]
+    fn notification_shade_burst_lifts_caps_and_closing_restores_mode() {
+        let mut f = Fixture::new();
+        // 让性能档有独立于均衡档的可观测上限。
+        for cluster in 0..4 {
+            f.scheduler.config.modes.get_mut("performance").unwrap().clusters[cluster].max_freq =
+                "2400000".into();
+        }
+        let policy0 = f
+            .root
+            .join("sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq");
+        // 均衡档下普通应用：2000000。
+        f.scheduler
+            .apply("com.example.app", "balance", false, true, false)
+            .unwrap();
+        assert_eq!(util::read_trimmed(&policy0).unwrap(), "2000000");
+        // 下拉通知栏（SystemUI 前台）：借用性能档包络 2400000，档位状态不变。
+        f.scheduler
+            .apply("com.android.systemui", "balance", false, false, false)
+            .unwrap();
+        assert_eq!(util::read_trimmed(&policy0).unwrap(), "2400000");
+        assert_eq!(f.scheduler.current_mode(), "balance");
+        assert_eq!(f.scheduler.current_package(), "com.android.systemui");
+        // 通知栏收起，应用回到前台：立即回到均衡档包络。
+        f.scheduler
+            .apply("com.example.app", "balance", false, false, false)
+            .unwrap();
+        assert_eq!(util::read_trimmed(&policy0).unwrap(), "2000000");
+        // 极速档下 SystemUI 不借用（已高于性能档）。
+        f.scheduler
+            .apply("com.example.app", "fast", false, false, false)
+            .unwrap();
+        f.scheduler
+            .apply("com.android.systemui", "fast", false, false, false)
+            .unwrap();
+        assert_eq!(util::read_trimmed(&policy0).unwrap(), "2500000");
     }
 
     #[test]
@@ -2394,6 +2484,72 @@ mod daemon_policy_tests {
             assert_eq!(state.top_app_min, "12.34");
             assert_eq!(state.boost_min, value);
             assert_eq!(state.duration_ms, duration);
+        }
+    }
+
+    #[test]
+    fn rejected_ceilings_get_only_three_spaced_retries_and_stay_visible() {
+        let mut fixture = Fixture::new();
+        let path = fixture.root.join("sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq");
+        // A regular fixture retains trailing bytes, modelling an unaccepted
+        // smaller ceiling without a live kernel or vendor HAL.
+        fs::write(&path, "3000000").unwrap();
+        fixture.scheduler.pending_enforcement = vec![(path, "100000".into())];
+        fixture.scheduler.enforcement_after = std::time::Instant::now() + Duration::from_secs(10);
+        let before = fixture.count();
+        assert!(!fixture.scheduler.enforce_pending());
+        assert_eq!(fixture.count(), before);
+        for _ in 0..3 {
+            fixture.scheduler.enforcement_after = std::time::Instant::now();
+            assert!(fixture.scheduler.enforce_pending());
+        }
+        assert_eq!(fixture.count(), before + 3);
+        assert!(fixture.scheduler.pending_retry_exhausted());
+        assert_eq!(fixture.scheduler.pending_control_count(), 1);
+        fixture.scheduler.enforcement_after = std::time::Instant::now();
+        assert!(!fixture.scheduler.enforce_pending());
+        assert_eq!(fixture.count(), before + 3);
+    }
+
+    #[test]
+    fn samsung_never_reasserts_vendor_ceilings_or_follows_external_fas() {
+        let mut fixture = Fixture::new();
+        fixture.scheduler.hardware.samsung = true;
+        fixture.scheduler.config.functions.fas.enabled = false;
+        let path = fixture.root.join("sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq");
+        fixture.scheduler.pending_enforcement = vec![(path, "100000".into())];
+        let before = fixture.count();
+        assert!(!fixture.scheduler.enforce_pending());
+        assert_eq!(fixture.count(), before);
+        let fas = fixture.root.join("dev/fas_rs/mode");
+        fs::create_dir_all(fas.parent().unwrap()).unwrap();
+        fs::write(&fas, "fast").unwrap();
+        assert_eq!(fixture.scheduler.refresh_fas(true).sync, "paused");
+        assert_eq!(fs::read_to_string(fas).unwrap(), "fast");
+    }
+
+    #[test]
+    fn samsung_only_captures_frequency_limits_and_never_restores_a_vendor_governor_change() {
+        let fixture = Fixture::new();
+        let mut hardware = fixture.scheduler.hardware.clone();
+        hardware.samsung = true;
+        let logger = Logger::new(&fixture.root.join("samsung-state"));
+        let snapshot = Snapshot::load(&fixture.root.join("samsung-state"), logger.clone()).unwrap();
+        let mut scheduler = Scheduler::new(
+            fixture.scheduler.config.clone(), snapshot.clone(), logger,
+            hardware, Arc::new(CpuctlLive::default()),
+        ).unwrap();
+        scheduler.kernel_root = fixture.root.clone();
+        scheduler.initialize("balance").unwrap();
+        let governor = fixture.root.join("sys/devices/system/cpu/cpufreq/policy0/scaling_governor");
+        assert!(snapshot.original_value(&governor).unwrap().is_none());
+        fs::write(&governor, "schedutil").unwrap();
+        scheduler.apply("org.example.b", "balance", false, true, false).unwrap();
+        assert_eq!(fs::read_to_string(&governor).unwrap(), "schedutil");
+        snapshot.restore().unwrap();
+        assert_eq!(fs::read_to_string(&governor).unwrap(), "schedutil");
+        for (path, _) in snapshot.written_nodes() {
+            assert!(matches!(path.file_name().and_then(|name| name.to_str()), Some("scaling_min_freq" | "scaling_max_freq")), "{}", path.display());
         }
     }
 

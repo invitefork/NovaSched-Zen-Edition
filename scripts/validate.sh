@@ -10,6 +10,7 @@ python3 scripts/generate-profiles.py --check
 node scripts/check-profiles.cjs
 python3 scripts/test-profiles.py
 python3 scripts/test-installer.py
+python3 scripts/test-boot-service.py
 python3 scripts/test-webui-updater.py
 if command -v cargo >/dev/null 2>&1; then
   TEST_ARGS=()

@@ -1,2 +1,2 @@
 /* ZenJooo · Release identity; checked by package-release.py. */
-window.NovaRelease = Object.freeze({ version: "2.7.1", versionCode: 371, author: "ZenJooo" });
+window.NovaRelease = Object.freeze({ version: "2.8.0", versionCode: 380, author: "ZenJooo" });

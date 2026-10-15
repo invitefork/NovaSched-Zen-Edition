@@ -26,8 +26,9 @@ phase=sys.argv[2]; module=Path(sys.argv[4]); state=Path(os.environ['NOVA_TEST_ST
 if os.environ.get('NOVA_NO_RECEIPT')==phase:sys.exit(139)
 code=int(os.environ.get('NOVA_FAIL_CODE','1')) if os.environ.get('NOVA_FAIL')==phase else 0
 (module/f'install-{phase}.exit').write_text(str(code)+'\\n')
-output='scene_presence='+os.environ.get('NOVA_SCENE','available')+'\\n' if phase=='scene-status' else 'automatic_enabled=true\\n' if phase=='prepare-auto' else phase+'=ok\\n'
+output='scene_presence='+os.environ.get('NOVA_SCENE','available')+'\\n' if phase=='scene-status' else 'automatic_enabled=true\\n' if phase=='prepare-auto' else 'compatibility='+os.environ.get('NOVA_COMPAT','standard')+'\\n' if phase=='probe' else phase+'=ok\\n'
 (module/f'install-{phase}.log').write_text(output)
+(module/'install-check.log').open('a').write(phase+': exit='+str(code)+'\\n')
 print(output,end='');sys.exit(code)
 ''')
     core.chmod(0o755)
@@ -36,7 +37,7 @@ ui_print() { echo "$*"; }
 abort() { echo "$*"; exit 70; }
 set_perm() { :; }
 set_perm_recursive() { :; }
-getprop() { echo 'Fixture phone'; }
+getprop() { case "$1" in ro.product.cpu.abi) echo arm64-v8a ;; *) echo 'Fixture phone' ;; esac; }
 . "$CUSTOMIZE"
 '''
     def install(**extra):
@@ -50,6 +51,7 @@ getprop() { echo 'Fixture phone'; }
         ('Magisk',{'MAGISK_VER_CODE':'1'}), ('Magisk Alpha',{'MAGISK_VER':'alpha'}),
         ('KernelSU',{'KSU':'true'}), ('KernelSU Next',{'KSU':'true','KSU_NEXT':'true'}),
         ('APatch',{'APATCH':'true'}), ('other capability-compatible forks',{}),
+        ('SukiSU',{'KSU':'true','SUKISU':'true'}), ('KernelSU-compatible fork',{'KSU':'true','KSU_VER_CODE':'1'}),
     ]:
         run=install(**flags)
         assert run.returncode==0,(name,run.stdout,run.stderr)
@@ -77,6 +79,8 @@ getprop() { echo 'Fixture phone'; }
         assert run.returncode==70,(phase,run.stdout)
         calls=(module/'calls').read_text().splitlines()
         assert calls[-1]==phase
+        assert (state/'install-last.log').read_text().endswith(phase+': exit=1\n')
+        assert '安装失败记录已保留' in run.stdout
         print('PASS: failed',phase,'stops later stages')
     run=install(NOVA_NO_RECEIPT='self-test')
     assert run.returncode==70 and '未留下结束记录' in run.stdout
@@ -87,6 +91,12 @@ getprop() { echo 'Fixture phone'; }
     run=install(ARCH='x86')
     assert run.returncode==70 and not (module/'calls').exists()
     print('PASS: unsupported architecture rejected before core execution')
+    run=install(ARCH='')
+    assert run.returncode==0
+    print('PASS: missing manager ABI falls back to Android arm64 property')
+    run=install(NOVA_COMPAT='samsung')
+    assert run.returncode==0 and '三星保守策略' in run.stdout
+    print('PASS: Samsung compatibility is reported by the hardware check')
     for presence, message in [('available','已确认安装 Scene'),('absent','未安装 Scene'),('unknown','检测暂不可用')]:
         run=install(NOVA_SCENE=presence)
         assert run.returncode==0 and message in run.stdout

@@ -18,7 +18,8 @@ fn read_optional(path: &Path) -> Result<Option<String>> {
     }
 }
 // Canonical fingerprints identify unedited shipped defaults without shipping their text.
-// 历史版本（v2.2.x 及更早）9 项 + v2.6.1 默认 9 项 + 当前默认 9 项。
+// 历史版本（v2.2.x 及更早）9 项 + v2.6.1 默认 9 项 + v2.7.0-2.7.2（370）9 项
+// + 当前默认（380）10 项。
 // `scripts/stock-fingerprints.cjs` 生成；tests::shipped_templates_are_stock
 // 在编译期保证列表与模板一致。
 const STOCK_FINGERPRINTS: &[u64] = &[
@@ -55,6 +56,17 @@ const STOCK_FINGERPRINTS: &[u64] = &[
     0x36b1c6f3524d2773,
     0x4ecaa5ac6f408daa,
     0x6e09071e6d874491,
+    // v2.8.0 / 380 出厂默认（均衡贴近省电 + 天玑 8400 + SM8650 真机 OPP 逐档）
+    0xd1585868a9fe1cdd,
+    0x5833b279736bbd40,
+    0xdb12cd59ecbe6b09,
+    0x2d070c1ed3e39a2a,
+    0xb203f6581fae553d,
+    0x633e1f5195b72938,
+    0xc2ddd15923fb2f02,
+    0x1924994cb0ed6562,
+    0xd792f594b13ed6dd,
+    0xe2d74ecb699e484e,
 ];
 const OWNED_META: &[&str] = &[
     "name",
@@ -114,6 +126,7 @@ fn infer_legacy_soc(config: &Config) -> Option<Soc> {
 pub fn test_hardware(soc: Soc) -> Hardware {
     let anchors = soc.anchors();
     Hardware {
+        samsung: false,
         soc,
         device: "fixture".into(),
         evidence: "fixture".into(),

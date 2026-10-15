@@ -28,7 +28,7 @@ const CONFIG_VERSION = Number(
 const sourceOnly = process.argv.includes("--source-only");
 const LAYOUTS = {
   SM8450: 1, SM8475: 1, SM8550: 1, SM8650: 1, SM8750: 1, SM8850: 1,
-  DIMENSITY8350: 1, DIMENSITY9400PLUS: 1, XRING_O3: 1,
+  DIMENSITY8350: 1, DIMENSITY8400: 1, DIMENSITY9400PLUS: 1, XRING_O3: 1,
 };
 const SUPPORTED = Object.keys(LAYOUTS);
 const assert = (condition, message) => { if (!condition) throw new Error(message); };

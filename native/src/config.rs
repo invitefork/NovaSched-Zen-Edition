@@ -7,7 +7,7 @@ use crate::util::{self, Result};
 pub const MODES: [&str; 4] = ["powersave", "balance", "performance", "fast"];
 /// Profile generation, independent of the UI version. Bump when defaults change
 /// so unedited configurations update while custom tuning migrates in place.
-pub const PROFILE_VERSION: i64 = 370;
+pub const PROFILE_VERSION: i64 = 380;
 
 #[derive(Clone, Debug)]
 pub struct Meta {

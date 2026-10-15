@@ -22,6 +22,9 @@ pub struct InputBoostContext {
     pub stop: Arc<AtomicBool>,
     pub snapshot: Snapshot,
     pub logger: Logger,
+    /// eventfd 写端（仅 fd 号，所有权在 EventLoop）：触摸按下沿写入 1，
+    /// 让主循环立即识别通知栏等 UI 突发。-1 表示不可用。
+    pub touch_signal_fd: std::os::raw::c_int,
 }
 
 /// Opens every /dev/input/event* device and spawns the boost loop. Returns
@@ -82,6 +85,7 @@ fn run(ctx: InputBoostContext, mut files: Vec<File>) {
         })
         .collect();
     let mut pulse = Pulse::default();
+    let mut previous_activity = false;
     while !ctx.stop.load(Ordering::Relaxed) {
         let timeout = pulse.until.map(|until| until.saturating_duration_since(Instant::now()).as_millis().clamp(1, 150) as i32).unwrap_or(150);
         let readable = unsafe { ffi::poll(poll_fds.as_mut_ptr(), poll_fds.len(), timeout) };
@@ -105,12 +109,27 @@ fn run(ctx: InputBoostContext, mut files: Vec<File>) {
             break;
         }
         let Ok(state) = ctx.live.inner.lock() else {
+            previous_activity = activity;
             continue;
         };
         if !state.allowed {
             pulse = Pulse::default();
+            previous_activity = activity;
             continue;
         }
+        // 触摸按下沿唤醒主循环：通知栏/超级岛这类不改变 top-app 的 UI 突发
+        // 依赖前台查询，按下即查比 2 秒心跳快一个数量级。
+        if activity && !previous_activity && ctx.touch_signal_fd >= 0 {
+            let value = 1u64;
+            unsafe {
+                ffi::write(
+                    ctx.touch_signal_fd,
+                    &value as *const u64 as *const ffi::c_void,
+                    std::mem::size_of::<u64>(),
+                );
+            }
+        }
+        previous_activity = activity;
         if !activity && pulse.value.is_none() { continue; }
         let Ok(current) = crate::util::read_trimmed(&ctx.node) else {
             continue;

@@ -60,7 +60,7 @@ function fixture(options) {
 async function until(fn){const end=Date.now()+4000;while(!fn()){if(Date.now()>end)throw new Error('Timed out waiting for UI state');await new Promise(resolve=>nativeTimeout(resolve,10));}}
 const pause=()=>new Promise(resolve=>nativeTimeout(resolve,30));
 function click(d,query){const node=d.querySelector(query);assert(node,query+' missing');assert(!node.disabled,query+' disabled');node.click();}
-for(const options of [{linked:true,automatic:true,presence:'available'},{presence:'absent'},{presence:'unknown'},{external:true,presence:'available'},{root:true,presence:'absent'},{labels:false,presence:'absent'}]) {
+for(const options of [{linked:true,automatic:true,presence:'available'},{presence:'absent'},{presence:'unknown'},{external:true,presence:'available'},{root:true,presence:'absent'},{labels:false,presence:'absent'},{samsung:true,presence:'absent',fasEngine:'off',fasState:'absent'}]) {
   const {w,d,cleanup}=fixture(options);
   try {
     await until(()=>['已连接','外部接管'].includes(d.querySelector('#nav-cta-text').textContent));
@@ -68,6 +68,11 @@ for(const options of [{linked:true,automatic:true,presence:'available'},{presenc
     assert.equal(d.querySelectorAll('.dock button[data-page]').length,4);
     assert.equal(d.querySelector('#stat-pkg-raw').textContent,'com.omarea.vtools');
     if(options.linked)assert(d.querySelector('#auto-switch').disabled);
+    assert.equal(d.querySelector('#samsung-compat').hidden, !options.samsung);
+    if(options.samsung){
+      assert.equal(d.querySelector('#fas-engine-title').textContent,'三星兼容策略');
+      assert(d.querySelector('#fas-engine-desc').textContent.includes('不采样 SurfaceFlinger'));
+    }
     if(options.presence==='unknown')assert.equal(d.querySelector('#stat-scene').textContent,'Scene 检测暂不可用');
     if(options.presence==='absent')assert.equal(d.querySelector('#stat-scene').textContent,'WebUI 接管');
     click(d,'.dock [data-page="about"]');click(d,'#appearance-settings');
@@ -148,7 +153,7 @@ for(const bridgeStyle of ['native0','callback2','promise1','sync1']) {
   const {w,d,cleanup}=fixture({version:'2.2.8',legacy:true,legacyMode:'balance'});
   try {
     await until(()=>d.querySelector('#about-engine-version').textContent==='v2.2.8');
-    assert.equal(d.querySelector('#about-version').textContent,'v2.7.1');
+    assert.equal(d.querySelector('#about-version').textContent,'v2.8.0');
     assert.equal(d.querySelector('#version-note').hidden,false);
     await until(()=>d.querySelector('#fas-legacy-desc').textContent.includes('旧版服务'));
     assert(d.querySelector('#fas-legacy-desc').textContent.includes('fas-rs'));

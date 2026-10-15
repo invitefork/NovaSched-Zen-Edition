@@ -1,5 +1,6 @@
 mod app_modes;
 mod automatic;
+mod boot_guard;
 mod config;
 mod config_v2;
 mod daemon;
@@ -74,6 +75,12 @@ fn run() -> Result<()> {
         }
     }
 
+    if module_dir.join("disable").exists()
+        && matches!(command.as_str(), "start" | "restart" | "supervise" | "daemon" | "reload" | "scene-mode")
+    {
+        return Err("模块已停用，请先查看启动保护和诊断记录".into());
+    }
+
     if (!module_dir.is_dir()
         || module_dir.join(".uninstalling").exists()
         || module_dir.join("remove").exists())
@@ -95,6 +102,7 @@ fn run() -> Result<()> {
         return Err("模块正在卸载，已停止启动、回调与配置写入".into());
     }
     match command.as_str() {
+        "boot-ready" => boot_guard::ensure_ready(),
         "version" | "--version" => {
             println!("NovaSched Zen Edition {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -196,5 +204,5 @@ fn run() -> Result<()> {
 }
 
 fn usage() -> &'static str {
-    "用法: novasched <start|restart|daemon|reload|stop|status|diagnose|game-diagnose|fas-diagnose|webui-session|webui-rpc|restore|uninstall|scene-install|scene-restore|scene-status|scene-diagnose|probe|check-config|prepare-config|prepare-auto|version|self-test|install-check PHASE> [--module-dir PATH] [--origin ORIGIN] [--request JSON]"
+    "用法: novasched <start|restart|daemon|boot-ready|reload|stop|status|diagnose|game-diagnose|fas-diagnose|webui-session|webui-rpc|restore|uninstall|scene-install|scene-restore|scene-status|scene-diagnose|probe|check-config|prepare-config|prepare-auto|version|self-test|install-check PHASE> [--module-dir PATH] [--origin ORIGIN] [--request JSON]"
 }

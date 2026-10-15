@@ -76,6 +76,7 @@ pub fn run(module: &Path, phase: &str) -> Result<()> {
                 || line.starts_with("automatic_enabled=")
                 || line.starts_with("scene_presence=")
                 || line.starts_with("scene_detection=")
+                || line.starts_with("compatibility=")
         }) {
             println!("{line}");
         }

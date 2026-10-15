@@ -16,7 +16,8 @@ LAYOUTS = {
     'SM8450': [0, 4, 7, -1], 'SM8475': [0, 4, 7, -1],
     'SM8550': [0, 3, 7, -1], 'SM8650': [0, 2, 5, 7],
     'SM8750': [0, 6, -1, -1], 'SM8850': [0, 6, -1, -1],
-    'DIMENSITY8350': [0, 4, 7, -1], 'DIMENSITY9400PLUS': [0, 4, 7, -1],
+    'DIMENSITY8350': [0, 4, 7, -1], 'DIMENSITY8400': [0, 4, 7, -1],
+    'DIMENSITY9400PLUS': [0, 4, 7, -1],
     'XRING_O3': [4, 0, 1, -1],
 }
 # Cluster order follows LAYOUTS. Ceilings are percentages of the detected
@@ -24,15 +25,16 @@ LAYOUTS = {
 # not measured energy-model sweet spots. No template disables system thermal.
 #          (powersave, balance, performance, fast) per cluster, percent of max
 CEILINGS = {
-    'SM8450':            ([54, 46, 44, 0],  [68, 62, 60, 0],  [84, 80, 80, 0],  [92, 98, 100, 0]),
-    'SM8475':            ([54, 46, 44, 0],  [68, 62, 60, 0],  [84, 80, 80, 0],  [92, 98, 100, 0]),
-    'SM8550':            ([54, 46, 46, 0],  [68, 62, 62, 0],  [84, 82, 82, 0],  [92, 98, 100, 0]),
-    'SM8650':            ([52, 46, 44, 46], [66, 62, 60, 62], [82, 80, 78, 80], [90, 98, 100, 100]),
-    'SM8750':            ([52, 46, 0, 0],   [66, 58, 0, 0],   [80, 72, 0, 0],   [90, 100, 0, 0]),
-    'SM8850':            ([52, 46, 0, 0],   [66, 58, 0, 0],   [80, 70, 0, 0],   [90, 100, 0, 0]),
-    'DIMENSITY8350':     ([56, 48, 46, 0],  [70, 64, 62, 0],  [86, 84, 84, 0],  [94, 100, 100, 0]),
-    'DIMENSITY9400PLUS': ([52, 46, 44, 0],  [66, 60, 58, 0],  [80, 78, 80, 0],  [90, 100, 100, 0]),
-    'XRING_O3':          ([54, 46, 48, 0],  [68, 60, 62, 0],  [82, 74, 80, 0],  [92, 100, 100, 0]),
+    'SM8450':            ([54, 46, 44, 0],  [60, 54, 52, 0],  [84, 80, 80, 0],  [92, 98, 100, 0]),
+    'SM8475':            ([54, 46, 44, 0],  [60, 54, 52, 0],  [84, 80, 80, 0],  [92, 98, 100, 0]),
+    'SM8550':            ([54, 46, 46, 0],  [60, 54, 54, 0],  [84, 82, 82, 0],  [92, 98, 100, 0]),
+    'SM8650':            ([65, 52, 51, 56], [80, 68, 69, 69], [85, 84, 85, 82], [95, 100, 100, 100]),
+    'SM8750':            ([52, 46, 0, 0],   [58, 50, 0, 0],   [80, 72, 0, 0],   [90, 100, 0, 0]),
+    'SM8850':            ([52, 46, 0, 0],   [58, 50, 0, 0],   [80, 70, 0, 0],   [90, 100, 0, 0]),
+    'DIMENSITY8350':     ([56, 48, 46, 0],  [62, 56, 54, 0],  [86, 84, 84, 0],  [94, 100, 100, 0]),
+    'DIMENSITY8400':     ([56, 48, 46, 0],  [62, 56, 54, 0],  [86, 84, 84, 0],  [94, 100, 100, 0]),
+    'DIMENSITY9400PLUS': ([52, 46, 44, 0],  [58, 52, 50, 0],  [80, 78, 80, 0],  [90, 100, 100, 0]),
+    'XRING_O3':          ([54, 46, 48, 0],  [60, 52, 54, 0],  [82, 74, 80, 0],  [92, 100, 100, 0]),
 }
 # NovaFAS per-mode limits: ceiling = top-app uclamp.min max percent;
 # freq_scale = per-cluster minimum-frequency max, percent of the cluster's
@@ -61,7 +63,7 @@ def profile(soc, policies):
         'node_watchdog': True,
         'cpuset': {'enabled': False, 'top_app': '0-7', 'foreground': '0-7',
                    'restricted': '0-3', 'system_background': '0-3', 'background': '0-1'},
-        'cpuctl': {'enabled': True, 'modes': {'powersave': {'background_max': '65'}, 'balance': {'background_max': '85'}}},
+        'cpuctl': {'enabled': True, 'modes': {'powersave': {'background_max': '65'}, 'balance': {'background_max': '75'}}},
         'input_boost': {'enabled': True, 'top_app_min': '30', 'duration_ms': '300', 'modes': {
             'powersave': {'top_app_min': '15', 'duration_ms': '100'},
             'balance': {'top_app_min': '20', 'duration_ms': '140'},
@@ -86,7 +88,7 @@ def profile(soc, policies):
         features['cpuset'].update(restricted='4-7', system_background='4-7', background='4-5')
     return {
         'schema': 'novasched/2', 'module': 'NovaSched_Zen_Edition',
-        'meta': {'name': 'NovaSched Zen Edition', 'author': 'ZenJooo', 'version': 370,
+        'meta': {'name': 'NovaSched Zen Edition', 'author': 'ZenJooo', 'version': 380,
                  'soc': soc, 'loglevel': 'INFO'},
         'policies': policies,
         'features': features,

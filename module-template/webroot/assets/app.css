@@ -297,3 +297,13 @@ body.overlay-open{overflow:hidden}
 @media(max-width:359px){.mode-grid{grid-template-columns:1fr}.hero-mode{font-size:26px}.status-pill{padding:5px 12px}.log-list article{grid-template-columns:auto 1fr}.log-list time{grid-column:1/-1}.palette{gap:9px}.personal-panel{padding:10px}.personal-section{padding:10px}}
 @media(max-height:500px){.content{padding-top:14px}.appearance-layer,.dialog-layer{padding-top:calc(8px + var(--safe-top));padding-bottom:calc(8px + var(--safe-bottom))}.dock-wrap{bottom:calc(8px + var(--safe-bottom))}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+
+/* v2.8.0: live cluster frequencies in the hero card + donation dialogs */
+.hero-freqs{margin:10px 2px 0;font-size:12.5px;letter-spacing:.2px;color:#5b6472;font-variant-numeric:tabular-nums}
+.hero-freqs::before{content:'';display:inline-block;width:6px;height:6px;border-radius:50%;background:#34c759;margin-right:6px;vertical-align:1px}
+[data-theme=dark] .hero-freqs{color:#9aa3af}
+.donate-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0 4px}
+.donate-item{margin:0;text-align:center}
+.donate-item img{display:block;width:100%;border-radius:14px;border:1px solid rgba(128,138,152,.18)}
+.donate-item figcaption{margin-top:6px;font-size:12px;color:#5b6472}
+@media(max-width:359px){.donate-grid{grid-template-columns:1fr}}

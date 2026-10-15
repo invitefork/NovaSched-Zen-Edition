@@ -33,6 +33,7 @@ extern "C" fn handle_signal(signal: i32) {
 }
 
 pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
+    crate::boot_guard::ensure_ready()?;
     STOP_REQUESTED.store(false, Ordering::Relaxed);
     RELOAD_REQUESTED.store(false, Ordering::Relaxed);
     ffi::install_signal(ffi::SIGTERM, handle_signal);
@@ -99,10 +100,16 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         Ok(value) => value,
         Err(error) => return startup_fail(&logger, state_dir, "初始化自动调度", error),
     };
-    let config = match Config::load(Path::new(CONFIG_PATH)) {
+    let mut config = match Config::load(Path::new(CONFIG_PATH)) {
         Ok(value) => value,
         Err(error) => return startup_fail(&logger, state_dir, "读取配置", error),
     };
+    // Thread settings must come from the same adapted configuration as the
+    // dispatcher; otherwise a disabled FAS engine can still be spawned.
+    match hardware.adapt_config(&mut config) {
+        Ok(changes) => for change in changes { logger.info(change); },
+        Err(error) => return startup_fail(&logger, state_dir, "内核能力适配", error),
+    }
     logger.set_level(&config.meta.loglevel);
     let snapshot = match Snapshot::load(state_dir, logger.clone()) {
         Ok(value) => value,
@@ -144,6 +151,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         app_modes.default_mode()
     };
     let selected_soc = hardware.soc;
+    let samsung = hardware.samsung;
     let input_boost_cfg = config.functions.input_boost.clone();
     let fas_cfg = config.functions.fas.clone();
     let fas_policies = config.policy;
@@ -158,11 +166,14 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         Ok(value) => value,
         Err(error) => return startup_fail(&logger, state_dir, "内核能力适配", error),
     };
+    let mut boot_guard = match crate::boot_guard::BootGuard::begin(&module_dir, state_dir) {
+        Ok(guard) => guard,
+        Err(error) => return startup_fail(&logger, state_dir, "启动保护", error),
+    };
     // A failed first dispatch must not kill the daemon. Vendor frequency
     // managers race the first ceiling write at boot, and exiting here turned
     // one rejected write into a dead module once the supervisor gave up.
-    // Degrade instead: the tick loop retries every 5 s and the WebUI stays
-    // connected with the honest error, so the user can self-recover.
+    // Keep the WebUI connected on failure; the retry budget is bounded.
     let mut last_apply_error = if scene.controls_locked() {
         String::new()
     } else {
@@ -182,6 +193,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
 
     let runtime = RuntimeState::default();
     runtime.set_profile(selected_soc);
+    runtime.set_samsung(samsung);
     let mut fas_status = scheduler.refresh_fas(!scene.controls_locked() && last_apply_error.is_empty());
     runtime.set_fas(&fas_status);
     let mut fas_probe_at = Instant::now() + Duration::from_secs(10);
@@ -230,7 +242,13 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
     };
     // Touch-driven transient boost: input thread applies a short uclamp.min
     // pulse on activity and expires back to the dispatcher baseline. Skipped
-    // while a foreign scheduler owns the nodes (allowed flag per tick).
+    // while a foreign scheduler owns the nodes (allowed flag per tick). The
+    // same touch edges also wake the main loop via an eventfd so UI bursts
+    // (notification shade / Super Island) are recognised within one frame.
+    let touch_fd = unsafe { ffi::eventfd(0, ffi::O_NONBLOCK | ffi::O_CLOEXEC) };
+    let touch_file = (touch_fd >= 0).then(|| {
+        unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(touch_fd) }
+    });
     let input_thread = if input_boost_cfg.enabled {
         let node = scheduler.input_boost_node();
         let stock = snapshot
@@ -245,6 +263,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
             stop: web_stop.clone(),
             snapshot: snapshot.clone(),
             logger: logger.clone(),
+            touch_signal_fd: if touch_file.is_some() { touch_fd } else { -1 },
         };
         match crate::input_boost::spawn(ctx) {
             Some(handle) => Some(handle),
@@ -295,12 +314,13 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
     let mut monitor = ForegroundMonitor::default();
     let mut classifier = Classifier::default();
     let mut stamps = FileStamps::new();
-    let mut watcher = EventLoop::new(&watch_paths());
+    let mut watcher = EventLoop::new(&watch_paths(), touch_file);
     logger.info(watcher.describe());
     let mut last_status = String::new();
     let mut status_written = Instant::now();
     let mut retry_at = Instant::now();
-    let mut suspended = scene.controls_locked();
+    let mut apply_failures = u8::from(!last_apply_error.is_empty());
+    let mut suspended = scene.controls_locked() || !last_apply_error.is_empty();
     let mut first_scan = true;
     let mut node_audit = NodeAuditClock::new(Instant::now());
     let mut scene_probe_at = Instant::now() + scene::PRESENCE_INTERVAL;
@@ -311,6 +331,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         } else {
             watcher.wait(crate::event_loop::FOREGROUND_FALLBACK)
         };
+        let touch = watcher.take_touch_signal();
         let forced = RELOAD_REQUESTED.swap(false, Ordering::Relaxed);
         if !wake.needs_rescan() && !forced {
             continue;
@@ -341,12 +362,11 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         if forced || config_changed {
             let fas_block = match Config::load(Path::new(CONFIG_PATH)) {
                 Ok(config) => {
-                    let fas_block = config.functions.fas.clone();
                     match scheduler.replace_config(config) {
                         Ok(()) => {
                             runtime.set_profile(selected_soc);
                             logger.info("config.json 已重新载入");
-                            Some(fas_block)
+                            Some(scheduler.fas_config())
                         }
                         Err(error) => {
                             logger.error(format!("config.json 内核适配失败，保留当前配置: {error}"));
@@ -439,9 +459,8 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         if let Ok(mut state) = cpuctl_live.inner.lock() {
             state.allowed = !scene.controls_locked();
         }
-        // Re-write ceilings that a vendor service refused until they stick.
-        // Cheap when the queue is empty; revision bump refreshes the WebUI.
-        if !scene.controls_locked() && scheduler.enforce_pending() {
+        // Bounded, spaced retries yield to vendor controls when exhausted.
+        if !scene.controls_locked() && last_apply_error.is_empty() && scheduler.enforce_pending() {
             revision.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -451,6 +470,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
             scheduler.ignored_packages(),
             forced || config_changed || rules_changed || scene_changed || automatic_changed,
             automatic_enabled && !scene.controls_locked(),
+            touch,
         );
         let package = foreground
             .as_deref()
@@ -516,10 +536,12 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
             || mode_changed
             || scene_request_changed
             || scene_changed;
+        if force_apply { apply_failures = 0; }
         if scene.controls_locked() {
             suspended = true;
             scheduler.clear_pending();
-        } else if Instant::now() >= retry_at || force_apply {
+        } else if force_apply || (Instant::now() >= retry_at
+            && (last_apply_error.is_empty() || (!samsung && apply_failures < 3))) {
             let mut result = if suspended {
                 scheduler.initialize(&selected)
             } else {
@@ -543,14 +565,20 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
                     logger.error(format!("调度下发失败: {error}"));
                 }
                 last_apply_error = error;
-                retry_at = Instant::now() + Duration::from_secs(5);
+                apply_failures = apply_failures.saturating_add(1);
+                retry_at = Instant::now() + Duration::from_secs(10);
+                if samsung || apply_failures == 3 {
+                    logger.warn("调度写入失败，已停止自动重试；保留诊断，可在 WebUI 手动切档后重试");
+                }
             } else {
                 suspended = false;
                 last_apply_error.clear();
+                apply_failures = 0;
                 if let Err(error) = app_modes.write_current_mode(scheduler.current_mode()) {
                     logger.error(format!("写入 mode.txt 失败: {error}"));
                     last_apply_error = error;
-                    retry_at = Instant::now() + Duration::from_secs(5);
+                    retry_at = Instant::now() + Duration::from_secs(10);
+                    apply_failures = 1;
                 }
             }
         }
@@ -561,6 +589,10 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         // NovaFAS 共享上下文：档位、前台包、可写状态与档位频率底线每轮同步。
         {
             let allowed = !scene.controls_locked();
+            // 待确认的频率上限（pending）不阻塞引擎：FAS 只抬最低频率，且
+            // 以内核当前实际接受的最高频率为顶，天然落在已生效的包络内。
+            // 之前把 pending 也算进就绪条件，厂商服务钳制上限的设备上引擎
+            // 会永远待命，WebUI 看到的就是“接管了却一动不动”。
             let ready = allowed && last_apply_error.is_empty();
             let floors = scheduler.profile_min_floors();
             if let Ok(mut state) = fas_shared.lock() {
@@ -583,6 +615,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
             .map(|status| status.clone())
             .unwrap_or_default();
         runtime.set_fas_engine(&engine_status);
+        runtime.set_frequencies(scheduler.live_frequencies());
 
         if engine_status.state != "active"
             && (force_apply
@@ -603,10 +636,16 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         } else if !last_apply_error.is_empty() {
             last_apply_error.clone()
         } else if scheduler.pending_control_count() > 0 {
-            format!("{} 个 CPU 频率上限尚未读回确认，等待系统节点生效", scheduler.pending_control_count())
+            format!("{} 个 CPU 频率上限未获内核确认；{}", scheduler.pending_control_count(),
+                if scheduler.pending_retry_exhausted() { "已停止自动重写，请查看日志" } else { "正在有限重试" })
         } else { String::new() };
         let phase = if scene.controls_locked() { "suspended" }
             else if policy_error.is_empty() { "ready" } else { "degraded" };
+        match boot_guard.confirm_if_stable(policy_error.is_empty()) {
+            Ok(true) => logger.info("启动保护：调度与心跳已连续稳定三分钟"),
+            Ok(false) => {},
+            Err(error) => logger.error(format!("保存启动稳定记录失败: {error}")),
+        }
         runtime.publish_policy(crate::websocket::PolicyStatus {
             package: if scene.controls_locked() { &package } else { scheduler.current_package() },
             mode: if scene.controls_locked() { "" } else { scheduler.current_mode() },
@@ -680,6 +719,9 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         }
     }
     if restore.is_ok() {
+        if let Err(error) = boot_guard.finish_cleanly() {
+            logger.error(format!("保存正常停止记录失败: {error}"));
+        }
         if let Err(error) =
             util::atomic_write(&state_dir.join("startup"), b"state=stopped\n", 0o600)
         {
@@ -814,6 +856,7 @@ pub fn probe(module_dir: &Path) -> Result<()> {
     let hardware = scheduler::preflight()?;
     let mut config = Config::load(&module_dir.join("config").join(hardware.soc.file()))?;
     let changes = hardware.adapt_config(&mut config)?;
+    println!("compatibility={}", if hardware.samsung { "samsung" } else { "standard" });
     println!("soc={}\nsoc_id={}\nprofile={}\nprofile_id=novasched.{}\nconfig_name={}\nconfig_author={}\nconfig_version={}\ndevice={}\nevidence={}\nroot=true\nmanager_gate=none\npolicies={},{},{},{}\ntop_app=true\npolicy_writes=0",
         hardware.soc.name(), hardware.soc.id(), hardware.soc.file(), hardware.soc.id().to_ascii_lowercase(),config.meta.name,config.meta.author,config.meta.version,hardware.device, hardware.evidence, config.policy[0],config.policy[1],config.policy[2],config.policy[3]);
     for change in changes {
@@ -867,6 +910,7 @@ struct ForegroundMonitor {
     current: String,
     activity_at: Option<Instant>,
     activity: Option<String>,
+    touch_suppress_until: Option<Instant>,
 }
 
 impl ForegroundMonitor {
@@ -876,10 +920,28 @@ impl ForegroundMonitor {
         ignored_packages: &BTreeSet<String>,
         refresh: bool,
         automatic: bool,
+        touch: bool,
     ) -> Option<String> {
         let new_pids = read_top_app_pids();
-        let activity_due = refresh || self.activity_at
-            .map(|at| at.elapsed() >= Duration::from_secs(2)).unwrap_or(true);
+        // Touch edges may force an early activity query so a notification
+        // shade pull is detected right away; a query that does not change the
+        // foreground backs off for two seconds so games never see a dumpsys
+        // storm. The regular cadence stays two seconds.
+        let now = Instant::now();
+        let regular_due = self
+            .activity_at
+            .map(|at| at.elapsed() >= Duration::from_secs(2))
+            .unwrap_or(true);
+        let touch_due = touch
+            && self
+                .touch_suppress_until
+                .map(|until| now >= until)
+                .unwrap_or(true)
+            && self
+                .activity_at
+                .map(|at| at.elapsed() >= Duration::from_millis(400))
+                .unwrap_or(true);
+        let activity_due = refresh || regular_due || touch_due;
         if new_pids == self.pids && !activity_due {
             return None;
         }
@@ -888,8 +950,14 @@ impl ForegroundMonitor {
         let processes: Vec<_> = self.pids.iter()
             .filter_map(|pid| read_process(*pid).map(|process| (*pid, process))).collect();
         if activity_due {
-            self.activity_at = Some(Instant::now());
+            self.activity_at = Some(now);
+            let previous = self.activity.clone();
             self.activity = query_foreground();
+            if touch && !refresh && previous == self.activity {
+                self.touch_suppress_until = Some(now + Duration::from_secs(2));
+            } else {
+                self.touch_suppress_until = None;
+            }
         }
         // ActivityManager/WindowManager wins even when cpuset is missing or
         // retains a launcher/PiP process. Ambiguous automatic scans stay idle.

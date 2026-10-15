@@ -92,7 +92,9 @@ for(const file of fs.readdirSync(path.join(root,'module-template/config'))){
     assert.ok(cfg.features.fas.enabled,'NovaFAS disabled');
     for(const mode of ['powersave','balance','performance','fast'])
       assert.ok(cfg.features.fas.modes[mode],`NovaFAS ${mode} limits missing`);
-    assert.equal(cfg.meta.version,370);
+    const generation=Number(fs.readFileSync(path.join(root,'native/src/config.rs'),'utf8')
+      .match(/PROFILE_VERSION: i64 = (\d+)/)[1]);
+    assert.equal(cfg.meta.version,generation);
   });
 }
 console.log(`${count} checks passed`);

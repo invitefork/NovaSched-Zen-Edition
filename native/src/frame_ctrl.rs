@@ -40,8 +40,13 @@ pub struct EngineStatus {
     /// timestats / heuristic / none
     pub source: &'static str,
     pub fps: f32,
+    /// 帧信号不可用时的 GPU 忙碌百分比（0..100），供启发式展示。
+    pub gpu: f32,
     pub boost: u32,
     pub override_active: bool,
+    /// 引擎线程自启动以来的循环拍数：每拍 +1，WebUI 据此区分
+    /// “引擎活着但数值稳定” 与 “引擎已经卡死”。
+    pub ticks: u64,
 }
 
 /// 主循环每个 tick 发布的共享调度上下文。
@@ -66,58 +71,89 @@ pub struct EngineCtx {
     pub policies: [i32; 4],
 }
 
-/// 解析 `dumpsys SurfaceFlinger --timestats -dump` 输出，累加包名命中的
-/// 图层帧计数。图层块以 `layerName` 开头；块内 `packageNames`、
-/// `totalFrames`、`droppedFrames` 按 key = value 逐行匹配。
+/// 解析 `dumpsys SurfaceFlinger --timestats -dump` 输出，累加前台包名命中的
+/// 图层帧计数。真实设备（HyperOS / Android 16 实测）的图层块为：
+/// `displayRefreshRate = 120 fps` → `uid = …` → `layerName = 包名/Activity#N`
+/// → `packageName = `（常为空）→ `totalFrames = N` → `droppedFrames = N`。
+/// 归属判定兼容三种来源：`packageName`（新版单数键）、`packageNames`
+/// （旧版逗号列表），两者都为空/缺失时从 `layerName` 提取
+/// （`包名/Activity#N`、`SurfaceView[包名/…]#0`；无包名的系统图层如
+/// `InputMethod#N`、`none` 不归属任何应用）。
 /// 返回 (总帧数, 丢帧数)；没有任何图层命中时返回 None。
 pub fn parse_timestats(text: &str, package: &str) -> Option<(u64, u64)> {
     let mut acc = Accumulator::default();
     for line in text.lines() {
         let line = line.trim();
         if line.starts_with("layerName") {
-            acc.settle();
+            acc.settle(package);
+            acc.layer = layer_package(line.split_once('=').map(|(_, value)| value).unwrap_or(""));
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
         match key.trim() {
-            "packageNames" => acc.in_package = package_matches(value.trim(), package),
+            "packageName" | "packageNames" => {
+                let owner = value.trim();
+                if !owner.is_empty() {
+                    acc.owner = owner.split(',').map(str::trim).find(|name| *name == package);
+                }
+            }
             "totalFrames" => acc.block_total = value.trim().parse().unwrap_or(0),
             "droppedFrames" => acc.block_dropped = value.trim().parse().unwrap_or(0),
             _ => {}
         }
     }
-    acc.settle();
+    acc.settle(package);
     acc.matched.then_some((acc.total, acc.dropped))
 }
 
 #[derive(Default)]
-struct Accumulator {
+struct Accumulator<'a> {
     total: u64,
     dropped: u64,
     matched: bool,
-    in_package: bool,
+    /// 当前块 packageName(s) 键的命中项；Some 即表示显式归属目标包。
+    owner: Option<&'a str>,
+    /// 当前块 layerName 提取的包名（packageName 为空时的回退线索）。
+    layer: Option<String>,
     block_total: u64,
     block_dropped: u64,
 }
 
-impl Accumulator {
-    fn settle(&mut self) {
-        if self.in_package {
+impl<'a> Accumulator<'a> {
+    fn settle(&mut self, package: &str) {
+        // packageName 命中优先；键为空/缺失时才回退到 layerName 的精确匹配，
+        // 显式归属其它包的图层不会因图层名相似而误计。
+        let owned = self.owner.as_deref().is_some_and(|name| name == package)
+            || self.owner.is_none() && self.layer.as_deref().is_some_and(|name| name == package);
+        if owned {
             self.total += self.block_total;
             self.dropped += self.block_dropped;
             self.matched = true;
         }
-        self.in_package = false;
+        self.owner = None;
+        self.layer = None;
         self.block_total = 0;
         self.block_dropped = 0;
     }
 }
 
-/// 图层 packageNames 为逗号分隔列表。
-fn package_matches(value: &str, package: &str) -> bool {
-    value.split(',').any(|name| name.trim() == package)
+/// 从 `layerName = …` 的值提取归属包名：`com.pkg/…#N`、
+/// `SurfaceView[com.pkg/…]#0`；`InputMethod#N`、`none` 等无包名图层返回
+/// None。
+fn layer_package(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    let candidate = match (value.find('['), value.find(']')) {
+        (Some(start), Some(end)) if end > start => &value[start + 1..end],
+        _ => value,
+    };
+    let base = candidate.split('/').next()?.trim();
+    let base = base.split('#').next()?.trim();
+    util::valid_package(base).then(|| base.to_string())
 }
 
 /// 帧驱动/负载驱动共用控制器。boost 0..=ceiling：
@@ -203,11 +239,13 @@ impl Controller {
     }
 }
 
-/// GPU 忙碌百分比：Adreno kgsl 优先，其次 MTK GED。
+/// GPU 忙碌百分比：Adreno kgsl 优先，其次 MTK GED 与 Mali kbase。
 pub fn read_gpu_busy() -> Option<f32> {
     for path in [
         "/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage",
         "/sys/kernel/ged/hw/gpu_meter",
+        "/sys/kernel/gpu/gpu_load",
+        "/sys/class/misc/mali0/device/gpu_utilisation",
     ] {
         let raw = util::read_trimmed(std::path::Path::new(path)).ok()?;
         let value = raw.split('%').next()?.trim();
@@ -221,31 +259,76 @@ pub fn read_gpu_busy() -> Option<f32> {
 
 /// SurfaceFlinger timestats 会话：enable → 周期 dump+clear → 停止时 disable。
 /// 帧计数用相邻两次 dump 的差值，即使 clear 在某些版本无效也保持正确。
+/// 所有 dumpsys 调用都带超时：SurfaceFlinger 繁忙时 dump 可能长时间不返回，
+/// 无超时的阻塞调用会让引擎线程连同 WebUI 状态一起冻结。
 struct Timestats {
     enabled: bool,
     last_total: u64,
+    last_dropped: u64,
     last_at: Instant,
+    /// enable 失败后的退避重试时刻；避免每个 tick 都 fork 一次注定失败的
+    /// dumpsys。
+    retry_at: Instant,
+    /// 首次失败原因只记一次，便于诊断“为什么一直在用启发式”。
+    logged_failure: bool,
 }
+
+const DUMPSYS_TIMEOUT: Duration = Duration::from_secs(2);
+const ENABLE_BACKOFF: Duration = Duration::from_secs(30);
+/// 连续这么多次采样失败后退回 GPU 启发式；期间保留最后一帧数据。
+const SAMPLE_FAIL_STREAK: u32 = 3;
+/// 引擎激活但帧信号与负载信号都不可用的宽限拍数（约 5 秒）：超过后回到
+/// 待命并恢复 fas-rs，避免“占用接管却不产出”。
+const NO_SIGNAL_RELEASE_TICKS: u32 = 25;
 
 impl Timestats {
     fn new() -> Self {
-        Self { enabled: false, last_total: 0, last_at: Instant::now() }
+        Self {
+            enabled: false,
+            last_total: 0,
+            last_dropped: 0,
+            last_at: Instant::now(),
+            retry_at: Instant::now(),
+            logged_failure: false,
+        }
+    }
+
+    fn dumpsys(args: &[&str]) -> Result<String, String> {
+        util::query_command_limited("/system/bin/dumpsys", args, DUMPSYS_TIMEOUT, 1_048_576)
     }
 
     fn ensure_enabled(&mut self, logger: &Logger) {
-        if self.enabled {
+        if self.enabled || Instant::now() < self.retry_at {
             return;
         }
-        self.enabled = util::run_command(
-            "/system/bin/dumpsys",
-            &["SurfaceFlinger", "--timestats", "-enable", "-maxlayers", "128"],
-        )
-        .is_ok();
-        if self.enabled {
-            logger.debug("NovaFAS 帧信号源：SurfaceFlinger timestats");
-            self.last_total = 0;
-            self.last_at = Instant::now();
+        self.retry_at = Instant::now() + ENABLE_BACKOFF;
+        match Self::dumpsys(&["SurfaceFlinger", "--timestats", "-enable", "-maxlayers", "128"]) {
+            Ok(_) => {
+                self.enabled = true;
+                if !self.logged_failure {
+                    logger.debug("NovaFAS 帧信号源：SurfaceFlinger timestats");
+                }
+                self.last_total = 0;
+                self.last_dropped = 0;
+                self.last_at = Instant::now();
+            }
+            Err(error) => {
+                if !self.logged_failure {
+                    self.logged_failure = true;
+                    logger.info(format!(
+                        "NovaFAS 帧信号源不可用（SurfaceFlinger timestats 启用失败: {error}），退回 GPU 负载启发式"
+                    ));
+                } else {
+                    logger.debug(format!("timestats 重新启用仍失败: {error}"));
+                }
+            }
         }
+    }
+
+    /// SurfaceFlinger 可能重启导致会话丢失；连续采样失败时立即重试启用。
+    fn force_retry(&mut self) {
+        self.enabled = false;
+        self.retry_at = Instant::now();
     }
 
     /// 返回自上次采样以来的帧样本；窗口异常或输出不可解析返回 None。
@@ -253,34 +336,31 @@ impl Timestats {
         if !self.enabled {
             return None;
         }
-        let output = util::run_command(
-            "/system/bin/dumpsys",
-            &["SurfaceFlinger", "--timestats", "-dump", "-maxlayers", "128"],
-        )
-        .ok()?;
-        let _ = util::run_command(
-            "/system/bin/dumpsys",
-            &["SurfaceFlinger", "--timestats", "-clear"],
-        );
-        let Some((total, dropped)) = parse_timestats(&output, package) else {
-            return None;
-        };
+        let output = Self::dumpsys(&["SurfaceFlinger", "--timestats", "-dump", "-maxlayers", "128"])
+            .ok()?;
+        let _ = Self::dumpsys(&["SurfaceFlinger", "--timestats", "-clear"]);
+        let (total, dropped) = parse_timestats(&output, package)?;
         let elapsed = self.last_at.elapsed().as_secs_f32().max(0.1);
         self.last_at = Instant::now();
         let frames = total.saturating_sub(self.last_total);
+        let dropped_now = dropped.saturating_sub(self.last_dropped);
         self.last_total = total;
+        self.last_dropped = dropped;
         Some(FrameSample {
             fps: frames as f32 / elapsed,
-            dropped: if total > 0 { dropped as f32 / total as f32 } else { 0.0 },
+            // 用窗口内的丢帧占比，而不是自启动以来的累计值：长时间运行的
+            // 游戏累计丢帧率会钝化，刚发生的掉帧反应不上来。
+            dropped: if frames > 0 {
+                dropped_now as f32 / frames as f32
+            } else {
+                0.0
+            },
         })
     }
 
     fn disable(&mut self) {
         if self.enabled {
-            let _ = util::run_command(
-                "/system/bin/dumpsys",
-                &["SurfaceFlinger", "--timestats", "-disable"],
-            );
+            let _ = Self::dumpsys(&["SurfaceFlinger", "--timestats", "-disable"]);
             self.enabled = false;
         }
     }
@@ -370,7 +450,13 @@ fn run(ctx: EngineCtx) {
     let mut last_mode = String::new();
     let mut last_sample = Instant::now() - Duration::from_secs(60);
     let mut frame_ok = false;
+    let mut fail_streak: u32 = 0;
+    let mut no_signal: u32 = 0;
+    let mut signal_dead = false;
     loop {
+        // 每拍递增：WebUI 看到它变化即证明引擎线程活着，即使帧率与
+        // 加压值都稳定不动。
+        status.ticks = status.ticks.wrapping_add(1);
         if ctx.stop.load(Ordering::Relaxed) {
             break;
         }
@@ -405,11 +491,13 @@ fn run(ctx: EngineCtx) {
             && mode_cfg.as_ref().is_some_and(|mode| mode.ceiling > 0);
         if !cfg.enabled || !want_active {
             release(&ctx, &mut controller, &mut clusters, &mut scene, &mut status);
+            publish(&ctx.status, &status);
             std::thread::sleep(Duration::from_millis(cfg.step_ms.max(300)));
             continue;
         }
         let mode_cfg = mode_cfg.unwrap_or(FasMode::default());
-        scene.refresh(true, &ctx.logger);
+        // 已确认无任何信号源时保持 fas-rs 运行，不再空占接管位。
+        scene.refresh(!signal_dead, &ctx.logger);
         stats.ensure_enabled(&ctx.logger);
 
         // 采样时钟：帧信号按 sample_ms 周期；无帧信号时每 tick 用 GPU 负载。
@@ -418,23 +506,55 @@ fn run(ctx: EngineCtx) {
             match stats.sample(&shared.package) {
                 Some(sample) => {
                     frame_ok = true;
+                    fail_streak = 0;
                     controller.on_frame(mode_cfg.ceiling, sample);
                     status.fps = sample.fps;
                 }
-                None if frame_ok => {
-                    // 偶发采样失败保留上次状态；连续失败才退回启发式。
-                    frame_ok = status.fps > 0.0;
+                None => {
+                    if frame_ok {
+                        fail_streak += 1;
+                        if fail_streak >= SAMPLE_FAIL_STREAK {
+                            // 连续失败说明会话已失效（SurfaceFlinger 重启或
+                            // 输出格式变化）：退回启发式并安排重新启用。
+                            frame_ok = false;
+                            fail_streak = 0;
+                            status.fps = 0.0;
+                            stats.force_retry();
+                        }
+                    }
                 }
-                None => {}
             }
         }
+        status.gpu = 0.0;
+        let mut gpu_available = false;
         if !frame_ok {
             if let Some(busy) = read_gpu_busy() {
+                gpu_available = true;
+                status.gpu = busy;
                 controller.on_load(mode_cfg.ceiling, busy);
             }
-            status.fps = 0.0;
         }
-        status.source = if frame_ok { "timestats" } else { "heuristic" };
+        status.source = if frame_ok {
+            "timestats"
+        } else if gpu_available {
+            "heuristic"
+        } else {
+            "none"
+        };
+        if status.source == "none" {
+            no_signal += 1;
+        } else {
+            no_signal = 0;
+            signal_dead = false;
+        }
+        if no_signal >= NO_SIGNAL_RELEASE_TICKS {
+            no_signal = 0;
+            signal_dead = true;
+            release(&ctx, &mut controller, &mut clusters, &mut scene, &mut status);
+            publish(&ctx.status, &status);
+            std::thread::sleep(Duration::from_millis(cfg.step_ms.max(300)));
+            continue;
+        }
         status.state = "active";
         status.boost = controller.boost;
         status.override_active = !scene.suspended.is_empty();
@@ -473,24 +593,17 @@ fn release(
     };
     status.source = "none";
     status.fps = 0.0;
+    status.gpu = 0.0;
     status.boost = 0;
     status.override_active = false;
     publish(&ctx.status, status);
 }
 
-/// 把状态发布到共享槽位：档位、来源、接管标志变化立即生效，
-/// 帧率与 boost 用阈值去抖，避免 WebUI 每 200ms 刷新一次。
+/// 把状态发布到共享槽位。守护进程按自己的 2 秒节奏取值转发给 WebUI，
+/// 这里无需再去抖：之前的门限（boost 仅在 0/24/48… 时发布）会让 12%、
+/// 36% 的加压永远到不了界面，看起来就像引擎冻结。
 fn publish(sink: &Arc<Mutex<EngineStatus>>, status: &EngineStatus) {
-    let Ok(mut sink) = sink.lock() else { return };
-    let settled_boost = status.boost == 0 || status.boost % 24 == 0;
-    let fps_changed = (status.fps > 0.0 && (sink.fps - status.fps).abs() > 2.0)
-        || (status.fps == 0.0 && sink.fps != 0.0);
-    if sink.state != status.state
-        || sink.source != status.source
-        || sink.override_active != status.override_active
-        || (settled_boost && sink.boost != status.boost)
-        || fps_changed
-    {
+    if let Ok(mut sink) = sink.lock() {
         *sink = status.clone();
     }
 }
@@ -679,6 +792,32 @@ mod tests {
     }
 
     #[test]
+    fn publish_forwards_every_change_without_thresholds() {
+        let sink = Arc::new(Mutex::new(EngineStatus::default()));
+        let mut status = EngineStatus {
+            state: "active",
+            source: "timestats",
+            fps: 59.5,
+            gpu: 12.0,
+            boost: 12,
+            override_active: true,
+            ticks: 1,
+        };
+        publish(&sink, &status);
+        assert_eq!(sink.lock().unwrap().boost, 12);
+        // 12 与 36 这类历史门限会吞掉的加压档位现在必须照常发布。
+        status.boost = 24;
+        status.ticks = 2;
+        publish(&sink, &status);
+        assert_eq!(sink.lock().unwrap().boost, 24);
+        // 帧率小幅变化也转发：守护进程自带 2 秒节奏，引擎层不再去抖。
+        status.fps = 60.4;
+        publish(&sink, &status);
+        assert_eq!(sink.lock().unwrap().fps, 60.4);
+        assert_eq!(sink.lock().unwrap().ticks, 2);
+    }
+
+    #[test]
     fn timestats_sums_only_matching_layers() {
         let text = "timeStats: enabled\n\
             layerName = SurfaceView[com.miHoYo.Yuanshen/com.miHoYo.GetMobileInfo.MainActivity](BLAST)#0\n\
@@ -703,6 +842,67 @@ mod tests {
         assert_eq!(parse_timestats(text, "com.game"), Some((15, 1)));
         // packageNames 为空行后的块不属于任何已知包。
         assert_eq!(parse_timestats(text, "com.launcher"), None);
+    }
+
+    #[test]
+    fn hyperos_android16_blocks_match_by_packagename_and_layer_name() {
+        // 小米 14（HyperOS / Android 16，SM8650）真实输出结构：
+        // 图层块以 displayRefreshRate 开头、packageName 为单数键且常为空、
+        // 包名藏在 layerName 里；开头还有一段不带图层的 legacy 统计。
+        let text = "SurfaceFlinger TimeStats:\n\
+            totalFrames = 89\n\
+            missedFrames = 10\n\
+            displayOnTime = 2178 ms\n\
+            displayRefreshRate = 120 fps\n\
+            renderRate = 120 fps\n\
+            uid = 10343\n\
+            layerName = com.eg.android.AlipayGphone/com.alipay.mobile.nebulax.xriver.activity.XRiverTransActivity$Main#1226\n\
+            packageName = \n\
+            gameMode = Unsupported\n\
+            totalFrames = 39\n\
+            droppedFrames = 0\n\
+            averageFPS = 23.651\n\
+            displayRefreshRate = 120 fps\n\
+            uid = 10332\n\
+            layerName = InputMethod#1232\n\
+            packageName = \n\
+            totalFrames = 42\n\
+            droppedFrames = 0\n\
+            displayRefreshRate = 120 fps\n\
+            uid = 10332\n\
+            layerName = none\n\
+            totalFrames = 0\n\
+            droppedFrames = 0\n";
+        // packageName 为空时回退到 layerName 提取，精确匹配前台包。
+        assert_eq!(
+            parse_timestats(text, "com.eg.android.AlipayGphone"),
+            Some((39, 0))
+        );
+        // 无包名系统图层（InputMethod/none）不归属任何应用；legacy 段不计。
+        assert_eq!(parse_timestats(text, "com.android.systemui"), None);
+    }
+
+    #[test]
+    fn surface_view_bracket_layers_match_their_package() {
+        let text = "layerName = SurfaceView[com.miHoYo.Yuanshen/com.miHoYo.GetMobileInfo.MainActivity](BLAST)#0\n\
+            packageName = \n\
+            totalFrames = 600\n\
+            droppedFrames = 12\n";
+        assert_eq!(
+            parse_timestats(text, "com.miHoYo.Yuanshen"),
+            Some((600, 12))
+        );
+        assert_eq!(parse_timestats(text, "com.miHoYo.other"), None);
+    }
+
+    #[test]
+    fn explicit_packagename_outranks_a_matching_layer_name() {
+        // 显式归属其它包的图层不因图层名相似而误计。
+        let text = "layerName = com.target.pkg/com.target.pkg.MainActivity#9\n\
+            packageName = com.other.pkg\n\
+            totalFrames = 30\n";
+        assert_eq!(parse_timestats(text, "com.target.pkg"), None);
+        assert_eq!(parse_timestats(text, "com.other.pkg"), Some((30, 0)));
     }
 
     #[test]

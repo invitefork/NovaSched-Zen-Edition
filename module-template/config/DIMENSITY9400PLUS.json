@@ -4,7 +4,7 @@
   "meta": {
     "name": "NovaSched Zen Edition",
     "author": "ZenJooo",
-    "version": 370,
+    "version": 380,
     "soc": "DIMENSITY9400PLUS",
     "loglevel": "INFO"
   },
@@ -31,7 +31,7 @@
           "background_max": "65"
         },
         "balance": {
-          "background_max": "85"
+          "background_max": "75"
         }
       }
     },
@@ -156,9 +156,9 @@
         "0"
       ],
       "max": [
-        "66%",
-        "60%",
         "58%",
+        "52%",
+        "50%",
         "0"
       ],
       "governors": [
