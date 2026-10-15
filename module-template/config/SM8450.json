@@ -126,9 +126,9 @@
         "0"
       ],
       "governors": [
-        "auto",
-        "auto",
-        "auto",
+        "walt",
+        "walt",
+        "walt",
         ""
       ],
       "params": [
@@ -162,9 +162,9 @@
         "0"
       ],
       "governors": [
-        "auto",
-        "auto",
-        "auto",
+        "walt",
+        "walt",
+        "walt",
         ""
       ],
       "params": [
@@ -198,9 +198,9 @@
         "0"
       ],
       "governors": [
-        "auto",
-        "auto",
-        "auto",
+        "walt",
+        "walt",
+        "walt",
         ""
       ],
       "params": [
@@ -234,9 +234,9 @@
         "0"
       ],
       "governors": [
-        "auto",
-        "auto",
-        "auto",
+        "walt",
+        "walt",
+        "walt",
         ""
       ],
       "params": [

@@ -56,17 +56,28 @@ const STOCK_FINGERPRINTS: &[u64] = &[
     0x36b1c6f3524d2773,
     0x4ecaa5ac6f408daa,
     0x6e09071e6d874491,
-    // v2.8.0 / 380 出厂默认（均衡贴近省电 + 天玑 8400 + SM8650 真机 OPP 逐档）
+    // v2.8.0-2.9.0 / 380 出厂默认（governor 仍为 auto 的历史批次，升级识别用）
     0xd1585868a9fe1cdd,
     0x5833b279736bbd40,
     0xdb12cd59ecbe6b09,
-    0x2d070c1ed3e39a2a,
+    0xb282aaed50e40878,
     0xb203f6581fae553d,
     0x633e1f5195b72938,
     0xc2ddd15923fb2f02,
     0x1924994cb0ed6562,
     0xd792f594b13ed6dd,
     0xe2d74ecb699e484e,
+    // v2.9.1 / 380 出厂默认（显式最优调速器：骁龙 walt、天玑/玄戒 schedutil）
+    0xac7d7ec329c7f993,
+    0xd359045ffa973ef2,
+    0x0267f7b60eb224b3,
+    0xc194c312f6f62b8a,
+    0x30f3d0017e8adc7d,
+    0xfa0fd863bf038228,
+    0xd346cb66ec3c0476,
+    0x90510745d88dc256,
+    0xb487f424ae626b25,
+    0x4581603aaa8b806c,
 ];
 const OWNED_META: &[&str] = &[
     "name",

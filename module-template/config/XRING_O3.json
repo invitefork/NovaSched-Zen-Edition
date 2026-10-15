@@ -126,9 +126,9 @@
         "0"
       ],
       "governors": [
-        "auto",
-        "auto",
-        "auto",
+        "schedutil",
+        "schedutil",
+        "schedutil",
         ""
       ],
       "params": [
@@ -162,9 +162,9 @@
         "0"
       ],
       "governors": [
-        "auto",
-        "auto",
-        "auto",
+        "schedutil",
+        "schedutil",
+        "schedutil",
         ""
       ],
       "params": [
@@ -198,9 +198,9 @@
         "0"
       ],
       "governors": [
-        "auto",
-        "auto",
-        "auto",
+        "schedutil",
+        "schedutil",
+        "schedutil",
         ""
       ],
       "params": [
@@ -234,9 +234,9 @@
         "0"
       ],
       "governors": [
-        "auto",
-        "auto",
-        "auto",
+        "schedutil",
+        "schedutil",
+        "schedutil",
         ""
       ],
       "params": [

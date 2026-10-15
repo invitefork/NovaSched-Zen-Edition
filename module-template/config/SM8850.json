@@ -126,8 +126,8 @@
         "0"
       ],
       "governors": [
-        "auto",
-        "auto",
+        "walt",
+        "walt",
         "",
         ""
       ],
@@ -162,8 +162,8 @@
         "0"
       ],
       "governors": [
-        "auto",
-        "auto",
+        "walt",
+        "walt",
         "",
         ""
       ],
@@ -198,8 +198,8 @@
         "0"
       ],
       "governors": [
-        "auto",
-        "auto",
+        "walt",
+        "walt",
         "",
         ""
       ],
@@ -234,8 +234,8 @@
         "0"
       ],
       "governors": [
-        "auto",
-        "auto",
+        "walt",
+        "walt",
         "",
         ""
       ],

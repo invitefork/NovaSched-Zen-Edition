@@ -126,10 +126,10 @@
         "56%"
       ],
       "governors": [
-        "auto",
-        "auto",
-        "auto",
-        "auto"
+        "walt",
+        "walt",
+        "walt",
+        "walt"
       ],
       "params": [
         {},
@@ -162,10 +162,10 @@
         "69%"
       ],
       "governors": [
-        "auto",
-        "auto",
-        "auto",
-        "auto"
+        "walt",
+        "walt",
+        "walt",
+        "walt"
       ],
       "params": [
         {},
@@ -198,10 +198,10 @@
         "82%"
       ],
       "governors": [
-        "auto",
-        "auto",
-        "auto",
-        "auto"
+        "walt",
+        "walt",
+        "walt",
+        "walt"
       ],
       "params": [
         {},
@@ -234,10 +234,10 @@
         "100%"
       ],
       "governors": [
-        "auto",
-        "auto",
-        "auto",
-        "auto"
+        "walt",
+        "walt",
+        "walt",
+        "walt"
       ],
       "params": [
         {},

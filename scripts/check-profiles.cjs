@@ -32,6 +32,16 @@ const FAS_MODES = {
   performance: { ceiling: "80", freq_scale: "60" },
   fast: { ceiling: "95", freq_scale: "80" },
 };
+/* 每颗处理器显式写入最优调速器（不再是 auto）：
+ * 骁龙 = walt（WALT 窗口负载跟踪，小米 14 真机确认 OEM 默认即 walt）；
+ * 天玑 / 玄戒 = schedutil（MTK 系唯一现代全簇调速器）。
+ * 内核缺失时运行时自动回退 OEM 调速器（hardware::select_governor）。 */
+const GOVERNORS = {
+  SM8450: "walt", SM8475: "walt", SM8550: "walt",
+  SM8650: "walt", SM8750: "walt", SM8850: "walt",
+  DIMENSITY8350: "schedutil", DIMENSITY8400: "schedutil",
+  DIMENSITY9400PLUS: "schedutil", XRING_O3: "schedutil",
+};
 
 const slots = (policies, value) => policies.map((policy) => (policy >= 0 ? value : "0"));
 
@@ -40,7 +50,7 @@ function profile(soc, policies) {
   for (const [name, minimum] of [["powersave", "0%"], ["balance", "0%"], ["performance", "8%"], ["fast", "0%"]]) {
     modes[name] = {
       min: slots(policies, minimum), max: slots(policies, "100%"),
-      governors: policies.map((p) => (p >= 0 ? "auto" : "")),
+      governors: policies.map((p) => (p >= 0 ? GOVERNORS[soc] : "")),
       params: [{}, {}, {}, {}], online: Array(8).fill(true),
     };
   }

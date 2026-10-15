@@ -45,6 +45,16 @@ FAS_MODES = {
     'performance': {'ceiling': '80', 'freq_scale': '60'},
     'fast':        {'ceiling': '95', 'freq_scale': '80'},
 }
+# 每颗处理器显式写入最优调速器（不再是 auto）：
+# 骁龙 = walt（WALT 窗口负载跟踪，小米 14 真机确认 OEM 默认即 walt）；
+# 天玑 / 玄戒 = schedutil（MTK 系唯一现代全簇调速器）。
+# 内核缺失时运行时自动回退 OEM 调速器（hardware::select_governor）。
+GOVERNORS = {
+    'SM8450': 'walt', 'SM8475': 'walt', 'SM8550': 'walt',
+    'SM8650': 'walt', 'SM8750': 'walt', 'SM8850': 'walt',
+    'DIMENSITY8350': 'schedutil', 'DIMENSITY8400': 'schedutil',
+    'DIMENSITY9400PLUS': 'schedutil', 'XRING_O3': 'schedutil',
+}
 
 def profile(soc, policies):
     def slots(value):
@@ -54,7 +64,7 @@ def profile(soc, policies):
                           ('performance', '8%'), ('fast', '0%')]:
         modes[name] = {
             'min': slots(minimum), 'max': slots('100%'),
-            'governors': ['auto' if p >= 0 else '' for p in policies],
+            'governors': [GOVERNORS[soc] if p >= 0 else '' for p in policies],
             'params': [{}, {}, {}, {}], 'online': [True] * 8,
         }
     for name, values in zip(('powersave', 'balance', 'performance', 'fast'), CEILINGS[soc]):

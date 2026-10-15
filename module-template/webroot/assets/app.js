@@ -15,7 +15,7 @@
     if (match) { MODULE = match[1]; MODULE_CANDIDATES.unshift(MODULE); }
   } catch (_) {}
   const STORAGE = "novasched.zen.ui.v2";
-  const UI_VERSION = window.NovaRelease?.version || "2.9.0";
+  const UI_VERSION = window.NovaRelease?.version || "2.9.1";
 
   const MODES = {
     powersave:   { name: "省电", copy: "极限控功耗，适合信息流和日用，输入保持跟手。" },
