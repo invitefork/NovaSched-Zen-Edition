@@ -15,7 +15,7 @@
     if (match) { MODULE = match[1]; MODULE_CANDIDATES.unshift(MODULE); }
   } catch (_) {}
   const STORAGE = "novasched.zen.ui.v2";
-  const UI_VERSION = window.NovaRelease?.version || "2.8.0";
+  const UI_VERSION = window.NovaRelease?.version || "2.9.0";
 
   const MODES = {
     powersave:   { name: "省电", copy: "极限控功耗，适合信息流和日用，输入保持跟手。" },
@@ -614,6 +614,7 @@
   }
   function finishPending(success, message) {
     const p = s.pending; clearTimeout(pendingTimer); pendingTimer = 0; s.pending = null;
+    if (success) NovaHaptics.success(); else NovaHaptics.failure();
     if (p?.kind === "mode" || p?.kind === "auto") modeNote(message, !success);
     if (success && ["rule", "delete"].includes(p?.kind)) closeDialog();
     if (!success && ["rule", "delete"].includes(p?.kind)) {
@@ -658,9 +659,9 @@
     present("#stat-soc-name", s.soc || "—");
     const heartbeat = s.online && Number.isFinite(s.heartbeat) ? `心跳 ${(Math.round(s.heartbeat / 100) / 10).toFixed(1)}s` : "心跳 —";
     present("#stat-heartbeat", heartbeat);
-    /* 各簇实时频率：守护进程每 2 秒从 scaling_cur_freq 读取 */
+    /* 各簇实时频率：守护进程每 2 秒从 scaling_cur_freq 读取（kHz） */
     present("#live-freqs", !s.online ? "实时频率 —"
-      : s.freqs.length ? "实时 " + s.freqs.map(f => (f / 1000).toFixed(2)).join(" / ") + " GHz" : "实时频率 —");
+      : s.freqs.length ? "实时 " + s.freqs.map(f => (f / 1000000).toFixed(2)).join(" / ") + " GHz" : "实时频率 —");
 
     /* 档位网格 */
     $$("#mode-grid .mode-card").forEach(button => {
@@ -859,7 +860,8 @@
   let currentPage = "overview", routeDepth = 0;
   const pageScroll = new Map();
   const reducedMotion = () => ui.reduceMotion || !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-  function haptic() { try { navigator.vibrate?.(7); } catch (_) {} }
+  /* 兼容别名：所有触感统一走 NovaHaptics 语义层 */
+  function haptic() { NovaHaptics.select(); }
   function rememberRoute(overlay = null, replace = false) {
     try {
       const state = { nova: true, page: currentPage, overlay, depth: replace ? routeDepth : ++routeDepth };
@@ -949,7 +951,7 @@
   }
   document.addEventListener("click", event => {
     const button = event.target instanceof Element ? event.target.closest("[data-page]") : null;
-    if (!button) return; setPage(button.dataset.page); haptic();
+    if (!button) return; switchPageWithHaptic(button.dataset.page);
   });
   window.addEventListener("popstate", event => {
     if (!event.state?.nova) return;
@@ -964,6 +966,8 @@
     if (event.button > 0) return;
     const rect = dock.getBoundingClientRect(), cell = (rect.width - 10) / 4;
     dockDrag = { pointer: event.pointerId, start: event.clientX, startY: event.clientY, rect, cell, moved: false, index: PAGE_IDS.indexOf(currentPage) };
+    /* 按下后下一帧给轻微压缩反馈；不缩放单个按钮，点击区域保持稳定 */
+    requestAnimationFrame(() => { if (dockDrag && !dockDrag.moved) dock.classList.add("dock-pressing"); });
   });
   dock.addEventListener("pointermove", event => {
     if (!dockDrag || event.pointerId !== dockDrag.pointer) return;
@@ -981,20 +985,34 @@
   });
   function endDock(event, cancelled = false) {
     if (!dockDrag || event.pointerId !== dockDrag.pointer) return;
-    if (dockDrag.moved && !cancelled) {
-      const index = Math.max(0, Math.min(3, Math.round((event.clientX - dockDrag.rect.left - 5 - dockDrag.cell / 2) / dockDrag.cell)));
-      setPage(PAGE_IDS[index]); haptic(); ignoreDockClick = performance.now() + 180;
+    const drag = dockDrag;
+    dock.classList.remove("dock-pressing");
+    /* 只有拖拽换页在 pointerup 提交；原地点按交给按钮自身的 click 事件，
+     * 两者职责分离，绝不用坐标推断覆盖真实命中目标。 */
+    if (drag.moved && !cancelled) {
+      const index = Math.max(0, Math.min(3, Math.round((event.clientX - drag.rect.left - 5 - drag.cell / 2) / drag.cell)));
+      switchPageWithHaptic(PAGE_IDS[index]);
+      ignoreDockClick = performance.now() + 180;
     }
     if (dock.hasPointerCapture?.(event.pointerId)) dock.releasePointerCapture?.(event.pointerId);
     dock.classList.remove("dock-dragging"); dockDrag = null; window.NovaGlass?.invalidate(360);
   }
-  dock.addEventListener("pointerup", event => endDock(event)); dock.addEventListener("pointercancel", event => endDock(event, true));
+  /* 统一的切页入口：有效切换一次触感；点击当前页只给轻反馈并保留状态 */
+  function switchPageWithHaptic(page) {
+    const same = page === currentPage;
+    setPage(page);
+    if (same) NovaHaptics.tick();
+    else NovaHaptics.select();
+  }
+  dock.addEventListener("pointerup", event => endDock(event));
+  dock.addEventListener("pointercancel", event => endDock(event, true));
+  /* 原地点按已在 pointerup 处理；吞掉随后的 click，避免一次操作触发两次 */
   dock.addEventListener("click", event => { if (performance.now() < ignoreDockClick) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
   dock.addEventListener("keydown", event => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault(); const current = PAGE_IDS.indexOf(currentPage);
     const index = event.key === "Home" ? 0 : event.key === "End" ? 3 : Math.max(0, Math.min(3, current + (event.key === "ArrowRight" ? 1 : -1)));
-    setPage(PAGE_IDS[index]); $$("button", dock)[index]?.focus();
+    switchPageWithHaptic(PAGE_IDS[index]); $$("button", dock)[index]?.focus();
   });
   /* ---------------- 触控高光（借鉴 SleepDown 的 InteractiveHighlight） ---------------- */
   function markSheen(event) {
@@ -1053,7 +1071,11 @@
   function stopSliderPreview(){clearTimeout(sliderTimer);$("#appearance-layer").classList.remove("previewing");$$(".slider-owner").forEach(node=>node.classList.remove("slider-owner"));window.NovaGlass?.invalidate(220);}
   function bindSlider(id,key) {
     const slider=$(id);if(!slider)return;
-    slider.oninput=()=>{const value=Number(slider.value);if(!Number.isFinite(value))return;ui[key]=value;applyTheme();};
+    slider.oninput=()=>{const value=Number(slider.value);if(!Number.isFinite(value))return;
+      /* 只在跨越离散刻度时给轻触感，并按语义层内部节流 */
+      const step=Number(slider.step||1);
+      if(Number.isFinite(step)&&step>0){const k=Math.round(value/step);if(slider._tickK!==undefined&&k!==slider._tickK)NovaHaptics.tick();slider._tickK=k;}
+      ui[key]=value;applyTheme();};
     slider.onchange=()=>{saveUI();stopSliderPreview();};
     slider.addEventListener("pointerdown",()=>{
       clearTimeout(sliderTimer);sliderTimer=setTimeout(()=>{
@@ -1290,6 +1312,78 @@
   }
   let welcomeShown = false;
 
+  /* ---------------- 云端更新 ---------------- */
+  function updateScriptCommand(args) {
+    const candidates = [...new Set([MODULE, ...MODULE_CANDIDATES])].map(shellQuote).join(" ");
+    return `for NOVA_PATH in ${candidates}; do if [ -f "$NOVA_PATH/bin/cloud-update.sh" ]; then exec sh "$NOVA_PATH/bin/cloud-update.sh" ${args}; fi; done; printf '%s\\n' 'UPDATE_FAIL=未找到更新脚本，请完整安装模块'; exit 1`;
+  }
+  function parseUpdateKeys(output) {
+    const keys = {};
+    for (const line of String(output || "").split(/\r?\n/)) {
+      const i = line.indexOf("=");
+      if (i > 0) keys[line.slice(0, i)] = line.slice(i + 1);
+    }
+    return keys;
+  }
+  function showUpdate() {
+    openDialog(`
+      <p class="eyebrow">UPDATE</p>
+      <h3 id="dialog-title">检查更新</h3>
+      <p class="dialog-sub" id="update-status">当前版本 v${UI_VERSION}。检查需要联网，下载走直连与镜像自动回退，SHA256 校验通过后才安装。</p>
+      <div class="dialog-actions" id="update-actions">
+        <button class="btn-capsule ghost" type="button" id="dialog-cancel">关闭</button>
+        <button class="btn-capsule accent" type="button" id="update-check" ${typeof bridge()?.exec === "function" ? "" : "disabled"}>检查最新版本</button>
+      </div>
+      <pre class="report" id="update-report" hidden></pre>
+    `);
+    $("#dialog-cancel").onclick = () => closeDialog();
+    $("#update-check").onclick = () => {
+      NovaHaptics.select();
+      const status = $("#update-status"), actions = $("#update-actions");
+      $("#update-check").disabled = true;
+      status.textContent = "正在连接 GitHub 获取最新版本…";
+      const restore = (message, error = true) => {
+        status.textContent = message;
+        const check = $("#update-check");
+        if (check) { check.disabled = false; check.textContent = "重新检查"; }
+        if (error) NovaHaptics.failure();
+      };
+      rootExec(updateScriptCommand("check"), 90000).then(result => {
+        const keys = parseUpdateKeys(result.stdout);
+        if (keys.UPDATE_FAIL) return restore("检查失败：" + keys.UPDATE_FAIL);
+        if (!keys.LATEST) return restore("返回数据不完整，请稍后再试");
+        if (keys.UPDATE_OK === "latest" || !keys.UPDATE_AVAILABLE) {
+          NovaHaptics.success();
+          status.textContent = `已是最新版本（当前 v${UI_VERSION}，最新 ${keys.LATEST}）。`;
+          return;
+        }
+        NovaHaptics.success();
+        status.textContent = `发现新版本 ${keys.LATEST}（当前 v${UI_VERSION}）。下载约 1.7MB，校验通过后自动安装，完成后需要重启。`;
+        actions.innerHTML = `
+          <button class="btn-capsule ghost" type="button" id="update-open">打开 Release 页</button>
+          <button class="btn-capsule accent" type="button" id="update-install">下载并安装 ${keys.LATEST}</button>`;
+        $("#update-open").onclick = () => { try { window.open(`https://github.com/zeng060812-creator/NovaSched-Zen-Edition/releases/tag/${keys.LATEST}`, "_blank"); } catch (_) { toast("当前宿主无法打开浏览器"); } };
+        $("#update-install").onclick = () => {
+          NovaHaptics.toggle();
+          actions.innerHTML = `<button class="btn-capsule ghost" type="button" id="dialog-cancel2">关闭</button>`;
+          $("#dialog-cancel2").onclick = () => closeDialog();
+          status.textContent = "正在下载、校验并安装，请保持网络畅通与屏幕亮起…";
+          rootExec(updateScriptCommand("install"), 420000).then(installResult => {
+            const done = parseUpdateKeys(installResult.stdout);
+            const report = $("#update-report");
+            if (report.isConnected) { report.hidden = false; report.textContent = (installResult.stdout || "").trim(); }
+            if (done.UPDATE_OK && done.UPDATE_OK !== "latest") {
+              NovaHaptics.success();
+              status.textContent = `安装完成（${done.MANAGER || "已写入 modules_update"}）。请重启手机生效。`;
+            } else {
+              restore("更新失败：" + (done.UPDATE_FAIL || "未知原因，详情见下方输出"));
+            }
+          }).catch(error => restore("更新失败：" + publicError(error.message)));
+        };
+      }).catch(error => restore("检查失败：" + publicError(error.message)));
+    };
+  }
+
   function showDiagnostics(sceneOnly = false) {    const command = sceneOnly ? "scene-diagnose" : s.online ? "game-diagnose" : "diagnose";
     openDialog(`
       <p class="eyebrow">${sceneOnly ? "SCENE" : "DIAGNOSTICS"}</p>
@@ -1323,6 +1417,7 @@
 
   /* ---------------- 控件事件 ---------------- */
   $$("#mode-grid .mode-card").forEach(button => button.onclick = () => {
+    NovaHaptics.select();
     if (s.automatic || s.automaticActive) { beginPending("mode", button.dataset.mode); return; }
     if (!s.automatic && s.phase === "ready" && button.dataset.mode === s.mode && button.dataset.mode === s.effective) { toast("当前档位已生效"); return; }
     beginPending("mode", button.dataset.mode);
@@ -1330,12 +1425,14 @@
   /* switch 是 button[role=switch]，没有原生 change 事件；统一用 click 翻转 */
   $("#auto-switch").onclick = event => {
     const on = event.currentTarget.getAttribute("aria-checked") !== "true";
+    NovaHaptics.toggle();
     beginPending("auto", on ? "on" : "off");
     render();
   };
   $("#scene-diagnose").onclick = () => showDiagnostics(true);
   $("#scene-diagnose-settings").onclick = () => showDiagnostics(true);
   $("#about-diagnose").onclick = event => { event.preventDefault(); showDiagnostics(); };
+  $("#about-update").onclick = () => showUpdate();
   $("#about-donate").onclick = () => showDonate();
   $("#about-license").onclick = event => { event.preventDefault(); openDialog(`<h3 id="dialog-title">来源与许可</h3><p class="dialog-sub">模块作者：ZenJooo。调度核心沿用 GPL-3.0-only。</p><p class="dialog-sub">NovaFAS 为本模块原创的帧感知调度引擎，读取 SurfaceFlinger 帧统计并在档位包络内动态调频。</p><p class="dialog-sub">界面布局沿用其早期版本的玻璃设计语言；玻璃透镜与色散公式来自 Kyant Backdrop，Apache-2.0。</p><p class="dialog-sub"><a href="https://github.com/Kyant0/AndroidLiquidGlass" target="_blank" rel="noopener noreferrer">Kyant0/AndroidLiquidGlass</a></p><div class="dialog-actions"><button class="btn-capsule ghost" id="license-close" type="button">关闭</button></div>`);$("#license-close").onclick=()=>closeDialog(); };
   $("#nav-cta").onclick = () => { if (s.online) showDiagnostics(); else if (!s.connecting) { clearTimeout(s.retry); discover(); toast("正在连接模块服务"); } else toast("正在连接，请稍候"); };
@@ -1411,6 +1508,26 @@
   document.addEventListener("visibilitychange", () => document.hidden ? suspend() : resume());
   window.addEventListener("pagehide", suspend);
   window.addEventListener("pageshow", resume);
+
+  /* ---------------- 触感开关（外观组） ---------------- */
+  const hapticsSwitch = $("#haptics-switch");
+  const hapticsNote = $("#haptics-note");
+  function renderHapticsSetting() {
+    const on = NovaHaptics.isEnabled();
+    hapticsSwitch.setAttribute("aria-checked", String(on));
+    const channel = NovaHaptics.channel();
+    hapticsNote.textContent = !on ? "已关闭"
+      : channel === "native" ? "宿主原生触感"
+      : channel === "vibrate" ? "设备振动（系统触感关闭时自动静默）"
+      : "当前宿主未提供触感能力";
+  }
+  hapticsSwitch.onclick = () => {
+    const next = !NovaHaptics.isEnabled();
+    NovaHaptics.setEnabled(next);
+    renderHapticsSetting();
+    if (next) NovaHaptics.toggle();
+  };
+  renderHapticsSetting();
 
   applyTheme();
   loadWallpaperFromStorage();

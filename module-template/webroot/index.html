@@ -98,16 +98,18 @@
         <div class="settings-group g" data-role="settings" data-radius="18">
           <button class="setting-row" id="appearance-settings" type="button"><span class="setting-icon purple"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18h1a2 2 0 0 0 0-4h-1a1.5 1.5 0 0 1 0-3h4a5 5 0 0 0 0-10z"/><circle cx="7" cy="10" r=".5"/><circle cx="10" cy="7" r=".5"/><circle cx="15" cy="7" r=".5"/></svg></span><span class="row-copy"><b>个性化</b><small>壁纸、配色与卡片材质</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button>
           <button class="setting-row" id="glass-settings" type="button"><span class="setting-icon blue"><svg viewBox="0 0 24 24"><path d="M12 3C9 7 5 10 5 14a7 7 0 0 0 14 0c0-4-4-7-7-11Z"/></svg></span><span class="row-copy"><b>液态玻璃</b><small>折射、模糊与显示效果</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button>
+          <div class="setting-row"><div class="row-copy"><b>触感反馈</b><small id="haptics-note">读取触感能力中…</small></div><button class="switch" id="haptics-switch" role="switch" aria-checked="true" type="button"><span></span></button></div>
         </div>
         <p class="settings-label">诊断</p>
         <div class="settings-group g" data-role="settings" data-radius="18">
           <button class="setting-row" id="about-diagnose" type="button"><span class="setting-icon green"><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span><span class="row-copy"><b>运行诊断</b><small>读取服务与节点状态</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button>
           <button class="setting-row" id="scene-diagnose-settings" type="button"><span class="setting-icon orange"><svg viewBox="0 0 24 24"><path d="M6 3h9l5 5v13H6zM14 3v6h6M9 13h6M9 17h6"/></svg></span><span class="row-copy"><b>Scene 检测详情</b><small>安装状态与调度回调</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button>
+          <button class="setting-row" id="about-update" type="button"><span class="setting-icon green"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></span><span class="row-copy"><b>检查更新</b><small id="about-update-note">从 GitHub 获取最新版本并自动安装</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button>
           <button class="setting-row" id="about-donate" type="button"><span class="setting-icon orange"><svg viewBox="0 0 24 24"><path d="M12 21s-7.2-4.8-9.6-9.2C.8 8.9 2.4 5.5 5.7 5c1.9-.3 3.8.6 4.9 2.2h.8c1.1-1.6 3-2.5 4.9-2.2 3.3.5 4.9 3.9 3.3 6.8C17.2 16.2 12 21 12 21z"/></svg></span><span class="row-copy"><b>请作者喝杯奶茶</b><small>自愿捐赠 · 持续逐颗处理器优化的动力</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button>
           <button class="setting-row" id="about-license" type="button"><span class="setting-icon blue"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg></span><span class="row-copy"><b>来源与许可</b><small>组件与许可证信息</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button>
         </div>
         <p class="settings-label">模块信息</p>
-        <article class="settings-group g module-info" data-role="settings" data-radius="18"><h3>NovaSched <span>Zen Edition</span></h3><p>按处理器与内核能力调整 CPU 策略，NovaFAS 按帧动态调度。</p><dl class="fact-list"><div><dt>作者</dt><dd>ZenJooo</dd></div><div><dt>界面版本</dt><dd id="about-version">v2.8.0</dd></div><div><dt>服务版本</dt><dd id="about-engine-version">待连接</dd></div><div><dt>处理器</dt><dd id="about-soc">待识别</dd></div><div><dt>配置模板</dt><dd id="about-profile">待识别</dd></div><div><dt>Scene FAS</dt><dd id="about-fas">待识别</dd></div></dl><p class="version-note" id="version-note" hidden></p></article>
+        <article class="settings-group g module-info" data-role="settings" data-radius="18"><h3>NovaSched <span>Zen Edition</span></h3><p>按处理器与内核能力调整 CPU 策略，NovaFAS 按帧动态调度。</p><dl class="fact-list"><div><dt>作者</dt><dd>ZenJooo</dd></div><div><dt>界面版本</dt><dd id="about-version">v2.9.0</dd></div><div><dt>服务版本</dt><dd id="about-engine-version">待连接</dd></div><div><dt>处理器</dt><dd id="about-soc">待识别</dd></div><div><dt>配置模板</dt><dd id="about-profile">待识别</dd></div><div><dt>Scene FAS</dt><dd id="about-fas">待识别</dd></div></dl><p class="version-note" id="version-note" hidden></p></article>
         <p class="section-note">支持 APatch、KernelSU 系列和 Magisk 系列（含 Alpha）。没有内置 WebUI 的管理器可使用独立 WebUI 宿主。</p>
       </section>
     </main>
@@ -151,9 +153,10 @@
   <div class="dialog-layer" id="dialog-layer" aria-hidden="true"><div class="dialog g" data-role="dialog" data-radius="39" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div id="dialog-body"></div></div></div>
   <div class="snackbar" id="snackbar" role="status"></div>
   <input type="file" id="wall-input" accept="image/*" hidden>
-  <script src="./assets/version.js"></script>
-  <script src="./assets/host.js"></script>
-  <script src="./assets/liquid-glass.js"></script>
-  <script src="./assets/app.js"></script>
+<script src="./assets/version.js"></script>
+<script src="./assets/host.js"></script>
+<script src="./assets/haptics.js"></script>
+<script src="./assets/liquid-glass.js"></script>
+<script src="./assets/app.js"></script>
 </body>
 </html>

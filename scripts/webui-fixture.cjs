@@ -3,13 +3,14 @@ function mockHost(options){
   window.fixture={mode:'balance',effective:'balance',pkg:'com.omarea.vtools',linked:!!options.linked,external:!!options.external,
     installed:options.presence==='available',presence:options.presence||'available',automatic:!!options.automatic,
     pendingControls:options.pendingControls||0,phase:options.phase||'ready',legacyMode:options.legacyMode||'balance',
-    version:options.version||'2.8.0',fasState:options.fasState||'ready',fasSync:options.fasSync||'synced',fasMode:options.fasMode||'balance',
+    version:options.version||'2.9.0',fasState:options.fasState||'ready',fasSync:options.fasSync||'synced',fasMode:options.fasMode||'balance',
     fasEngine:options.fasEngine!==undefined?options.fasEngine:'idle',fasEngineSrc:options.fasEngineSrc||'none',
     fasFps:options.fasFps||0,fasBoost:options.fasBoost||0,fasOverride:!!options.fasOverride,samsungSafe:!!options.samsung,
+    fasGpu:options.fasGpu||0,fasTick:options.fasTick||0,freqs:options.freqs||'',
     rules:[{package:'com.example.chat',mode:'balance'}],sockets:[],messages:[],commands:[]};
   const f=window.fixture;
   const labels={'com.omarea.vtools':'Scene','com.example.chat':'聊天'};
-  const modes=()=>`mode:${f.mode},effective:${f.external?'':f.effective},package:${f.pkg},controller:${f.external?'Scene（其它调度器）':f.linked?'Scene（NovaSched Zen Edition）':'WebUI'},sceneActive:${f.external},sceneLinked:${f.linked},phase:${f.external?'suspended':f.phase},heartbeatMs:20,port:31415,socName:Snapdragon 8 Gen 3,socId:SM8650,configProfile:SM8650.json,automaticEnabled:${f.automatic},automaticActive:${f.automatic&&!f.linked&&!f.external},appKind:daily,classificationSource:fixture,fasAvailable:${['ready','running'].includes(f.fasState)},sceneInstalled:${f.installed},scenePresence:${f.presence}` + (options.legacy ? "" : `,fasState:${f.fasState},fasSync:${f.fasSync},fasMode:${f.fasMode},fasEngine:${f.fasEngine},fasEngineSrc:${f.fasEngineSrc},fasFps:${f.fasFps.toFixed(1)},fasBoost:${f.fasBoost},fasOverride:${f.fasOverride},version:${f.version},pendingControls:${f.pendingControls},samsungSafe:${f.samsungSafe}`);
+  const modes=()=>`mode:${f.mode},effective:${f.external?'':f.effective},package:${f.pkg},controller:${f.external?'Scene（其它调度器）':f.linked?'Scene（NovaSched Zen Edition）':'WebUI'},sceneActive:${f.external},sceneLinked:${f.linked},phase:${f.external?'suspended':f.phase},heartbeatMs:20,port:31415,socName:Snapdragon 8 Gen 3,socId:SM8650,configProfile:SM8650.json,automaticEnabled:${f.automatic},automaticActive:${f.automatic&&!f.linked&&!f.external},appKind:daily,classificationSource:fixture,fasAvailable:${['ready','running'].includes(f.fasState)},sceneInstalled:${f.installed},scenePresence:${f.presence}` + (options.legacy ? "" : `,fasState:${f.fasState},fasSync:${f.fasSync},fasMode:${f.fasMode},fasEngine:${f.fasEngine},fasEngineSrc:${f.fasEngineSrc},fasFps:${f.fasFps.toFixed(1)},fasGpu:${f.fasGpu.toFixed(0)},fasBoost:${f.fasBoost},fasOverride:${f.fasOverride},fasTick:${f.fasTick},freqs:${f.freqs},version:${f.version},pendingControls:${f.pendingControls},samsungSafe:${f.samsungSafe}`);
   const apps=()=>JSON.stringify({type:'app-modes',rules:f.rules,defaultMode:f.mode,version:f.version,classificationOverrides:{}});
   const logs='2026-10-13 03:00:00 INFO -> Scene 回调已注册\n2026-10-13 03:00:01 WARN -> 等待节点读回\n';
   function update(message){

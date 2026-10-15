@@ -1,6 +1,6 @@
 id=NovaSched_Zen_Edition
 name=NovaSched Zen Edition
-version=v2.8.0
-versionCode=380
+version=v2.9.0
+versionCode=390
 author=ZenJooo
 description=按内核能力设置四档 CPU 策略，支持应用规则、Scene 联动与液态玻璃 WebUI。三星自动使用保守策略，首次解锁后启动；异常启动重启时自动停用。覆盖更新保留配置，卸载恢复原厂节点。

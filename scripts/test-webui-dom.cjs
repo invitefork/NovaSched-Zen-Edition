@@ -54,7 +54,7 @@ function fixture(options) {
   w.NovaGlass=undefined;
   const context=vm.createContext(w);
   vm.runInContext(`(${mockHost.toString()})(${JSON.stringify(options)})`,context);
-  for(const file of ['version.js','host.js','liquid-glass.js','app.js'])vm.runInContext(fs.readFileSync(path.join(web,'assets',file),'utf8'),context,{filename:file});
+  for(const file of ['version.js','host.js','haptics.js','liquid-glass.js','app.js'])vm.runInContext(fs.readFileSync(path.join(web,'assets',file),'utf8'),context,{filename:file});
   return {w,d,cleanup:()=>timers.forEach(nativeClearTimeout)};
 }
 async function until(fn){const end=Date.now()+4000;while(!fn()){if(Date.now()>end)throw new Error('Timed out waiting for UI state');await new Promise(resolve=>nativeTimeout(resolve,10));}}
@@ -153,7 +153,7 @@ for(const bridgeStyle of ['native0','callback2','promise1','sync1']) {
   const {w,d,cleanup}=fixture({version:'2.2.8',legacy:true,legacyMode:'balance'});
   try {
     await until(()=>d.querySelector('#about-engine-version').textContent==='v2.2.8');
-    assert.equal(d.querySelector('#about-version').textContent,'v2.8.0');
+    assert.equal(d.querySelector('#about-version').textContent,'v2.9.0');
     assert.equal(d.querySelector('#version-note').hidden,false);
     await until(()=>d.querySelector('#fas-legacy-desc').textContent.includes('旧版服务'));
     assert(d.querySelector('#fas-legacy-desc').textContent.includes('fas-rs'));
@@ -174,6 +174,71 @@ for(const bridgeStyle of ['native0','callback2','promise1','sync1']) {
     await until(()=>d.querySelector('#fas-engine-title').textContent==='NovaFAS 待命');
     assert(d.querySelector('#fas-engine-meter').hidden);
     console.log('PASS NovaFAS engine status and override reporting');
+  } finally {cleanup();}
+}
+{
+  const {w,d,cleanup}=fixture({fasEngine:'active',fasEngineSrc:'heuristic',fasGpu:41,fasTick:120,fasFps:0,fasBoost:24});
+  try {
+    await until(()=>d.querySelector('#fas-engine-title').textContent==='NovaFAS 已接管');
+    assert(d.querySelector('#fas-engine-source').textContent.includes('GPU 41%'),'heuristic shows gpu reading');
+    assert(d.querySelector('#fas-engine-tick').textContent.includes('120'),'engine tick visible');
+    console.log('PASS engine telemetry shows GPU load and heartbeat tick');
+  } finally {cleanup();}
+}
+{
+  const {w,d,cleanup}=fixture({freqs:'1459200;1612800;1497600;1824000'});
+  try {
+    await until(()=>d.querySelector('#live-freqs').textContent.includes('1.46'));
+    assert(d.querySelector('#live-freqs').textContent.includes('1.82'),'prime cluster frequency rendered');
+    assert(d.querySelector('#live-freqs').textContent.includes('GHz'),'unit rendered');
+    // 触感：fixture 注入 navigator.vibrate → vibrate 通道；开关可切换并持久化
+    assert.equal(w.NovaHaptics.channel(),'vibrate');
+    const sw=d.querySelector('#haptics-switch');
+    assert(sw,'haptics switch present');
+    assert.equal(sw.getAttribute('aria-checked'),'true','haptics on by default');
+    click(d,'#haptics-switch');
+    assert.equal(w.NovaHaptics.isEnabled(),false,'toggle disables haptics');
+    assert.equal(w.localStorage.getItem('novasched.haptics.v1'),'0','preference persisted');
+    assert(d.querySelector('#haptics-note').textContent.includes('已关闭'),'note reflects off');
+    console.log('PASS live cluster frequencies and haptics settings switch');
+  } finally {cleanup();}
+}
+{
+  const {w,d,cleanup}=fixture({});
+  try {
+    await until(()=>d.querySelector('#nav-cta-text').textContent==='已连接');
+    // 原生触感桥（宿主注入 NovaHostHaptics）优先于 vibrate；切页触发一次 select
+    const calls=[];
+    w.NovaHostHaptics=semantic=>{calls.push(semantic);};
+    assert.equal(w.NovaHaptics.channel(),'native','native bridge wins when present');
+    click(d,'.dock button[data-page="logs"]');
+    await until(()=>d.querySelector('#page-logs').classList.contains('active'));
+    assert(calls.includes('select'),'nav switch fired one select haptic');
+    // 点击当前页：只有轻反馈(tick)，不重复 select
+    calls.length=0;
+    click(d,'.dock button[data-page="logs"]');
+    await pause();
+    assert(!calls.includes('select'),'re-tap current page must not re-select');
+    assert(calls.includes('tick'),'re-tap gives one light tick');
+    // 关闭触感后不再触发
+    w.NovaHaptics.setEnabled(false);
+    calls.length=0;
+    click(d,'.dock button[data-page="overview"]');
+    await until(()=>d.querySelector('#page-overview').classList.contains('active'));
+    assert(calls.length===0,'disabled haptics never fire');
+    console.log('PASS haptics channel priority, nav semantics and kill switch');
+  } finally {cleanup();}
+}
+{
+  const {w,d,cleanup}=fixture({});
+  try {
+    await until(()=>d.querySelector('#nav-cta-text').textContent==='已连接');
+    // 云端更新入口存在；无执行权限时按钮禁用并如实展示
+    click(d,'#about-update');
+    await until(()=>d.querySelector('#dialog-layer').classList.contains('open'));
+    assert(d.querySelector('#dialog-title').textContent.includes('检查更新'),'update dialog opened');
+    assert(d.querySelector('#update-status').textContent.includes('当前版本 v2.9.0'),'update dialog shows current version');
+    console.log('PASS cloud update entry and dialog');
   } finally {cleanup();}
 }
 {
