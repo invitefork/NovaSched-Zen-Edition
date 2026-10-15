@@ -56,11 +56,14 @@ const STOCK_FINGERPRINTS: &[u64] = &[
     0x36b1c6f3524d2773,
     0x4ecaa5ac6f408daa,
     0x6e09071e6d874491,
-    // v2.8.0-2.9.0 / 380 出厂默认（governor 仍为 auto 的历史批次，升级识别用）
+    // v2.8.0-2.9.0 / 380 出厂默认（governor 仍为 auto 的历史批次，升级识别用）。
+    // 注意 SM8650 有两个历史指纹：b282 为均衡重调批次，2d07 为真机 OPP
+    // 重调批次——v2.8.0 与 v2.9.0 实际出货的 SM8650 模板是后者。
     0xd1585868a9fe1cdd,
     0x5833b279736bbd40,
     0xdb12cd59ecbe6b09,
     0xb282aaed50e40878,
+    0x2d070c1ed3e39a2a,
     0xb203f6581fae553d,
     0x633e1f5195b72938,
     0xc2ddd15923fb2f02,
