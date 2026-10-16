@@ -15,7 +15,7 @@
     if (match) { MODULE = match[1]; MODULE_CANDIDATES.unshift(MODULE); }
   } catch (_) {}
   const STORAGE = "novasched.zen.ui.v2";
-  const UI_VERSION = window.NovaRelease?.version || "2.10.2";
+  const UI_VERSION = window.NovaRelease?.version || "2.10.3";
 
   const MODES = {
     powersave:   { name: "省电", copy: "限制 CPU 频率上限，适合消息、阅读和轻量日用。" },
@@ -1377,7 +1377,7 @@
           actions.innerHTML = `<button class="btn-capsule ghost" type="button" id="dialog-cancel2">关闭</button>`;
           $("#dialog-cancel2").onclick = () => closeDialog();
           status.textContent = "正在下载、校验并安装，请保持网络畅通与屏幕亮起…";
-          rootExec(updateScriptCommand("install"), 420000).then(installResult => {
+          rootExec(updateScriptCommand(`install ${keys.LATEST}`), 420000).then(installResult => {
             const done = parseUpdateKeys(installResult.stdout);
             const report = $("#update-report");
             if (report.isConnected) { report.hidden = false; report.textContent = (installResult.stdout || "").trim(); }
