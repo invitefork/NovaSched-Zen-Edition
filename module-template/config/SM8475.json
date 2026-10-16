@@ -93,11 +93,11 @@
       "sample_ms": "1000",
       "modes": {
         "powersave": {
-          "ceiling": "35",
-          "freq_scale": "30"
+          "ceiling": "28",
+          "freq_scale": "25"
         },
         "balance": {
-          "ceiling": "55",
+          "ceiling": "45",
           "freq_scale": "45"
         },
         "performance": {

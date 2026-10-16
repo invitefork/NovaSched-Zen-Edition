@@ -27,8 +27,8 @@ const CEILINGS = {
   XRING_O3:          [[54, 46, 48, 0],  [60, 52, 54, 0],  [82, 74, 80, 0],  [92, 100, 100, 0]],
 };
 const FAS_MODES = {
-  powersave: { ceiling: "35", freq_scale: "30" },
-  balance: { ceiling: "55", freq_scale: "45" },
+  powersave: { ceiling: "28", freq_scale: "25" },
+  balance: { ceiling: "45", freq_scale: "45" },
   performance: { ceiling: "80", freq_scale: "60" },
   fast: { ceiling: "95", freq_scale: "80" },
 };

@@ -613,7 +613,10 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
             // 以内核当前实际接受的最高频率为顶，天然落在已生效的包络内。
             // 之前把 pending 也算进就绪条件，厂商服务钳制上限的设备上引擎
             // 会永远待命，WebUI 看到的就是“接管了却一动不动”。
-            let ready = allowed && last_apply_error.is_empty();
+            // 桌面/系统界面不算可调度前台：待机停在桌面上时 FAS 不保持
+            // 任何加压与底频，把待机功耗交给内核 idle。
+            let idle_surface = is_idle_surface(scheduler.current_package());
+            let ready = allowed && last_apply_error.is_empty() && !idle_surface;
             let floors = scheduler.profile_min_floors();
             if let Ok(mut state) = fas_shared.lock() {
                 if state.mode != scheduler.current_mode()
@@ -1007,6 +1010,23 @@ impl ForegroundMonitor {
 
 fn local_automatic_enabled(enabled: bool, scene: &scene::SceneState) -> bool {
     enabled && !scene.linked() && !scene.controls_locked()
+}
+
+/// 桌面/系统界面：这些表面待机时不需要 NovaFAS 保持任何加压与底频，
+/// 待机功耗全部交给内核 idle。
+fn is_idle_surface(package: &str) -> bool {
+    matches!(
+        package,
+        "com.android.systemui"
+            | "com.miui.home"
+            | "com.android.launcher3"
+            | "com.android.launcher"
+            | "com.google.android.apps.nexuslauncher"
+            | "com.oppo.launcher"
+            | "com.bbk.launcher2"
+            | "com.sec.android.app.launcher"
+            | "com.huawei.android.launcher"
+    )
 }
 
 fn query_foreground() -> Option<String> {

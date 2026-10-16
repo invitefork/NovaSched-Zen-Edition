@@ -92,6 +92,17 @@ const STOCK_FINGERPRINTS: &[u64] = &[
     0x213f50fbbe493423,
     0x3d39d13da3354968,
     0xe96c37185fef01bb,
+    // v2.10.1 / 390 出厂默认（FAS 省电/均衡上限下调：待机与日用功耗）
+    0xea7610b186503073,
+    0x643b3a5081b59492,
+    0x9d52dd505fe0de93,
+    0x7b39d1dc00ae4bd7,
+    0x8f960f1f8ebb24dd,
+    0x9d7a4f2612e155c8,
+    0x068a64a8f2f4aa16,
+    0xad0de19d7c8c2836,
+    0x786c1009353902c5,
+    0x0bd737356d40feac,
 ];
 const OWNED_META: &[&str] = &[
     "name",

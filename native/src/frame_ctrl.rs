@@ -279,6 +279,9 @@ const SAMPLE_FAIL_STREAK: u32 = 3;
 /// 引擎激活但帧信号与负载信号都不可用的宽限拍数（约 5 秒）：超过后回到
 /// 待命并恢复 fas-rs，避免“占用接管却不产出”。
 const NO_SIGNAL_RELEASE_TICKS: u32 = 25;
+/// 加压 > 0 而帧/负载信号停更超过此时长：按 2 倍速率受控泄压，加压值
+/// 绝不悬挂在高位。
+const STALE_BOOST_AFTER: Duration = Duration::from_secs(8);
 
 impl Timestats {
     fn new() -> Self {
@@ -447,6 +450,8 @@ fn run(ctx: EngineCtx) {
     let mut status = EngineStatus::default();
     let mut last_boost: u32 = 0;
     let mut last_mode = String::new();
+    let mut last_package = String::new();
+    let mut last_progress = Instant::now();
     let mut last_sample = Instant::now() - Duration::from_secs(60);
     let mut frame_ok = false;
     let mut fail_streak: u32 = 0;
@@ -482,6 +487,15 @@ fn run(ctx: EngineCtx) {
             controller.reset();
             last_boost = u32::MAX;
         }
+        if shared.package != last_package {
+            // 应用切换：旧应用的加压对新区块毫无意义，不清零会把上一
+            // 个游戏的 boost 原样带到新应用（炸功耗的隐性路径）。
+            last_package = shared.package.clone();
+            if !last_package.is_empty() {
+                controller.reset();
+                last_boost = u32::MAX;
+            }
+        }
         let mode_cfg = cfg.modes.get(&shared.mode).cloned();
         let want_active = shared.allowed
             && shared.ready
@@ -506,6 +520,7 @@ fn run(ctx: EngineCtx) {
                 Some(sample) => {
                     frame_ok = true;
                     fail_streak = 0;
+                    last_progress = Instant::now();
                     controller.on_frame(mode_cfg.ceiling, sample);
                     status.fps = sample.fps;
                 }
@@ -530,7 +545,18 @@ fn run(ctx: EngineCtx) {
             if let Some(busy) = read_gpu_busy() {
                 gpu_available = true;
                 status.gpu = busy;
+                last_progress = Instant::now();
                 controller.on_load(mode_cfg.ceiling, busy);
+            }
+        }
+        // 防炸功耗守门：加压 > 0 而帧/负载信号都停更超过 8 秒（应用停止
+        // 渲染、采样全部失效），按 2 倍速率受控泄压到 0，绝不让加压值
+        // 悬挂在高位。恢复信号后 last_progress 会被刷新，泄压自动停止。
+        if controller.boost > 0 && last_progress.elapsed() > STALE_BOOST_AFTER {
+            controller.boost = controller.boost.saturating_sub(BOOST_STEP * 2);
+            if controller.boost == 0 {
+                controller.bad_streak = 0;
+                controller.calm = 0;
             }
         }
         status.source = if frame_ok {

@@ -40,8 +40,8 @@ CEILINGS = {
 # freq_scale = per-cluster minimum-frequency max, percent of the cluster's
 # current ceiling (little cluster ×0.6 inside the engine).
 FAS_MODES = {
-    'powersave':   {'ceiling': '35', 'freq_scale': '30'},
-    'balance':     {'ceiling': '55', 'freq_scale': '45'},
+    'powersave':   {'ceiling': '28', 'freq_scale': '25'},
+    'balance':     {'ceiling': '45', 'freq_scale': '45'},
     'performance': {'ceiling': '80', 'freq_scale': '60'},
     'fast':        {'ceiling': '95', 'freq_scale': '80'},
 }
