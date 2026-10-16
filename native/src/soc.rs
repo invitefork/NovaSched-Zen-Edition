@@ -191,6 +191,19 @@ pub fn sm_token(token: &str) -> SmToken {
         _ => SmToken::Unsupported,
     }
 }
+/// MTK 平台型号 → SoC：Redmi/小米 以平台码上报 SoC（如 Redmi dali 的
+/// MT6991 = 天玑 9400+）。仅收录已确认的映射，未知平台码不猜测。
+pub fn mtk_platform(value: &str) -> Option<Soc> {
+    let lower = value.to_ascii_lowercase();
+    let code = lower.strip_prefix("mt")?;
+    if code.is_empty() || !code.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    match code {
+        "6991" => Some(Soc::Dimensity9400Plus),
+        _ => None,
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

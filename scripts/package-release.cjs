@@ -292,7 +292,7 @@ function read(name){
 assert(read('bin/novasched').subarray(0,4).toString('binary')==='\\x7fELF','shipped ELF magic');
 assert(!names.some(n=>n.name.endsWith('webui.session')),'private session included');
 assert(read('META-INF/com/google/android/updater-script').toString().trim()==='#MAGISK','updater script');
-for(const name of ['bin/novasched','action.sh','service.sh','customize.sh','uninstall.sh','vtools/powercfg.sh','META-INF/com/google/android/update-binary'])
+for(const name of ['bin/novasched','action.sh','service.sh','customize.sh','uninstall.sh','vtools/powercfg.sh','vtools/powercfg-base.sh','META-INF/com/google/android/update-binary'])
   assert(byName[name]&&(byName[name].mode===0o755),'exec mode '+name);
 console.log('Final release archive passed CRC, metadata, executable modes and ELF consistency checks.');
 `], {encoding: "utf8"});

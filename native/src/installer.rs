@@ -22,6 +22,7 @@ pub fn run(module: &Path, phase: &str) -> Result<()> {
         "prepare-config" => (30, "正在准备配置和备份。"),
         "prepare-auto" => (10, "正在保存自动调度偏好。"),
         "scene-status" => (15, "正在查询 Scene 安装状态。"),
+        "scene-install" => (20, "正在备份并接管 Scene 调度。"),
         _ => return Err("未知安装检查，拒绝执行".into()),
     };
     let log = module.join(format!("install-{phase}.log"));
@@ -76,6 +77,7 @@ pub fn run(module: &Path, phase: &str) -> Result<()> {
                 || line.starts_with("automatic_enabled=")
                 || line.starts_with("scene_presence=")
                 || line.starts_with("scene_detection=")
+                || line.starts_with("Scene ")
                 || line.starts_with("compatibility=")
         }) {
             println!("{line}");

@@ -81,6 +81,17 @@ const STOCK_FINGERPRINTS: &[u64] = &[
     0x90510745d88dc256,
     0xb487f424ae626b25,
     0x4581603aaa8b806c,
+    // v2.10.0 / 390 出厂默认（2W/3W 功耗档 + feed_video 信息流锁帧块）
+    0x23bcc8578177bdd2,
+    0x47e9345a8d7f2b2f,
+    0x6ddd5769b9d56236,
+    0xfc9cc4e67ba70a60,
+    0x97be111ab8857ef2,
+    0x474f79f27199e493,
+    0x1e6e3228410a8a6f,
+    0x213f50fbbe493423,
+    0x3d39d13da3354968,
+    0xe96c37185fef01bb,
 ];
 const OWNED_META: &[&str] = &[
     "name",
@@ -336,6 +347,8 @@ mod tests {
     }
     #[test]
     fn release_upgrade_retunes_stock_and_preserves_custom_parameters_with_backup() {
+        let shipped = Config::load(&module().join("config/SM8650.json")).unwrap();
+        let stock_max = &shipped.profile("powersave").unwrap().clusters[0].max_freq;
         for custom in [false, true] {
             let state = state();
             let hardware = test_hardware(Soc::Gen3);
@@ -354,7 +367,7 @@ mod tests {
             let default = json::stringify(&old).unwrap();
             fs::write(state.join("config.default.json"), &default).unwrap();
             let text = if custom {
-                default.replace("52%", "51%")
+                default.replace(stock_max, "51%")
             } else {
                 default
             };
@@ -365,7 +378,7 @@ mod tests {
             assert_eq!(parsed.meta.version, crate::config::PROFILE_VERSION);
             assert_eq!(
                 parsed.profile("powersave").unwrap().clusters[0].max_freq,
-                if custom { "51%" } else { "52%" }
+                if custom { "51%" } else { stock_max }
             );
             let root = json::parse(&saved).unwrap();
             assert!(root.get("features").unwrap().get("extreme").is_err());

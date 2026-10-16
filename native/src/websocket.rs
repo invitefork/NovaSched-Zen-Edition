@@ -59,6 +59,7 @@ struct RuntimeData {
     fas_engine_override: bool,
     fas_engine_ticks: u64,
     frequencies: [u32; 4],
+    feed_fps: bool,
     scene_installed: bool,
     scene_presence: String,
     samsung: bool,
@@ -201,6 +202,13 @@ impl RuntimeState {
     pub fn set_frequencies(&self, frequencies: [u32; 4]) {
         if let Ok(mut data) = self.inner.lock() {
             data.frequencies = frequencies;
+        }
+    }
+
+    /// 信息流 30Hz 锁帧是否生效中。
+    pub fn set_feed_fps(&self, engaged: bool) {
+        if let Ok(mut data) = self.inner.lock() {
+            data.feed_fps = engaged;
         }
     }
 
@@ -609,7 +617,7 @@ fn payload(state: &WebState, app_endpoint: bool) -> String {
     };
     if !app_endpoint {
         return format!(
-            "mode:{},effective:{},package:{},controller:{},sceneActive:{},sceneLinked:{},phase:{},heartbeatMs:{},port:{},powerSaveProfile:{},socName:{},socId:{},configProfile:{},automaticEnabled:{},appKind:{},classificationSource:{},automaticActive:{},fasAvailable:{},sceneInstalled:{},scenePresence:{},fasState:{},fasMode:{},fasSync:{},fasEngine:{},fasEngineSrc:{},fasFps:{},fasGpu:{},fasBoost:{},fasOverride:{},fasTick:{},freqs:{},version:{},pendingControls:{},samsungSafe:{}",
+            "mode:{},effective:{},package:{},controller:{},sceneActive:{},sceneLinked:{},phase:{},heartbeatMs:{},port:{},powerSaveProfile:{},socName:{},socId:{},configProfile:{},automaticEnabled:{},appKind:{},classificationSource:{},automaticActive:{},fasAvailable:{},sceneInstalled:{},scenePresence:{},fasState:{},fasMode:{},fasSync:{},fasEngine:{},fasEngineSrc:{},fasFps:{},fasGpu:{},fasBoost:{},fasOverride:{},fasTick:{},freqs:{},feedFps:{},version:{},pendingControls:{},samsungSafe:{}",
             default,
             runtime.effective_mode,
             runtime.package,
@@ -630,6 +638,7 @@ fn payload(state: &WebState, app_endpoint: bool) -> String {
             runtime.fas_engine_override,
             runtime.fas_engine_ticks,
             runtime.frequencies.iter().map(u32::to_string).collect::<Vec<_>>().join(";"),
+            if runtime.feed_fps { "1" } else { "0" },
             env!("CARGO_PKG_VERSION"), runtime.pending_controls, runtime.samsung,
         );
     }

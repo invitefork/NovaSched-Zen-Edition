@@ -32,7 +32,7 @@ for path in sorted((root / "module-template/config").glob("*.json")):
             assert 0 <= floor <= ceiling <= 100
             assert floor <= 10, "A permanent high floor wastes idle power"
             limits.append(ceiling)
-            assert profile["governors"][slot] == "auto"
+            assert profile["governors"][slot] == ("walt" if path.stem.startswith("SM") else "schedutil")
         if policy >= 0:
             assert all(a < b for a, b in zip(limits, limits[1:])), limits
             assert 90 <= limits[-1] <= 100

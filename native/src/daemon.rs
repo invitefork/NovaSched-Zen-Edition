@@ -155,6 +155,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
     let input_boost_cfg = config.functions.input_boost.clone();
     let fas_cfg = config.functions.fas.clone();
     let fas_policies = config.policy;
+    let feed_video_cfg = config.functions.feed_video.clone();
     let cpuctl_live = Arc::new(CpuctlLive::default());
     let mut scheduler = match Scheduler::new(
         config,
@@ -324,6 +325,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
     let mut first_scan = true;
     let mut node_audit = NodeAuditClock::new(Instant::now());
     let mut scene_probe_at = Instant::now() + scene::PRESENCE_INTERVAL;
+    let mut feed_fps = crate::feed_fps::FeedFpsState::default();
     while !STOP_REQUESTED.load(Ordering::Relaxed) && !state_dir.join("stop.requested").exists() {
         let wake = if first_scan {
             first_scan = false;
@@ -529,6 +531,24 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
         if let Ok(mut state) = cpuctl_live.inner.lock() {
             state.active = !package.is_empty() && !scene.controls_locked();
         }
+        // 信息流视频 30Hz 锁帧：前台命中清单（抖音/快手/小红书/B 站等，
+        // features.feed_video.packages 可配）时限制屏幕刷新率，切走恢复。
+        let feed_match = feed_video_cfg.enabled
+            && !scene.controls_locked()
+            && feed_video_cfg
+                .packages
+                .iter()
+                .any(|p| package == *p || package.starts_with(&format!("{p}:")));
+        if feed_match && !feed_fps.engaged {
+            feed_fps = crate::feed_fps::engage(feed_video_cfg.fps, &logger);
+            if feed_fps.engaged {
+                revision.fetch_add(1, Ordering::Relaxed);
+            }
+        } else if !feed_match && feed_fps.engaged {
+            crate::feed_fps::release(&mut feed_fps, &logger);
+            revision.fetch_add(1, Ordering::Relaxed);
+        }
+        runtime.set_feed_fps(feed_fps.engaged);
         let force_apply = forced
             || config_changed
             || rules_changed
@@ -692,6 +712,7 @@ pub fn run_daemon(module_dir: PathBuf) -> Result<()> {
 
     logger.info("收到停止请求，正在恢复原厂快照");
     web_stop.store(true, Ordering::Relaxed);
+    crate::feed_fps::release(&mut feed_fps, &logger);
     if let Some(handle) = input_thread {
         if handle.join().is_err() {
             logger.error("输入加速线程异常退出");

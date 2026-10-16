@@ -165,7 +165,7 @@ with zipfile.ZipFile(flashable) as z:
     assert z.read('bin/novasched') == binary.read_bytes()
     assert not any(name.endswith('webui.session') for name in z.namelist()), 'Private session included in release archive'
     assert z.read('META-INF/com/google/android/updater-script').strip() == b'#MAGISK'
-    for name in ['bin/novasched','action.sh','service.sh','customize.sh','uninstall.sh','vtools/powercfg.sh','META-INF/com/google/android/update-binary']:
+    for name in ['bin/novasched','action.sh','service.sh','customize.sh','uninstall.sh','vtools/powercfg.sh','vtools/powercfg-base.sh','META-INF/com/google/android/update-binary']:
         assert (z.getinfo(name).external_attr >> 16) & 0o777 == 0o755
 
 print('Final release archive passed CRC, metadata, executable modes, protocol key and ELF consistency checks.')

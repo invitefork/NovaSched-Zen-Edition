@@ -7,7 +7,7 @@ use crate::util::{self, Result};
 pub const MODES: [&str; 4] = ["powersave", "balance", "performance", "fast"];
 /// Profile generation, independent of the UI version. Bump when defaults change
 /// so unedited configurations update while custom tuning migrates in place.
-pub const PROFILE_VERSION: i64 = 380;
+pub const PROFILE_VERSION: i64 = 390;
 
 #[derive(Clone, Debug)]
 pub struct Meta {
@@ -162,6 +162,32 @@ impl Default for FasConfig {
     }
 }
 
+/// 信息流视频应用锁帧：前台命中 packages 时把屏幕刷新率限制到 fps Hz。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FeedVideoConfig {
+    pub enabled: bool,
+    pub fps: u32,
+    pub packages: Vec<String>,
+}
+
+impl Default for FeedVideoConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            fps: 30,
+            packages: [
+                "com.ss.android.ugc.aweme",
+                "com.smile.gifmaker",
+                "com.xingin.xhs",
+                "tv.danmaku.bili",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Functions {
     pub node_watchdog: bool,
@@ -174,6 +200,7 @@ pub struct Functions {
     pub foreground_monitor: ForegroundMonitorConfig,
     pub perf_service_lock: PerfServiceLock,
     pub fas: FasConfig,
+    pub feed_video: FeedVideoConfig,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -396,6 +423,7 @@ impl Config {
                 foreground_monitor,
                 perf_service_lock,
                 fas: FasConfig::default(),
+            feed_video: FeedVideoConfig::default(),
             },
             modes,
         })

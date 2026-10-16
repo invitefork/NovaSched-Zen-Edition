@@ -7,6 +7,7 @@ use std::mem::MaybeUninit;
 use std::os::fd::AsRawFd;
 use std::os::raw::{c_char, c_long};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -58,7 +59,7 @@ pub fn current_android_user() -> Result<u32> {
         }
     }
     let result =
-        query_current_user(|program, args| query_command(program, args, Duration::from_secs(1)));
+        query_current_user(|program, args| query_command(program, args, Duration::from_secs(2)));
     if let Ok(mut guard) = cache.lock() {
         *guard = Some((Instant::now(), result.clone()));
     }
@@ -66,37 +67,47 @@ pub fn current_android_user() -> Result<u32> {
 }
 
 fn query_current_user(mut query: impl FnMut(&str, &[&str]) -> Result<String>) -> Result<u32> {
+    let mut failures = Vec::new();
     for (program, args) in [
         ("/system/bin/cmd", vec!["activity", "get-current-user"]),
         ("/system/bin/am", vec!["get-current-user"]),
+        ("/system/bin/dumpsys", vec!["activity", "users"]),
+        ("/system/bin/dumpsys", vec!["user"]),
+        ("/system/bin/dumpsys", vec!["window", "policy"]),
+        ("/system/bin/dumpsys", vec!["activity", "activities"]),
     ] {
-        if let Ok(text) = query(program, &args) {
-            if let Some(user) = parse_current_user(&text) {
-                return Ok(user);
+        let command = format!("{program} {}", args.join(" "));
+        match query(program, &args) {
+            Ok(text) => {
+                if let Some(user) = parse_current_user(&text) { return Ok(user); }
+                failures.push(format!("{command}: 未识别当前用户"));
             }
+            Err(error) => failures.push(format!("{command}: {}", error.chars().take(320).collect::<String>())),
         }
     }
-    if let Ok(text) = query("/system/bin/dumpsys", &["activity", "activities"]) {
-        if let Some(user) = parse_current_user(&text) {
-            return Ok(user);
-        }
-    }
-    Err("无法查询 Android 当前用户；未假定用户 0".into())
+    Err(format!("无法查询 Android 当前用户；{}", failures.join("；")))
 }
 
 fn parse_current_user(text: &str) -> Option<u32> {
-    if let Ok(user) = text.trim().parse() {
-        return Some(user);
+    fn id(text: &str) -> Option<u32> {
+        let text = text.trim();
+        (!text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| text.parse().ok()).flatten()
     }
-    text.lines().find_map(|line| {
+    if let Some(user) = id(text) { return Some(user); }
+    let mut found = None;
+    for line in text.lines() {
         let line = line.trim();
-        for prefix in ["mCurrentUser=", "mCurrentUserId=", "Current user: "] {
+        for prefix in ["mCurrentUser=", "mCurrentUserId=", "mCurrentUser:", "mCurrentUserId:", "Current user:"] {
             if let Some(value) = line.strip_prefix(prefix) {
-                return value.split_whitespace().next()?.trim_end_matches(',').parse().ok();
+                let value = value.split_whitespace().next()?.trim_end_matches(',');
+                let user = id(value)?;
+                if found.is_some_and(|previous| previous != user) { return None; }
+                found = Some(user);
             }
         }
-        None
-    })
+    }
+    found
 }
 
 #[cfg(test)]
@@ -348,108 +359,96 @@ pub fn run_command(program: &str, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Small platform queries must not block the scheduling heartbeat indefinitely.
-/// A file avoids pipe backpressure and bounds the amount of captured output.
+/// Android forwards these descriptors to Binder services. Pipes keep queries
+/// independent of private runtime-file labels and inherited terminal access.
 pub fn query_command(program: &str, args: &[&str], timeout: Duration) -> Result<String> {
     query_command_limited(program, args, timeout, 65_536)
 }
 
-pub fn query_command_limited(
-    program: &str,
-    args: &[&str],
-    timeout: Duration,
-    limit: u64,
-) -> Result<String> {
-    if limit > 1_048_576 {
-        return Err("平台查询限额不能超过 1 MiB".into());
+pub fn query_command_limited(program: &str, args: &[&str], timeout: Duration, limit: u64) -> Result<String> {
+    if limit > 1_048_576 { return Err("平台查询限额不能超过 1 MiB".into()); }
+    let mut command = Command::new(program);
+    command.args(args).env_remove("LD_LIBRARY_PATH").env_remove("LD_PRELOAD").env_remove("CLASSPATH")
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    unsafe {
+        command.pre_exec(|| {
+            if ffi::setsid() < 0 { return Err(std::io::Error::last_os_error()); }
+            Ok(())
+        });
     }
-    let path = std::env::temp_dir().join(format!(
-        "novasched-query-{}-{}",
-        current_pid(),
-        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    // Android's generic temp directory may not be writable in a root domain.
-    let path = if cfg!(target_os = "android") {
-        let directory = if Path::new(STATE_DIR).is_dir() { STATE_DIR } else { "/data/local/tmp" };
-        Path::new(directory).join(path.file_name().ok_or("查询临时路径无效")?)
-    } else {
-        path
-    };
-    let output = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(&path)
-        .map_err(|e| format!("创建查询输出失败: {e}"))?;
-    let error_path = path.with_extension("stderr");
+    let mut child = command.spawn().map_err(|e| format!("执行 {program} 失败: {e}"))?;
     let result = (|| {
-        let stderr = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(&error_path)
-            .map_err(|e| format!("创建查询错误输出失败: {e}"))?;
-        let mut child = Command::new(program)
-            .args(args)
-            .env_remove("LD_LIBRARY_PATH")
-            .env_remove("LD_PRELOAD")
-            .env_remove("CLASSPATH")
-            .stdout(Stdio::from(output))
-            .stderr(Stdio::from(stderr))
-            .spawn()
-            .map_err(|e| format!("执行 {program} 失败: {e}"))?;
+        let mut stdout = child.stdout.take().ok_or("未取得查询输出管道")?;
+        let mut stderr = child.stderr.take().ok_or("未取得查询错误管道")?;
+        for fd in [stdout.as_raw_fd(), stderr.as_raw_fd()] {
+            let flags = unsafe { ffi::fcntl(fd, ffi::F_GETFL) };
+            if flags < 0 || unsafe { ffi::fcntl(fd, ffi::F_SETFL, flags | ffi::O_NONBLOCK) } < 0 {
+                return Err(ffi::errno_message("配置查询管道失败"));
+            }
+        }
+        let mut output = QueryOutput::new(limit as usize);
+        let mut errors = QueryOutput::new(16_384);
         let deadline = Instant::now() + timeout;
         loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    // 用字节读取再按 UTF-8 边界截断：read_to_string 遇到被
-                    // limit 切断的多字节字符会整体报错，把成功的查询误判为失败。
-                    let mut bytes = Vec::new();
-                    File::open(&path)
-                        .and_then(|f| f.take(limit + 1).read_to_end(&mut bytes))
-                        .map_err(|e| format!("读取查询输出失败: {e}"))?;
-                    let text = String::from_utf8_lossy(&bytes).into_owned();
-                    if bytes.len() as u64 > limit {
-                        return Err("平台查询输出超出限制".into());
-                    }
-                    if !status.success() {
-                        let mut error_bytes = Vec::new();
-                        File::open(&error_path)
-                            .and_then(|f| f.take(limit).read_to_end(&mut error_bytes))
-                            .map_err(|e| format!("读取查询错误输出失败: {e}"))?;
-                        let errors = String::from_utf8_lossy(&error_bytes).into_owned();
-                        return Err(format!(
-                            "查询 {program} 退出码 {:?}: {} {}",
-                            status.code(),
-                            text.trim(),
-                            errors.trim()
-                        ));
-                    }
-                    return Ok(text.trim().to_string());
+            output.drain(&mut stdout)?;
+            errors.drain(&mut stderr)?;
+            if output.truncated { return Err(format!("查询 {program} 输出超出限制")); }
+            if let Some(status) = child.try_wait().map_err(|e| format!("检查平台查询失败: {e}"))? {
+                while !output.drain(&mut stdout)? {
+                    if output.truncated { return Err(format!("查询 {program} 输出超出限制")); }
                 }
-                Ok(None) if Instant::now() < deadline => sleep(Duration::from_millis(20)),
-                outcome => {
-                    let killed = child.kill();
-                    let waited = child.wait();
-                    if let Err(e) = killed {
-                        eprintln!("novasched: 终止查询失败: {e}");
-                    }
-                    if let Err(e) = waited {
-                        eprintln!("novasched: 回收查询失败: {e}");
-                    }
-                    return Err(match outcome {
-                        Err(e) => format!("检查平台查询失败: {e}"),
-                        _ => format!("查询 {program} 超时"),
-                    });
+                errors.drain(&mut stderr)?;
+                if output.truncated { return Err(format!("查询 {program} 输出超出限制")); }
+                let text = String::from_utf8_lossy(&output.bytes).trim().to_string();
+                if !status.success() {
+                    return Err(format!("查询 {program} 退出码 {:?}: {} {}", status.code(), text,
+                        String::from_utf8_lossy(&errors.bytes).trim()));
                 }
+                return Ok(text);
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("查询 {program} 超时: {}", String::from_utf8_lossy(&errors.bytes).trim()));
+            }
+            let mut fds = [
+                ffi::PollFd { fd: if output.eof { -1 } else { stdout.as_raw_fd() }, events: ffi::POLLIN, revents: 0 },
+                ffi::PollFd { fd: if errors.eof { -1 } else { stderr.as_raw_fd() }, events: ffi::POLLIN, revents: 0 },
+            ];
+            if unsafe { ffi::poll(fds.as_mut_ptr(), fds.len(), 20) } < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::Interrupted { return Err(format!("等待查询管道失败: {error}")); }
             }
         }
     })();
-    cleanup(&error_path);
-    if let Err(error) = fs::remove_file(&path) {
-        eprintln!("novasched: 清理查询输出失败: {error}");
+    if result.is_err() && child.try_wait().ok().flatten().is_none() {
+        // The unreaped child owns the process group established by setsid.
+        unsafe { ffi::kill(-(child.id() as i32), ffi::SIGKILL); }
+        let _ = child.kill();
+        let _ = child.wait();
     }
     result
+}
+
+struct QueryOutput { bytes: Vec<u8>, limit: usize, truncated: bool, eof: bool }
+impl QueryOutput {
+    fn new(limit: usize) -> Self { Self { bytes: Vec::new(), limit, truncated: false, eof: false } }
+    fn drain(&mut self, reader: &mut impl Read) -> Result<bool> {
+        if self.eof { return Ok(true); }
+        let mut buffer = [0u8; 8192];
+        for _ in 0..8 {
+            match reader.read(&mut buffer) {
+                Ok(0) => { self.eof = true; return Ok(true); }
+                Ok(count) => {
+                    let keep = count.min(self.limit.saturating_sub(self.bytes.len()));
+                    self.bytes.extend_from_slice(&buffer[..keep]);
+                    self.truncated |= keep < count;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(true),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(format!("读取查询管道失败: {error}")),
+            }
+        }
+        Ok(false)
+    }
 }
 
 pub fn local_timestamp() -> String {
@@ -638,5 +637,47 @@ mod query_output_regressions {
         assert_eq!(reply, "10");
         let error = query_command("/bin/sh", &["-c", "printf 'binder denied' >&2; exit 1"], Duration::from_secs(2)).unwrap_err();
         assert!(error.contains("binder denied"));
+    }
+}
+
+#[cfg(test)]
+mod android_startup_regressions {
+    use super::*;
+    #[test]
+    fn aosp_colon_and_vendor_equals_user_fields_are_both_supported() {
+        for text in ["mCurrentUserId:10", "mCurrentUserId: 10", "mCurrentUserId=10", "mCurrentUser=10,", "Current user: 10"] {
+            assert_eq!(parse_current_user(text), Some(10), "{text}");
+        }
+        for text in ["mTargetUserId:0", "mCurrentUserId:-1", "mCurrentUserId:10\nmCurrentUserId:0", "Error: 0", "0\n10"] {
+            assert_eq!(parse_current_user(text), None, "{text}");
+        }
+        assert_eq!(query_current_user(|_, args| {
+            if args == ["activity", "users"] { Ok("mStartedUsers:\n User #10: state=RUNNING_UNLOCKED\nmCurrentUserId:10\n".into()) }
+            else { Err("Binder stdout denied".into()) }
+        }), Ok(10));
+    }
+    #[test]
+    fn failed_user_lookup_preserves_the_command_and_os_error() {
+        let error = query_current_user(|_, _| Err("Permission denied (os error 13)".into())).unwrap_err();
+        assert!(error.contains("activity get-current-user"));
+        assert!(error.contains("dumpsys activity users")); assert!(error.contains("Permission denied"));
+    }
+    #[test]
+    fn binder_queries_use_pipes_and_eof_stdin_without_private_output_files() {
+        let reply = query_command("python3", &["-c", "import os,stat; assert stat.S_ISFIFO(os.fstat(1).st_mode); assert stat.S_ISFIFO(os.fstat(2).st_mode); assert os.read(0,1)==b''; print(10)"], Duration::from_secs(2)).unwrap();
+        assert_eq!(reply, "10");
+    }
+    #[test]
+    fn full_pipes_and_stderr_floods_do_not_block_queries() {
+        let reply = query_command_limited("python3", &["-c", "import os; os.write(2,b'w'*200000); os.write(1,b'a'*200000)"], Duration::from_secs(2), 250_000).unwrap();
+        assert_eq!(reply.len(), 200_000); assert!(reply.bytes().all(|byte| byte == b'a'));
+        let error = query_command_limited("python3", &["-c", "import os; os.write(1,b'a'*200000)"], Duration::from_secs(2), 1024).unwrap_err();
+        assert!(error.contains("输出超出限制"));
+    }
+    #[test]
+    fn query_timeout_terminates_a_waiting_wrapper_and_its_child() {
+        let started = Instant::now();
+        let error = query_command("/bin/sh", &["-c", "sleep 5 & wait"], Duration::from_millis(120)).unwrap_err();
+        assert!(error.contains("超时")); assert!(started.elapsed() < Duration::from_secs(1));
     }
 }

@@ -57,7 +57,7 @@ function fixture(options) {
   for(const file of ['version.js','host.js','haptics.js','liquid-glass.js','app.js'])vm.runInContext(fs.readFileSync(path.join(web,'assets',file),'utf8'),context,{filename:file});
   return {w,d,cleanup:()=>timers.forEach(nativeClearTimeout)};
 }
-async function until(fn){const end=Date.now()+4000;while(!fn()){if(Date.now()>end)throw new Error('Timed out waiting for UI state');await new Promise(resolve=>nativeTimeout(resolve,10));}}
+async function until(fn,timeout=4000){const end=Date.now()+timeout;while(!fn()){if(Date.now()>end)throw new Error('Timed out waiting for UI state');await new Promise(resolve=>nativeTimeout(resolve,10));}}
 const pause=()=>new Promise(resolve=>nativeTimeout(resolve,30));
 function click(d,query){const node=d.querySelector(query);assert(node,query+' missing');assert(!node.disabled,query+' disabled');node.click();}
 for(const options of [{linked:true,automatic:true,presence:'available'},{presence:'absent'},{presence:'unknown'},{external:true,presence:'available'},{root:true,presence:'absent'},{labels:false,presence:'absent'},{samsung:true,presence:'absent',fasEngine:'off',fasState:'absent'}]) {
@@ -139,7 +139,7 @@ for(const options of [{insets:'modern',viewport:{height:852}},{insets:'legacy',v
     console.log('PASS fixed shell, host insets, tap/drag separation, route scroll and modal release',JSON.stringify(options));
   } finally {cleanup();}
 }
-for(const bridgeStyle of ['native0','callback2','promise1','sync1']) {
+for(const bridgeStyle of ['native0','native2','callback2','promise1','sync1']) {
   const {w,d,cleanup}=fixture({root:true,presence:'absent',bridgeStyle});
   try {
     await until(()=>d.querySelector('#nav-cta-text').textContent==='已连接');
@@ -150,10 +150,39 @@ for(const bridgeStyle of ['native0','callback2','promise1','sync1']) {
   } finally {cleanup();}
 }
 {
+  const {w,d,cleanup}=fixture({root:true,presence:'available',linked:true,emptyAsync:true});
+  try {
+    await until(()=>d.querySelector('#nav-cta-text').textContent==='已连接');
+    click(d,'[data-mode="fast"]');
+    await until(()=>d.querySelector('[data-mode="fast"]').dataset.state==='active');
+    assert.equal(w.fixture.messages.filter(message=>message==='fast').length,1);
+    assert(d.querySelector('#stat-scene-note').textContent.includes('原调度与初始化脚本已备份'));
+    console.log('PASS native async placeholder and linked Scene mutation');
+  } finally {cleanup();}
+}
+{
+  const secret='b'.repeat(64),error='novasched: 服务启动失败：配置不可读取 '+secret;
+  const {d,cleanup}=fixture({authError:error});
+  try {
+    await until(()=>d.querySelector('#nav-cta-text').textContent==='离线');
+    assert(d.querySelector('#hero-sub').textContent.includes('配置不可读取'));
+    assert(!d.querySelector('#hero-sub').textContent.includes(secret));
+    click(d,'.hero-card');assert(d.querySelector('#service-start'));
+    console.log('PASS startup errors visible and credentials redacted');
+  } finally {cleanup();}
+}
+{
+  const {d,cleanup}=fixture({bridgeDelay:30,root:true});
+  try {
+    await until(()=>d.querySelector('#nav-cta-text').textContent==='已连接',6500);
+    console.log('PASS delayed host bridge reconnects automatically');
+  } finally {cleanup();}
+}
+{
   const {w,d,cleanup}=fixture({version:'2.2.8',legacy:true,legacyMode:'balance'});
   try {
     await until(()=>d.querySelector('#about-engine-version').textContent==='v2.2.8');
-    assert.equal(d.querySelector('#about-version').textContent,'v2.9.4');
+    assert.equal(d.querySelector('#about-version').textContent,'v2.10.0');
     assert.equal(d.querySelector('#version-note').hidden,false);
     await until(()=>d.querySelector('#fas-legacy-desc').textContent.includes('旧版服务'));
     assert(d.querySelector('#fas-legacy-desc').textContent.includes('fas-rs'));
@@ -237,7 +266,7 @@ for(const bridgeStyle of ['native0','callback2','promise1','sync1']) {
     click(d,'#about-update');
     await until(()=>d.querySelector('#dialog-layer').classList.contains('open'));
     assert(d.querySelector('#dialog-title').textContent.includes('检查更新'),'update dialog opened');
-    assert(d.querySelector('#update-status').textContent.includes('当前版本 v2.9.4'),'update dialog shows current version');
+    assert(d.querySelector('#update-status').textContent.includes('当前版本 v2.10.0'),'update dialog shows current version');
     console.log('PASS cloud update entry and dialog');
   } finally {cleanup();}
 }

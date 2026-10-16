@@ -4,7 +4,7 @@
   "meta": {
     "name": "NovaSched Zen Edition",
     "author": "ZenJooo",
-    "version": 380,
+    "version": 390,
     "soc": "SM8650",
     "loglevel": "INFO"
   },
@@ -109,6 +109,16 @@
           "freq_scale": "80"
         }
       }
+    },
+    "feed_video": {
+      "enabled": true,
+      "fps": 30,
+      "packages": [
+        "com.ss.android.ugc.aweme",
+        "com.smile.gifmaker",
+        "com.xingin.xhs",
+        "tv.danmaku.bili"
+      ]
     }
   },
   "modes": {
@@ -120,10 +130,10 @@
         "0%"
       ],
       "max": [
-        "65%",
-        "52%",
-        "51%",
-        "56%"
+        "60%",
+        "45%",
+        "49%",
+        "45%"
       ],
       "governors": [
         "walt",
@@ -156,10 +166,10 @@
         "0%"
       ],
       "max": [
-        "80%",
-        "68%",
-        "69%",
-        "69%"
+        "70%",
+        "58%",
+        "56%",
+        "59%"
       ],
       "governors": [
         "walt",

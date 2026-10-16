@@ -15,13 +15,13 @@
     if (match) { MODULE = match[1]; MODULE_CANDIDATES.unshift(MODULE); }
   } catch (_) {}
   const STORAGE = "novasched.zen.ui.v2";
-  const UI_VERSION = window.NovaRelease?.version || "2.9.4";
+  const UI_VERSION = window.NovaRelease?.version || "2.10.0";
 
   const MODES = {
-    powersave:   { name: "省电", copy: "极限控功耗，适合信息流和日用，输入保持跟手。" },
-    balance:     { name: "均衡", copy: "比省电档略放宽的日用甜点；剪辑等持续重负载建议性能档。" },
-    performance: { name: "性能", copy: "按王者荣耀稳定 120 帧的甜点频率配置。" },
-    fast:        { name: "极速", copy: "游戏专用：3D 全频段 + NovaFAS 按帧动态调频；日用选均衡更省电。" },
+    powersave:   { name: "省电", copy: "限制 CPU 频率上限，适合消息、阅读和轻量日用。" },
+    balance:     { name: "均衡", copy: "兼顾应用响应与功耗，适合日常多任务。" },
+    performance: { name: "性能", copy: "提高 CPU 可用频段，适合持续负载和常规游戏。" },
+    fast:        { name: "极速", copy: "开放更高频率上限，NovaFAS 按可用帧信号动态调节。" },
   };
   const ENGINE_TITLES = {
     off: "NovaFAS 未启用", idle: "NovaFAS 待命", active: "NovaFAS 已接管", paused: "NovaFAS 已暂停",
@@ -37,7 +37,7 @@
     page: "overview", pendingControls: 0, online: false, connecting: true, phase: "", error: "", connectionError: "", version: "",
     mode: "", effective: "", pkg: "", controller: "", external: false, linked: false,
     heartbeat: null, soc: "", socId: "", configProfile: "", fasAvailable: false, fasState: "unknown", fasMode: "", fasSync: "", fasLegacy: false, sceneInstalled: false, scenePresence: "unknown",
-    fasEngineState: "", fasEngineSource: "", fasFps: 0, fasBoost: 0, fasOverride: false, fasGpu: 0, fasTick: 0, samsungSafe: false,
+    fasEngineState: "", fasEngineSource: "", fasFps: 0, fasBoost: 0, fasOverride: false, fasGpu: 0, fasTick: 0, samsungSafe: false, feedFps: false,
     freqs: [],
     automatic: false, automaticActive: false, appKind: "", classificationSource: "",
     rules: [], rulesLoaded: false, overrides: {},
@@ -88,6 +88,7 @@
   let sessionToken = "";
   let authRequest = null;
   let bridgeSignature = 0;
+  let bridgeApi = null;
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
   const basePackage = (raw) => String(raw || "").split(":", 1)[0];
   const validPackage = (raw) => typeof raw === "string" && raw.length <= 255 && /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+(?::[A-Za-z0-9_.]+)?$/.test(raw);
@@ -210,20 +211,23 @@
   function rootRead(command, callback, finish, negotiate = true) {
     const api = bridge();
     if (typeof api?.exec !== "function") throw new Error("当前宿主没有提供 root 命令接口");
+    if (api !== bridgeApi) { bridgeApi = api; bridgeSignature = 0; }
     const received = (...args) => finish(...normalizeReply(args));
     window[callback] = received;
-    const receive = value => { if (typeof value === "string" || value && typeof value === "object") received(value); };
     const first = bridgeSignature || (api.exec.length === 1 ? 1 : api.exec.length === 2 ? 2 : 3);
     for (let count = first; count >= 1; count--) {
       try {
         const result = count === 3 ? api.exec(command, "{}", callback)
           : count === 2 ? api.exec(command, callback) : api.exec(command + " 2>&1");
         bridgeSignature = count;
+        const receive = value => {
+          if (typeof value === "string" && (count === 1 || value.trim()) || value && typeof value === "object") received(value);
+        };
         if (result && typeof result.then === "function") result.then(receive, () => finish(1, "", "宿主执行失败，请检查 root 授权"));
         else receive(result);
         return;
       } catch (error) {
-        if (!negotiate || count === 1 || !/argument|overload|signature|parameter/i.test(String(error?.message || error))) throw error;
+        if (!negotiate || count === 1 || !/argument|overload|signature|parameter|method.*(?:not found|invoked)/i.test(String(error?.message || error))) throw error;
       }
     }
   }
@@ -277,7 +281,7 @@
       failed("当前页面来源不安全。请使用管理器本地 WebUI，或使用 HTTPS 页面。", false); return;
     }
     if (typeof api?.exec !== "function") {
-      failed("当前宿主没有开放 root 命令接口。请允许宿主的 root／Shell 权限；管理器没有 WebUI 入口时，可用 KsuWebUI 独立版打开本模块。", false); return;
+      failed("等待宿主开放 root 命令接口。请允许 root／Shell 权限；Magisk 或 Alpha 可用 KsuWebUI、MMRL 打开本模块。"); return;
     }
     const name = `nova_auth_${Date.now()}_${++bridgeCounter}`;
     const request = { name, timer:0, completed:false }; authRequest = request;
@@ -523,6 +527,7 @@
       s.fasTick = /^\d+$/.test(data.fasTick || "") ? Number(data.fasTick) : 0;
     }
     s.freqs = String(data.freqs || "").split(";").map(Number).filter(value => Number.isFinite(value) && value > 0);
+    s.feedFps = data.feedFps === "1";
     s.automatic = data.automaticEnabled === "true";
     s.automaticActive = data.automaticActive === "true";
     s.appKind = ["game", "daily", "unknown"].includes(data.appKind) ? data.appKind : "";
@@ -634,6 +639,10 @@
     if (s.linked) return "Scene 联动";
     return "WebUI 接管";
   }
+  function connectionSummary() {
+    const message = s.connectionError.replace(/\s+/g, " ");
+    return message.length > 220 ? message.slice(0, 220) + "… 点状态卡查看详情。" : message;
+  }
   /* 渲染只写发生变化的文本/属性：心跳每两秒触发一次，也不产生无谓的 DOM 变更 */
   function render() {
     document.documentElement.dataset.online = s.online ? "true" : "false";
@@ -649,7 +658,7 @@
     present("#stat-ctrl", s.online ? s.controller : "等待本地服务");
     present("#foreground-tag", !s.online ? "待连接" : s.external ? "外部接管" : s.phase === "degraded" ? "需检查" : "实时");
     present("#hero-sub", !s.online
-      ? (s.connecting ? "正在寻找本机守护进程，连接成功后这里显示真实调度状态。" : "连接暂时不可用，会自动重试；点右上角状态胶囊可手动重连。")
+      ? (connectionSummary() || (s.connecting ? "正在连接模块服务，首次解锁后需等待约 30 秒。" : "本地服务暂未连接，会自动重试；点状态卡可读取诊断或启动服务。"))
       : s.external ? "Scene 当前选用其他调度器，NovaSched 暂停节点写入并保持只读。"
       : s.phase === "degraded" ? "部分策略下发失败，守护进程正在重试；详情见日志。"
       : s.automatic ? "自动调度跟随前台应用：游戏用极速，其余用省电。"
@@ -717,7 +726,7 @@
     }
     present("#fas-engine-title", engineTitle);
     present("#fas-engine-source", engineSource);
-    present("#fas-engine-desc", engineDesc);
+    present("#fas-engine-desc", engineDesc + (s.online && s.feedFps ? " 信息流 30Hz 锁帧生效中。" : ""));
     const meter = $("#fas-engine-meter");
     if (meter) meter.hidden = !engineRunning;
     const frameSource = s.fasEngineSource === "timestats";
@@ -753,11 +762,11 @@
     if (!s.online) {
       sceneState = "等待连接"; sceneNote = "连接守护进程后显示 Scene 的接管状态。";
     } else if (s.external) {
-      sceneState = "外部调度器接管";
-      sceneNote = "Scene 当前选用其它调度器，本模块暂停写入保持只读；在 Scene 停用它后自动恢复。";
+      sceneState = "Scene 接管未完成";
+      sceneNote = "Scene 入口仍是其它调度脚本，模块会继续尝试备份并接管。点检测详情查看失败原因。";
     } else if (s.linked) {
-      sceneState = "Scene 联动中";
-      sceneNote = "NovaSched 是 Scene 的调度回调：在 Scene 里切换档位由本模块执行下发，应用规则双向同步。";
+      sceneState = "NovaSched 已接管 Scene";
+      sceneNote = "Scene 的四档切换和应用规则由 NovaSched 执行，原调度与初始化脚本已备份，卸载时恢复。";
     } else if (s.sceneInstalled) {
       sceneState = "Scene 已安装 · 待接管";
       sceneNote = "安装已确认，调度回调尚未注册。可点检测详情重新注册。";
@@ -1388,12 +1397,14 @@
     openDialog(`
       <p class="eyebrow">${sceneOnly ? "SCENE" : "DIAGNOSTICS"}</p>
       <h3 id="dialog-title">${sceneOnly ? "Scene 检测详情" : "运行诊断"}</h3>
-      <p class="dialog-sub">${sceneOnly ? "读取包管理器结果、安装记录和调度回调。重新注册会保留现有外部调度器。" : "读取服务与节点状态，采样约 10 秒。"}</p>
+      <p class="dialog-sub">${sceneOnly ? "检测到 Scene 后自动备份并接管调度入口。重新注册会替换当前调度脚本，卸载时恢复首次备份。" : s.online ? "读取服务与节点状态，采样约 10 秒。" : "读取启动记录。服务未启动时可点「启动服务」，错误会显示在下方。"}</p>
       <div class="dialog-actions"><button class="btn-capsule ghost" id="dialog-copy" type="button">复制命令</button><button class="btn-capsule accent" id="dialog-run" type="button" ${typeof bridge()?.exec === "function" ? "" : "disabled"}>读取诊断</button></div>
+      ${!sceneOnly && !s.online ? `<button class="btn-capsule ghost" id="service-start" type="button" ${typeof bridge()?.exec === "function" ? "" : "disabled"}>启动服务</button>` : ""}
       ${sceneOnly ? `<button class="btn-capsule ghost" id="scene-register" type="button" ${typeof bridge()?.exec === "function" ? "" : "disabled"}>重新检测并注册</button>` : ""}
       <pre class="report" id="dialog-report" hidden></pre>
     `);
     const report = $("#dialog-report");
+    if (!s.online && s.connectionError) { report.hidden = false; report.textContent = s.connectionError; }
     const run = async (button, register) => {
       button.disabled = true; button.textContent = "读取中…";
       try {
@@ -1413,6 +1424,22 @@
     $("#dialog-copy").onclick = () => copyText(`su -c ${MODULE}/bin/novasched ${command}`);
     $("#dialog-run").onclick = event => run(event.currentTarget, false);
     if (sceneOnly) $("#scene-register").onclick = event => run(event.currentTarget, true);
+    const start = $("#service-start");
+    if (start) start.onclick = async () => {
+      start.disabled = true; start.textContent = "正在启动…";
+      try {
+        const result = await rootExec(moduleCommand("start"), 140000, false);
+        if (report.isConnected) {
+          report.hidden = false;
+          report.textContent = publicError((result.stdout || "") + "\n" + (result.stderr || "")) || `启动退出码：${result.errno}`;
+        }
+        if (result.errno === 0) discover();
+      } catch (error) {
+        if (report.isConnected) { report.hidden = false; report.textContent = publicError(error.message); }
+      } finally {
+        if (start.isConnected) { start.disabled = false; start.textContent = "启动服务"; }
+      }
+    };
   }
 
   /* ---------------- 控件事件 ---------------- */

@@ -204,14 +204,18 @@ pub(crate) fn current(module: &Path, origin: &str) -> Result<Session> {
     if unsafe { crate::ffi::geteuid() } != 0 {
         return Err("读取 WebUI 连接凭据需要 root".into());
     }
-    let status = crate::daemon::health(module).map_err(|error| {
-        crate::lifecycle::connection_failure(Path::new(STATE_DIR), module, &error)
-    })?;
-    let session = read_protected(Path::new(STATE_DIR), 0)?;
-    belongs_to(&session, &status)?;
     if !valid_origin(origin) {
         return Err("WebUI 页面来源不是允许的 HTTPS 或本机 HTTP 来源".into());
     }
+    let status = crate::daemon::health(module).map_err(|error| {
+        let recovery = crate::lifecycle::request_webui_start(module).unwrap_or_else(|reason| {
+            eprintln!("novasched: {reason}");
+            "无法自动启动，点状态卡读取诊断"
+        });
+        format!("{recovery}；{}", crate::lifecycle::connection_failure(Path::new(STATE_DIR), module, &error))
+    })?;
+    let session = read_protected(Path::new(STATE_DIR), 0)?;
+    belongs_to(&session, &status)?;
     register_origin(Path::new(STATE_DIR), origin)?;
     // Recheck process identity, lock and heartbeat after reading the credential.
     belongs_to(&session, &crate::daemon::health(module)?)?;

@@ -15,10 +15,17 @@ until [ "$(getprop sys.boot_completed)" = "1" ]; do
   nova_module_available || exit 0
   sleep 2
 done
-until "$MODDIR/bin/novasched" boot-ready --module-dir "$MODDIR" >/dev/null 2>&1; do
+NOVA_READY_WAIT=0
+until NOVA_READY_ERROR=$("$MODDIR/bin/novasched" boot-ready --module-dir "$MODDIR" 2>&1); do
   nova_module_available || exit 0
+  if [ $((NOVA_READY_WAIT % 10)) -eq 0 ]; then
+    printf '%s startup-gate: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$NOVA_READY_ERROR"
+  fi
+  "$MODDIR/bin/novasched" version >/dev/null 2>&1 || exit 1
+  NOVA_READY_WAIT=$((NOVA_READY_WAIT + 1))
   sleep 3
 done
+printf '%s startup-gate passed; settling for 30 seconds\n' "$(date '+%Y-%m-%d %H:%M:%S')"
 # Let SystemUI and the vendor power stack finish their first-unlock work.
 # Recheck availability during the wait so a disable/uninstall cancels it.
 NOVA_SETTLE=0

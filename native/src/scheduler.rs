@@ -1971,6 +1971,9 @@ mod daemon_policy_tests {
         let policy0 = f
             .root
             .join("sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq");
+        for policy in [0, 2, 5, 7] {
+            fs::write(f.root.join(format!("sys/devices/system/cpu/cpufreq/policy{policy}/scaling_available_frequencies")), "1000000 2000000 2400000 2500000 3000000").unwrap();
+        }
         // 均衡档下普通应用：2000000。
         f.scheduler
             .apply("com.example.app", "balance", false, true, false)

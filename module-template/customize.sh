@@ -73,6 +73,7 @@ install_fail() {
 }
 
 # ---------- 第一幕：开场 ----------
+[ "$NOVA_VERSION" != "?" ] && [ -n "$NOVA_VERSION" ] || install_fail "无法读取模块版本，请使用完整安装包"
 banner
 ui_print "  ✦ 版本 $NOVA_VERSION · 作者 ZenJooo"
 ui_print "  ✦ 正在展开安装向导…"
@@ -98,7 +99,7 @@ DEVICE_BRAND=$(getprop ro.product.brand 2>/dev/null)
 # 必须 chmod 之后才能检查/执行二进制（v2.9.3 曾因先 -x 后 chmod 在
 # KernelSU 上误报"缺少二进制"）。
 set_perm_recursive "$MODPATH" 0 0 0755 0644
-for NOVA_SCRIPT in action.sh service.sh uninstall.sh vtools/powercfg.sh; do
+for NOVA_SCRIPT in action.sh service.sh uninstall.sh vtools/powercfg.sh vtools/powercfg-base.sh; do
   set_perm "$MODPATH/$NOVA_SCRIPT" 0 0 0755
 done
 [ -f "$MODPATH/bin/cloud-update.sh" ] && set_perm "$MODPATH/bin/cloud-update.sh" 0 0 0755
@@ -187,8 +188,12 @@ else
 fi
 case "$SCENE_STATUS" in
   available)
-    ui_print "  ✦ 已安装 Scene：重启后由本模块执行它的四档下发"
-    ui_print "  ✦ 建议在 Scene 内关闭其 FAS/调度，交给 NovaFAS"
+    ui_print "  ✦ 已确认安装 Scene，正在备份原调度并注册 NovaSched"
+    if run_check scene-install; then
+      ui_print "  ✓ Scene 调度入口已接管，重启后由 NovaSched 执行四档与应用规则"
+    else
+      ui_print "  ✦ 本次注册未完成，重启后会继续接管；详情见安装记录"
+    fi
     ;;
   absent) ui_print "  ✦ 未安装 Scene：WebUI 全权接管本地调度" ;;
   *) ui_print "  ✦ Scene 检测暂不可用，服务启动后继续检测" ;;

@@ -271,6 +271,42 @@ fn ensure_not_removing(module: &Path) -> Result<()> {
         Ok(())
     }
 }
+pub fn request_webui_start(module: &Path) -> Result<&'static str> {
+    root()?;
+    ensure_not_removing(module)?;
+    crate::boot_guard::ensure_ready()?;
+    let state = Path::new(STATE_DIR);
+    util::create_dir(state)?;
+    let _lock = util::acquire_flock(&state.join("webui-start.lock"))?;
+    let phase = util::read_trimmed(state.join("startup")).unwrap_or_default();
+    if phase == "state=failed" || phase == "state=stopped" || stop_requested(state) {
+        return Ok("服务已停止或启动失败；点状态卡读取诊断，可使用「启动服务」重试");
+    }
+    if process_identity::lock_held(&state.join("daemon.lock"))?
+        || process_identity::lock_held(&state.join("supervisor.lock"))?
+        || process_identity::lock_held(&state.join("control.lock"))?
+    { return Ok("服务正在启动，页面会自动重连"); }
+    let boot = util::read_trimmed("/proc/sys/kernel/random/boot_id")?;
+    let ticket = state.join("webui-start.boot");
+    if util::read_trimmed(&ticket).ok().as_deref() == Some(&boot) {
+        return Ok("本次开机已尝试补启动；点状态卡读取诊断");
+    }
+    let log = OpenOptions::new().create(true).append(true)
+        .open(module.join("boot-entry.log")).map_err(|e| e.to_string())?;
+    let mut command = Command::new("/system/bin/sh");
+    command.arg(module.join("service.sh")).stdin(Stdio::null())
+        .stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log);
+    unsafe {
+        command.pre_exec(|| {
+            if ffi::setsid() < 0 { return Err(std::io::Error::last_os_error()); }
+            Ok(())
+        });
+    }
+    let _child = command.spawn().map_err(|e| format!("补启动失败: {e}"))?;
+    util::atomic_write(&ticket, boot.as_bytes(), 0o600)?;
+    Ok("已补启动模块服务，首次解锁稳定等待结束后自动连接")
+}
+
 pub fn diagnose(module: &Path) -> Result<()> {
     root()?;
     println!(
@@ -279,15 +315,17 @@ pub fn diagnose(module: &Path) -> Result<()> {
         util::local_timestamp(),
         module.display()
     );
-    if let Err(e) = daemon::print_status(module) {
-        println!("status_error={e}");
-    }
+    let running = match daemon::print_status(module) {
+        Ok(()) => true,
+        Err(error) => { println!("status_error={error}"); false }
+    };
     println!(
         "manager_gate=none\nmodule_disabled={}\nmodule_remove_pending={}\nboot_completed={}",
         module.join("disable").exists(),
         module.join("remove").exists(),
         util::getprop("sys.boot_completed")
     );
+    println!("\n[android-user]\n{}", crate::boot_guard::diagnostic());
     for name in [
         "startup",
         "boot-guard",
@@ -316,7 +354,8 @@ pub fn diagnose(module: &Path) -> Result<()> {
         crate::telemetry::inspect_scene().diagnostic_text()
     );
     match crate::config::Config::load(Path::new(crate::util::CONFIG_PATH)) {
-        Ok(config) => println!("\n[policy-audit]\n{}", daemon::print_policy_audit(&config)),
+        Ok(config) if running => println!("\n[policy-audit]\n{}", daemon::print_policy_audit(&config)),
+        Ok(_) => println!("\n[policy-audit]\n守护未运行，当前配置尚未由本模块下发；启动后再核对策略。"),
         Err(e) => println!("\n[policy-audit] 配置读取失败: {e}"),
     }
     Ok(())

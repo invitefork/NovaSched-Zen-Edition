@@ -380,6 +380,36 @@ pub fn parse(root: &Value) -> Result<Config> {
         }
         None => FasConfig::default(),
     };
+    // 信息流视频锁帧同样是可选块：缺省 = 开启（默认应用清单，30Hz）。
+    let feed_video = match field(features, "feed_video") {
+        Some(block) => {
+            let enabled = flag(block, "enabled")?;
+            let fps = number(block, "fps")
+                .map_err(|error| format!("features.feed_video.{error}"))?
+                .parse::<u64>().map_err(|e| e.to_string())?;
+            if !(24..=120).contains(&fps) {
+                return Err("features.feed_video.fps 必须在 24..120 Hz".into());
+            }
+            let packages_node = field(block, "packages")
+                .ok_or("features.feed_video.packages 缺失")?;
+            let Value::Array(items) = packages_node else {
+                return Err("features.feed_video.packages 必须为字符串数组".into());
+            };
+            let mut packages = Vec::new();
+            for value in items {
+                let package = value.as_str()?;
+                if !crate::util::valid_package(package) {
+                    return Err(format!("features.feed_video.packages 包名非法: {package}"));
+                }
+                packages.push(package.to_string());
+            }
+            if packages.len() > 32 {
+                return Err("features.feed_video.packages 最多 32 项".into());
+            }
+            FeedVideoConfig { enabled, fps: fps as u32, packages }
+        }
+        None => FeedVideoConfig::default(),
+    };
     let mut modes = BTreeMap::new();
     for mode in MODES {
         let m = root.get("modes")?.get(mode)?;
@@ -444,6 +474,7 @@ pub fn parse(root: &Value) -> Result<Config> {
                 services,
             },
             fas,
+            feed_video,
         },
     })
 }
@@ -571,6 +602,11 @@ pub fn encode(config: &Config, soc: Soc) -> Value {
         ("sample_ms", text(&f.fas.sample_ms.to_string())),
         ("modes", fas_modes),
     ]);
+    let feed_video_out = object([
+        ("enabled", Value::Bool(f.feed_video.enabled)),
+        ("fps", text(&f.feed_video.fps.to_string())),
+        ("packages", list(&f.feed_video.packages)),
+    ]);
     let features = object([
         ("node_watchdog", Value::Bool(f.node_watchdog)),
         ("cpuset", cpuset),
@@ -614,6 +650,7 @@ pub fn encode(config: &Config, soc: Soc) -> Value {
             ]),
         ),
         ("fas", fas_out),
+        ("feed_video", feed_video_out),
     ]);
     let modes = Value::Object(
         config

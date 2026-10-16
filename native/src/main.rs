@@ -6,6 +6,7 @@ mod config_v2;
 mod daemon;
 mod event_loop;
 mod fas;
+mod feed_fps;
 mod ffi;
 mod frame_ctrl;
 mod game_diagnostics;

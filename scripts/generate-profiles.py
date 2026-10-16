@@ -28,7 +28,7 @@ CEILINGS = {
     'SM8450':            ([54, 46, 44, 0],  [60, 54, 52, 0],  [84, 80, 80, 0],  [92, 98, 100, 0]),
     'SM8475':            ([54, 46, 44, 0],  [60, 54, 52, 0],  [84, 80, 80, 0],  [92, 98, 100, 0]),
     'SM8550':            ([54, 46, 46, 0],  [60, 54, 54, 0],  [84, 82, 82, 0],  [92, 98, 100, 0]),
-    'SM8650':            ([65, 52, 51, 56], [80, 68, 69, 69], [85, 84, 85, 82], [95, 100, 100, 100]),
+    'SM8650':            ([60, 45, 49, 45], [70, 58, 56, 59], [85, 84, 85, 82], [95, 100, 100, 100]),
     'SM8750':            ([52, 46, 0, 0],   [58, 50, 0, 0],   [80, 72, 0, 0],   [90, 100, 0, 0]),
     'SM8850':            ([52, 46, 0, 0],   [58, 50, 0, 0],   [80, 70, 0, 0],   [90, 100, 0, 0]),
     'DIMENSITY8350':     ([56, 48, 46, 0],  [62, 56, 54, 0],  [86, 84, 84, 0],  [94, 100, 100, 0]),
@@ -45,6 +45,11 @@ FAS_MODES = {
     'performance': {'ceiling': '80', 'freq_scale': '60'},
     'fast':        {'ceiling': '95', 'freq_scale': '80'},
 }
+# 信息流视频应用锁帧：前台命中 packages 时把屏幕刷新率限制到 fps Hz。
+FEED_VIDEO_PACKAGES = [
+    'com.ss.android.ugc.aweme', 'com.smile.gifmaker',
+    'com.xingin.xhs', 'tv.danmaku.bili',
+]
 # 每颗处理器显式写入最优调速器（不再是 auto）：
 # 骁龙 = walt（WALT 窗口负载跟踪，小米 14 真机确认 OEM 默认即 walt）；
 # 天玑 / 玄戒 = schedutil（MTK 系唯一现代全簇调速器）。
@@ -93,12 +98,13 @@ def profile(soc, policies):
             'step_ms': '200', 'sample_ms': '1000',
             'modes': FAS_MODES,
         },
+        'feed_video': {'enabled': True, 'fps': 30, 'packages': FEED_VIDEO_PACKAGES},
     }
     if soc == 'XRING_O3':
         features['cpuset'].update(restricted='4-7', system_background='4-7', background='4-5')
     return {
         'schema': 'novasched/2', 'module': 'NovaSched_Zen_Edition',
-        'meta': {'name': 'NovaSched Zen Edition', 'author': 'ZenJooo', 'version': 380,
+        'meta': {'name': 'NovaSched Zen Edition', 'author': 'ZenJooo', 'version': 390,
                  'soc': soc, 'loglevel': 'INFO'},
         'policies': policies,
         'features': features,

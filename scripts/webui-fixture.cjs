@@ -3,7 +3,7 @@ function mockHost(options){
   window.fixture={mode:'balance',effective:'balance',pkg:'com.omarea.vtools',linked:!!options.linked,external:!!options.external,
     installed:options.presence==='available',presence:options.presence||'available',automatic:!!options.automatic,
     pendingControls:options.pendingControls||0,phase:options.phase||'ready',legacyMode:options.legacyMode||'balance',
-    version:options.version||'2.9.4',fasState:options.fasState||'ready',fasSync:options.fasSync||'synced',fasMode:options.fasMode||'balance',
+    version:options.version||'2.10.0',fasState:options.fasState||'ready',fasSync:options.fasSync||'synced',fasMode:options.fasMode||'balance',
     fasEngine:options.fasEngine!==undefined?options.fasEngine:'idle',fasEngineSrc:options.fasEngineSrc||'none',
     fasFps:options.fasFps||0,fasBoost:options.fasBoost||0,fasOverride:!!options.fasOverride,samsungSafe:!!options.samsung,
     fasGpu:options.fasGpu||0,fasTick:options.fasTick||0,freqs:options.freqs||'',
@@ -24,6 +24,10 @@ function mockHost(options){
   }
   window.ksu={exec(command,settings,callback){
     f.commands.push(command);
+    if(options.authError && command.includes('webui-session')) {
+      setTimeout(()=>window[callback]?.(1,'',options.authError),0);
+      return options.emptyAsync ? '' : undefined;
+    }
     let stdout;
     if(command.includes('webui-session'))stdout=JSON.stringify({port:31415,token:'a'.repeat(64),origin:location.origin,moduleDir:'/data/adb/modules/NovaSched_Zen_Edition'});
     else if(command.includes('webui-rpc')){
@@ -33,6 +37,7 @@ function mockHost(options){
     }else if(command.includes('__NOVA_FAS_ABSENT__'))stdout=f.legacyMode;
     else stdout='scene_presence=available\nscene_detection=fixture PackageManager\nscene_linked=true\n';
     setTimeout(()=>window[callback]?.(0,stdout,''),0);
+    return options.emptyAsync ? '' : undefined;
   }};
   if(options.bridgeStyle) {
     const nativeExec=window.ksu.exec;
@@ -41,6 +46,10 @@ function mockHost(options){
       nativeExec(command, '{}', callback);
     }
     if(options.bridgeStyle==='native0')window.ksu.exec=(...args)=>reply(args[0],args[2]);
+    if(options.bridgeStyle==='native2')window.ksu.exec=(...args)=>{
+      if(args.length!==2)throw new Error("Java bridge method can't be invoked with these arguments");
+      reply(args[0],args[1]);
+    };
     if(options.bridgeStyle==='callback2')window.ksu.exec=(command, callback)=>reply(command, callback);
     if(options.bridgeStyle==='promise1')window.ksu.exec=command=>new Promise(resolve=>{
       const name='fixture_reply_'+(++counter);
@@ -58,6 +67,10 @@ function mockHost(options){
   if(options.insets==='modern')window.ksu.enableEdgeToEdge=enabled=>{f.edgeToEdge=enabled;};
   if(options.insets==='legacy')window.ksu.enableInsets=enabled=>{f.edgeToEdge=enabled;};
   if(options.labels!==false)window.ksu.getPackagesInfo=packages=>JSON.stringify(JSON.parse(packages).map(packageName=>({packageName,appLabel:labels[packageName]||packageName})));
+  if(options.bridgeDelay) {
+    const host=window.ksu; delete window.ksu;
+    setTimeout(()=>{window.ksu=host;},options.bridgeDelay);
+  }
   class MockSocket{
     static OPEN=1;static CONNECTING=0;
     constructor(url,protocols){

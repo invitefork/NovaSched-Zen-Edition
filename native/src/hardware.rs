@@ -133,6 +133,7 @@ pub fn identify_soc(
             if ["mediatek", "xring", "xiaomi"].contains(&vendor) {
                 let found = Soc::from_id(model)
                     .or_else(|| soc::marketing_model(model))
+                    .or_else(|| soc::mtk_platform(model).filter(|_| vendor == "mediatek"))
                     .or_else(|| (vendor == "xring" && model == "o3").then_some(Soc::XringO3));
                 if let Some(soc) = found {
                     matches
@@ -163,7 +164,10 @@ pub fn identify_soc(
         }
         if key.ends_with("soc.model") || key.ends_with("soc_model") {
             let lower = value.trim().to_ascii_lowercase();
-            if let Some(soc) = Soc::from_id(value.trim()).or_else(|| soc::marketing_model(value)) {
+            if let Some(soc) = Soc::from_id(value.trim())
+                .or_else(|| soc::marketing_model(value))
+                .or_else(|| soc::mtk_platform(value.trim()))
+            {
                 matches.entry(soc).or_default().push(evidence.clone());
             }
             for token in lower.split(|c: char| !c.is_ascii_alphanumeric() && c != '-') {
@@ -172,7 +176,11 @@ pub fn identify_soc(
                         matches.entry(soc).or_default().push(evidence.clone());
                     }
                     soc::SmToken::Unsupported => negative.push(evidence.clone()),
-                    soc::SmToken::NotSm => {}
+                    soc::SmToken::NotSm => {
+                        if let Some(soc) = soc::mtk_platform(token) {
+                            matches.entry(soc).or_default().push(evidence.clone());
+                        }
+                    }
                 }
             }
             if ["snapdragon", "dimensity", "xring"]
@@ -868,8 +876,8 @@ mod tests {
                 match soc {
                     Soc::Gen1 | Soc::Gen1Plus | Soc::Gen2 | Soc::XringO3 => "1620000",
                     Soc::Dimensity8350 | Soc::Dimensity8400 => "1680000",
-                    // SM8650 按真机 OPP 逐档重调：省电小核 65%（无表夹取）。
-                    Soc::Gen3 => "1950000",
+                    // SM8650 按 2W 功耗预算重调：省电小核 60%（无表夹取）。
+                    Soc::Gen3 => "1800000",
                     Soc::Elite | Soc::Elite5 | Soc::Dimensity9400Plus => "1560000",
                 }
             );
@@ -1060,7 +1068,7 @@ mod tests {
         assert_ne!(before, format!("{config:?}"));
         assert_eq!(
             config.profile("powersave").unwrap().clusters[0].max_freq,
-            "1950000"
+            "1800000"
         );
     }
     #[test]
@@ -1079,8 +1087,8 @@ mod tests {
             .all(|p| p.clusters[1].governor == "schedutil"));
         assert_eq!(
             config.profile("powersave").expect("mode").clusters[1].max_freq,
-            // 共享 policy 的两簇取更紧的上限：min(52%,51%) = 51% × 3000000。
-            "1530000"
+            // 共享 policy 的两簇取更紧的上限：min(45%,49%) = 45% × 3000000。
+            "1350000"
         );
     }
     #[test]
@@ -1269,8 +1277,37 @@ mod tests {
         ] {
             assert!(identify_soc(&props(model), &[]).is_err());
         }
-        assert!(identify_soc(&[("ro.board.platform".into(), "MT6991".into())], &[]).is_err());
+        assert_eq!(
+            identify_soc(&[("ro.board.platform".into(), "MT6991".into())], &[])
+                .unwrap()
+                .0,
+            Soc::Dimensity9400Plus
+        );
         assert!(identify_soc(&props("Dimensity 8350"), &["xring,o3".into()]).is_err());
+    }
+    #[test]
+    fn redmi_dali_dimensity9400plus_full_evidence_is_recognized() {
+        // Redmi dali（25060RK16C，天玑 9400+ / MT6991）真机证据（v2.9.6 采集）。
+        let evidence = vec![
+            ("ro.product.manufacturer".into(), "Xiaomi".into()),
+            ("ro.product.brand".into(), "Redmi".into()),
+            ("ro.product.model".into(), "25060RK16C".into()),
+            ("ro.product.device".into(), "dali".into()),
+            ("ro.soc.manufacturer".into(), "Mediatek".into()),
+            ("ro.soc.model".into(), "MT6991".into()),
+            ("ro.board.platform".into(), "mt6991".into()),
+            ("ro.hardware".into(), "mt6991".into()),
+            ("ro.vendor.mediatek.platform".into(), "MT6991".into()),
+            ("ro.vendor.soc.manufacturer".into(), "Mediatek".into()),
+        ];
+        let (soc, _) = identify_soc(&evidence, &[]).unwrap();
+        assert_eq!(soc, Soc::Dimensity9400Plus);
+        // anchors 与真机 policy 布局一致：policy0=cpu0-3、policy4=cpu4-6、policy7=cpu7。
+        assert_eq!(soc.anchors(), [0, 4, 7, -1]);
+        // 平台码与骁龙平台码混报 → 冲突拒绝。
+        let mut conflict = evidence.clone();
+        conflict.push(("ro.vendor.qti.soc_model".into(), "SM8750".into()));
+        assert!(identify_soc(&conflict, &[]).is_err());
     }
     #[test]
     fn a_shared_policy_keeps_a_real_cap_when_the_other_slot_is_unlimited() {

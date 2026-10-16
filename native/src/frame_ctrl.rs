@@ -96,7 +96,7 @@ pub fn parse_timestats(text: &str, package: &str) -> Option<(u64, u64)> {
             "packageName" | "packageNames" => {
                 let owner = value.trim();
                 if !owner.is_empty() {
-                    acc.owner = owner.split(',').map(str::trim).find(|name| *name == package);
+                    acc.owner = Some(owner.split(',').map(str::trim).any(|name| name == package));
                 }
             }
             "totalFrames" => acc.block_total = value.trim().parse().unwrap_or(0),
@@ -109,24 +109,23 @@ pub fn parse_timestats(text: &str, package: &str) -> Option<(u64, u64)> {
 }
 
 #[derive(Default)]
-struct Accumulator<'a> {
+struct Accumulator {
     total: u64,
     dropped: u64,
     matched: bool,
-    /// 当前块 packageName(s) 键的命中项；Some 即表示显式归属目标包。
-    owner: Option<&'a str>,
+    /// None: absent/empty owner; Some(false): explicitly another package.
+    owner: Option<bool>,
     /// 当前块 layerName 提取的包名（packageName 为空时的回退线索）。
     layer: Option<String>,
     block_total: u64,
     block_dropped: u64,
 }
 
-impl<'a> Accumulator<'a> {
+impl Accumulator {
     fn settle(&mut self, package: &str) {
         // packageName 命中优先；键为空/缺失时才回退到 layerName 的精确匹配，
         // 显式归属其它包的图层不会因图层名相似而误计。
-        let owned = self.owner.as_deref().is_some_and(|name| name == package)
-            || self.owner.is_none() && self.layer.as_deref().is_some_and(|name| name == package);
+        let owned = self.owner.unwrap_or_else(|| self.layer.as_deref() == Some(package));
         if owned {
             self.total += self.block_total;
             self.dropped += self.block_dropped;

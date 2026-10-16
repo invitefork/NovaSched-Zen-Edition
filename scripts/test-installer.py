@@ -44,7 +44,7 @@ getprop() { case "$1" in ro.product.cpu.abi) echo arm64-v8a ;; *) echo 'Fixture 
         if (module/'calls').exists(): (module/'calls').unlink()
         env = {key:value for key,value in os.environ.items() if key not in {
             'KSU','KSU_NEXT','APATCH','MAGISK_VER','MAGISK_VER_CODE','NOVA_FAIL','NOVA_NO_RECEIPT'}}
-        env.update(ARCH='arm64', MODPATH=str(module), CUSTOMIZE=str(script), NOVA_TEST_STATE=str(state))
+        env.update(ARCH='arm64', MODPATH=str(module), CUSTOMIZE=str(script), NOVA_TEST_STATE=str(state), NOVA_ANIM_DELAY='0')
         env.update(extra)
         return subprocess.run(['sh','-c',harness],env=env,capture_output=True,text=True)
     for name, flags in [
@@ -55,7 +55,7 @@ getprop() { case "$1" in ro.product.cpu.abi) echo arm64-v8a ;; *) echo 'Fixture 
     ]:
         run=install(**flags)
         assert run.returncode==0,(name,run.stdout,run.stderr)
-        assert (module/'calls').read_text().splitlines()==['self-test','probe','prepare-config','prepare-auto','scene-status']
+        assert (module/'calls').read_text().splitlines()==['self-test','probe','prepare-config','prepare-auto','scene-status','scene-install']
         assert f'NovaSched Zen Edition {version}' in run.stdout
         assert f'NovaSched {version} · ZenJooo' in run.stdout
         assert 'v2.6.1' not in run.stdout
@@ -80,7 +80,7 @@ getprop() { case "$1" in ro.product.cpu.abi) echo arm64-v8a ;; *) echo 'Fixture 
         calls=(module/'calls').read_text().splitlines()
         assert calls[-1]==phase
         assert (state/'install-last.log').read_text().endswith(phase+': exit=1\n')
-        assert '安装失败记录已保留' in run.stdout
+        assert '失败记录已保留' in run.stdout
         print('PASS: failed',phase,'stops later stages')
     run=install(NOVA_NO_RECEIPT='self-test')
     assert run.returncode==70 and '未留下结束记录' in run.stdout

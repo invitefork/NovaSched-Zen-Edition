@@ -233,9 +233,11 @@ fn parse_package_query(text: &str) -> SceneAvailability {
 
 const NATIVE_JSON: &str = "/data/powercfg.json";
 const NATIVE_SCRIPT: &str = "/data/powercfg.sh";
+const NATIVE_BASE: &str = "/data/powercfg-base.sh";
 const OWN_SCRIPT_MAGIC: &str = "NovaSched_Zen_Edition_Scene_Provider";
 const PROVIDER_STATE_DIR: &str = "/data/adb/novasched/scene-provider";
-const PROVIDER_STATE_HEADER: &str = "NOVASCHED_ZEN_SCENE_PROVIDER_V1";
+const PROVIDER_STATE_HEADER: &str = "NOVASCHED_ZEN_SCENE_PROVIDER_V2";
+const LEGACY_PROVIDER_STATE_HEADER: &str = "NOVASCHED_ZEN_SCENE_PROVIDER_V1";
 fn vtools_xml(user: u32) -> [PathBuf; 2] {
     ["user", "user_de"].map(|root| {
         PathBuf::from(format!(
@@ -330,6 +332,7 @@ pub fn watched_paths() -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = [
         NATIVE_JSON,
         NATIVE_SCRIPT,
+        NATIVE_BASE,
         "/data/system/packages.list",
         "/data/system/users/0/package-restrictions.xml",
         "/data/system/packages.xml",
@@ -349,7 +352,7 @@ pub fn watched_paths() -> Vec<PathBuf> {
 pub fn registration_needed(state: &SceneState, previous: &SceneState) -> bool {
     state.availability == SceneAvailability::Available
         && (previous.availability != SceneAvailability::Available
-            || state.provider == ProviderKind::None)
+            || state.provider != ProviderKind::Own)
 }
 
 pub fn detect() -> SceneState {
@@ -432,28 +435,17 @@ fn install_provider_at(
     }
 
     if paths.marker.exists() {
-        return match detect_provider_at(paths) {
-            ProviderKind::Own | ProviderKind::None => {
-                validate_provider_backup(paths)?;
-                templates.write_to_targets(paths)?;
-                Ok(ProviderInstallOutcome::Refreshed)
-            }
-            ProviderKind::Foreign => Ok(ProviderInstallOutcome::SkippedForeign),
-        };
+        validate_provider_backup(paths)?;
+        upgrade_base_backup(paths)?;
+        templates.write_to_targets(paths)?;
+        return Ok(ProviderInstallOutcome::Refreshed);
     }
 
-    // Never take ownership of a Scene callback that existed before this
-    // module had a verified backup. That callback may belong to another
-    // scheduler, including an older installed module version.
-    match detect_provider_at(paths) {
-        ProviderKind::Foreign => return Ok(ProviderInstallOutcome::SkippedForeign),
-        ProviderKind::Own => return Ok(ProviderInstallOutcome::SkippedExisting),
-        ProviderKind::None => {}
-    }
-
+    // Preserve the original Scene LP provider before taking the callback slot.
     let backup = BackupState {
         json: backup_target(&paths.native_json, &paths.backup_json)?,
         script: backup_target(&paths.native_script, &paths.backup_script)?,
+        base: backup_target(&paths.native_base, &paths.backup_base)?,
     };
     util::atomic_write(&paths.backup_state, backup.encode().as_bytes(), 0o600)?;
 
@@ -518,6 +510,12 @@ fn uninstall_provider_at(paths: &ProviderPaths) -> Result<Vec<String>> {
             &paths.native_script,
             &paths.backup_script,
             backup.as_ref().map(|b| b.script),
+            is_own_script as fn(&str) -> bool,
+        ),
+        (
+            &paths.native_base,
+            &paths.backup_base,
+            backup.as_ref().map(|b| b.base),
             is_own_script as fn(&str) -> bool,
         ),
     ] {
@@ -614,7 +612,13 @@ fn detect_provider_at(paths: &ProviderPaths) -> ProviderKind {
         fs::read_to_string(&paths.native_json),
         fs::read_to_string(&paths.native_script),
     ) {
-        (Ok(json), Ok(script)) if is_own_json(&json) && is_own_script(&script) => ProviderKind::Own,
+        (Ok(json), Ok(script)) if is_own_json(&json) && is_own_script(&script) => {
+            match fs::read_to_string(&paths.native_base) {
+                Ok(base) if is_own_script(&base) => ProviderKind::Own,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => ProviderKind::Own,
+                _ => ProviderKind::Foreign,
+            }
+        }
         (Err(json), Err(script))
             if json.kind() == std::io::ErrorKind::NotFound
                 && script.kind() == std::io::ErrorKind::NotFound =>
@@ -717,24 +721,28 @@ enum BackupSlot {
 struct BackupState {
     json: BackupSlot,
     script: BackupSlot,
+    base: BackupSlot,
 }
 
 impl BackupState {
     fn encode(self) -> String {
         format!(
-            "{PROVIDER_STATE_HEADER}\njson={}\nscript={}\n",
+            "{PROVIDER_STATE_HEADER}\njson={}\nscript={}\nbase={}\n",
             self.json.encode(),
-            self.script.encode()
+            self.script.encode(),
+            self.base.encode()
         )
     }
 
     fn parse(text: &str) -> Result<Self> {
         let mut lines = text.lines();
-        if lines.next() != Some(PROVIDER_STATE_HEADER) {
+        let header = lines.next();
+        if !matches!(header, Some(PROVIDER_STATE_HEADER | LEGACY_PROVIDER_STATE_HEADER)) {
             return Err("Scene 回调备份头无效".to_string());
         }
         let mut json = None;
         let mut script = None;
+        let mut base = None;
         for line in lines {
             let Some((key, value)) = line.split_once('=') else {
                 return Err("Scene 回调备份格式无效".to_string());
@@ -742,12 +750,18 @@ impl BackupState {
             match key {
                 "json" => json = Some(BackupSlot::parse(value)?),
                 "script" => script = Some(BackupSlot::parse(value)?),
+                "base" => base = Some(BackupSlot::parse(value)?),
                 _ => return Err("Scene 回调备份包含未知字段".to_string()),
             }
         }
         Ok(Self {
             json: json.ok_or_else(|| "Scene 回调备份缺少 JSON 状态".to_string())?,
             script: script.ok_or_else(|| "Scene 回调备份缺少脚本状态".to_string())?,
+            base: match (base, header) {
+                (Some(base), _) => base,
+                (None, Some(LEGACY_PROVIDER_STATE_HEADER)) => BackupSlot::Absent,
+                _ => return Err("Scene 回调备份缺少初始化脚本状态".into()),
+            },
         })
     }
 }
@@ -780,8 +794,10 @@ struct ProviderPaths {
     backup_state: PathBuf,
     backup_json: PathBuf,
     backup_script: PathBuf,
+    backup_base: PathBuf,
     native_json: PathBuf,
     native_script: PathBuf,
+    native_base: PathBuf,
 }
 
 impl ProviderPaths {
@@ -793,8 +809,10 @@ impl ProviderPaths {
             backup_state: dir.join("backup-state"),
             backup_json: dir.join("powercfg.json.backup"),
             backup_script: dir.join("powercfg.sh.backup"),
+            backup_base: dir.join("powercfg-base.sh.backup"),
             native_json: PathBuf::from(NATIVE_JSON),
             native_script: PathBuf::from(NATIVE_SCRIPT),
+            native_base: PathBuf::from(NATIVE_BASE),
             dir,
         }
     }
@@ -803,6 +821,7 @@ impl ProviderPaths {
 struct ProviderTemplates {
     json: Vec<u8>,
     script: Vec<u8>,
+    base: Vec<u8>,
 }
 
 impl ProviderTemplates {
@@ -812,6 +831,7 @@ impl ProviderTemplates {
         let resolved = module_dir
             .canonicalize()
             .map_err(|e| format!("确定 Scene 模块目录失败: {e}"))?;
+        let resolved = active_module_path(&resolved);
         let quoted = format!("'{}'", resolved.to_string_lossy().replace('\'', "'\\''"));
         let script = template
             .replace("@NOVASCHED_MODULE_DIR@", &quoted)
@@ -823,13 +843,18 @@ impl ProviderTemplates {
         if !is_own_json(json_text) || !is_own_script(script_text) {
             return Err("模块内 Scene 回调身份校验失败".to_string());
         }
-        Ok(Self { json, script })
+        let base = util::read_bytes(&module_dir.join("vtools/powercfg-base.sh"))?;
+        if !std::str::from_utf8(&base).is_ok_and(is_own_script) {
+            return Err("模块内 Scene 初始化脚本身份校验失败".into());
+        }
+        Ok(Self { json, script, base })
     }
 
     fn write_to_targets(&self, paths: &ProviderPaths) -> Result<()> {
         // Script first: the JSON entry is written last, so Scene never sees an
         // entry that points to a missing CTS callback.
         util::atomic_write(&paths.native_script, &self.script, 0o755)?;
+        util::atomic_write(&paths.native_base, &self.base, 0o755)?;
         util::atomic_write(&paths.native_json, &self.json, 0o644)
     }
 }
@@ -838,8 +863,6 @@ impl ProviderTemplates {
 pub enum ProviderInstallOutcome {
     Installed,
     Refreshed,
-    SkippedForeign,
-    SkippedExisting,
     SkippedMissing,
 }
 
@@ -847,9 +870,7 @@ impl std::fmt::Display for ProviderInstallOutcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let text = match self {
             Self::Installed => "Scene 已注册 NovaSched Zen Edition（已备份原回调）",
-            Self::Refreshed => "Scene CTS 回调已刷新",
-            Self::SkippedForeign => "检测到用户改用其它 Scene 调度器，未覆盖",
-            Self::SkippedExisting => "检测到未由当前安装备份的 Scene 回调，未覆盖",
+            Self::Refreshed => "Scene 已由 NovaSched 接管，原回调备份保留",
             Self::SkippedMissing => "系统安装记录未确认 Scene 已安装，未写入 Scene 回调",
         };
         f.write_str(text)
@@ -892,6 +913,7 @@ fn validate_provider_backup(paths: &ProviderPaths) -> Result<()> {
     for (slot, path) in [
         (backup.json, &paths.backup_json),
         (backup.script, &paths.backup_script),
+        (backup.base, &paths.backup_base),
     ] {
         if matches!(slot, BackupSlot::Present(_)) {
             util::read_bytes(path)?;
@@ -900,9 +922,28 @@ fn validate_provider_backup(paths: &ProviderPaths) -> Result<()> {
     Ok(())
 }
 
+fn active_module_path(path: &Path) -> PathBuf {
+    if let Some(parent) = path.parent().filter(|p| p.file_name().is_some_and(|n| n == "modules_update")) {
+        if let (Some(root), Some(name)) = (parent.parent(), path.file_name()) {
+            return root.join("modules").join(name);
+        }
+    }
+    path.to_path_buf()
+}
+
+fn upgrade_base_backup(paths: &ProviderPaths) -> Result<()> {
+    let text = util::read_text(&paths.backup_state)?;
+    if text.lines().next() == Some(LEGACY_PROVIDER_STATE_HEADER) {
+        let mut state = BackupState::parse(&text)?;
+        state.base = backup_target(&paths.native_base, &paths.backup_base)?;
+        util::atomic_write(&paths.backup_state, state.encode().as_bytes(), 0o600)?;
+    }
+    Ok(())
+}
+
 fn restore_locked(paths: &ProviderPaths) -> Result<ProviderRestoreOutcome> {
-    let state = match util::read_text(&paths.backup_state) {
-        Ok(text) => BackupState::parse(&text)?,
+    let (state, legacy) = match util::read_text(&paths.backup_state) {
+        Ok(text) => (BackupState::parse(&text)?, text.lines().next() == Some(LEGACY_PROVIDER_STATE_HEADER)),
         Err(_) if !paths.marker.exists() => return Ok(ProviderRestoreOutcome::NotManaged),
         Err(error) => return Err(format!("读取 Scene 回调备份失败: {error}")),
     };
@@ -918,7 +959,10 @@ fn restore_locked(paths: &ProviderPaths) -> Result<ProviderRestoreOutcome> {
         state.script,
         is_own_script,
     )?;
-    if !json_restored || !script_restored {
+    let base_restored = if legacy { true } else {
+        restore_target(&paths.native_base, &paths.backup_base, state.base, is_own_script)?
+    };
+    if !json_restored || !script_restored || !base_restored {
         return Ok(ProviderRestoreOutcome::SkippedChanged);
     }
     for path in [
@@ -926,6 +970,7 @@ fn restore_locked(paths: &ProviderPaths) -> Result<ProviderRestoreOutcome> {
         &paths.backup_state,
         &paths.backup_json,
         &paths.backup_script,
+        &paths.backup_base,
     ] {
         if let Err(error) = fs::remove_file(path) {
             if error.kind() != std::io::ErrorKind::NotFound {
@@ -1203,7 +1248,7 @@ mod tests {
             provider: ProviderKind::Foreign,
             ..installed.clone()
         };
-        assert!(!registration_needed(&foreign, &foreign));
+        assert!(registration_needed(&foreign, &foreign));
     }
 
     #[test]
@@ -1252,8 +1297,10 @@ mod tests {
             paths.backup_state = root.join("backup-state");
             paths.backup_json = root.join("json.backup");
             paths.backup_script = root.join("script.backup");
+            paths.backup_base = root.join("base.backup");
             paths.native_json = root.join("powercfg.json");
             paths.native_script = root.join("powercfg.sh");
+            paths.native_base = root.join("powercfg-base.sh");
             Self(paths)
         }
     }
@@ -1266,6 +1313,7 @@ mod tests {
         ProviderTemplates {
             json: br#"{"module":"NovaSched_Zen_Edition"}"#.to_vec(),
             script: b"#!/system/bin/sh\n# NovaSched_Zen_Edition_Scene_Provider\n".to_vec(),
+            base: b"#!/system/bin/sh\n# NovaSched_Zen_Edition_Scene_Provider\nexit 0\n".to_vec(),
         }
     }
 
@@ -1289,6 +1337,7 @@ mod tests {
         let state = BackupState {
             json: BackupSlot::Present(0o640),
             script: BackupSlot::Present(0o750),
+            base: BackupSlot::Absent,
         };
         fs::write(&paths.backup_state, state.encode()).unwrap();
         templates().write_to_targets(paths).unwrap();
@@ -1348,6 +1397,7 @@ mod tests {
             BackupState {
                 json: BackupSlot::Present(0o644),
                 script: BackupSlot::Absent,
+                base: BackupSlot::Absent,
             }
             .encode(),
         ] {
@@ -1390,7 +1440,7 @@ mod tests {
     }
 
     #[test]
-    fn repairing_our_missing_file_never_overwrites_a_foreign_fragment() {
+    fn scene_replacing_our_callback_is_reclaimed_without_losing_first_backup() {
         let fixture = Fixture::new();
         let paths = &fixture.0;
         install_provider_at(paths, &templates()).unwrap();
@@ -1399,13 +1449,12 @@ mod tests {
         assert_eq!(detect_provider_at(paths), ProviderKind::Foreign);
         assert_eq!(
             install_provider_at(paths, &templates()).unwrap(),
-            ProviderInstallOutcome::SkippedForeign
+            ProviderInstallOutcome::Refreshed
         );
-        assert_eq!(
-            fs::read_to_string(&paths.native_script).unwrap(),
-            "# another scheduler\n"
-        );
+        assert_eq!(detect_provider_at(paths), ProviderKind::Own);
+        restore_locked(paths).unwrap();
         assert!(!paths.native_json.exists());
+        assert!(!paths.native_script.exists() && !paths.native_base.exists());
     }
 
     #[test]
@@ -1491,4 +1540,47 @@ mod tests {
         assert_eq!(state.json, BackupSlot::Present(0o644));
         assert_eq!(state.script, BackupSlot::Absent);
     }
+    #[test]
+    fn scene_lp_is_backed_up_replaced_and_restored_with_its_base_script() {
+        let fixture = Fixture::new(); let paths = &fixture.0;
+        let original = [
+            (&paths.native_json, b"{\"name\":\"Scene LP\"}".as_slice(), 0o644),
+            (&paths.native_script, b"#!/system/bin/sh\n# Scene LP\n".as_slice(), 0o755),
+            (&paths.native_base, b"#!/system/bin/sh\n# old initialization\n".as_slice(), 0o750),
+        ];
+        for (path, bytes, mode) in original { util::atomic_write(path, bytes, mode).unwrap(); }
+        assert_eq!(install_provider_at(paths, &templates()).unwrap(), ProviderInstallOutcome::Installed);
+        assert_eq!(detect_provider_at(paths), ProviderKind::Own);
+        let backup = fs::read(&paths.backup_state).unwrap();
+        fs::write(&paths.native_base, "# LP init restored\n").unwrap();
+        assert_eq!(detect_provider_at(paths), ProviderKind::Foreign);
+        assert_eq!(install_provider_at(paths, &templates()).unwrap(), ProviderInstallOutcome::Refreshed);
+        assert_eq!(fs::read(&paths.backup_state).unwrap(), backup);
+        assert_eq!(restore_locked(paths).unwrap(), ProviderRestoreOutcome::Restored);
+        for (path, bytes, mode) in original {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+            assert_eq!(fs::metadata(path).unwrap().mode() & 0o7777, mode);
+        }
+    }
+    #[test]
+    fn legacy_two_file_backup_acquires_base_backup_before_refresh() {
+        let fixture = Fixture::new(); let paths = &fixture.0;
+        fs::write(&paths.backup_state, "NOVASCHED_ZEN_SCENE_PROVIDER_V1\njson=absent\nscript=absent\n").unwrap();
+        fs::write(&paths.marker, "managed=1\n").unwrap();
+        fs::write(&paths.native_base, "# original base\n").unwrap();
+        assert_eq!(install_provider_at(paths, &templates()).unwrap(), ProviderInstallOutcome::Refreshed);
+        assert!(fs::read_to_string(&paths.backup_state).unwrap().starts_with(PROVIDER_STATE_HEADER));
+        uninstall_provider_at(paths).unwrap();
+        assert_eq!(fs::read_to_string(&paths.native_base).unwrap(), "# original base\n");
+        assert!(!paths.native_json.exists() && !paths.native_script.exists());
+    }
+    #[test]
+    fn staged_install_uses_the_post_reboot_module_path() {
+        for prefix in ["/data/adb", "/data/adb/ap"] {
+            let staged = PathBuf::from(format!("{prefix}/modules_update/{OWN_PROVIDER_MODULE}"));
+            let active = PathBuf::from(format!("{prefix}/modules/{OWN_PROVIDER_MODULE}"));
+            assert_eq!(active_module_path(&staged), active); assert_eq!(active_module_path(&active), active);
+        }
+    }
+
 }
