@@ -1,0 +1,13 @@
+来源与许可证
+
+模块名称：NovaSched Zen Edition。模块作者：ZenJooo。模块 ID：NovaSched_Zen_Edition。
+
+调度核心与 Scene 联动设计源于 LittleYouran/LittleYouran_CTS_3，上游作者 LittleYouran，基线提交 3ecd526b72a08d97429376e519869aa464d50a39。相关代码沿用 GPL-3.0-only，原文见 LICENSE。
+
+本次 WebUI 由 ZenJooo 重写，参照用户提供的 SleepDown 课程表 1.2.7_beta5。原项目作者为 xiaomanjun233，链接为 https://github.com/xiaomanjun233/SleepDown-Schedule ，APK 构建提交为 5ed891bc4563d9a0dd56edb63902bcfaf5d88a2c。本模块并非其官方版本，不包含其课程、教务或 AI 助手业务代码。界面内的来源与许可保留原作者及原项目链接。
+
+WebGL 透镜与七通道色散公式适配自 Kyant0/AndroidLiquidGlass 的 kyant/backdrop AGSL 着色器，Apache-2.0；源码位于 module-template/webroot/assets/liquid-glass.js，许可位于 webroot/licenses/kyant-backdrop-APACHE-2.0.txt。其 Android 渲染器没有作为可执行引擎装入 WebView。
+
+默认日间、夜间壁纸原样提取自所提供 APK。原项目展示壁纸标注来源为 @Rabbit_candy_i 与 @kieed，素材版权归原作者；SleepDown 的许可说明位于 webroot/licenses/SleepDown-LICENSE-1.1.txt。未使用其图标或名称作为模块身份。
+
+测试使用 LinkeDOM v0.18.12，作者 Andrea Giammarchi / WebReflection，ISC。测试源码和许可位于 scripts/test-support，测试依赖不会进入设备端 WebUI。

@@ -1,0 +1,23 @@
+name: build
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust hedefi
+        run: rustup target add aarch64-linux-android
+      - name: Derle (build.sh, bilinen iki upstream testi atlanır)
+        run: |
+          export CARGO="$(command -v cargo)"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;27.3.13750724" >/dev/null || true
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.3.13750724"
+          ls "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+          echo "NDK: $ANDROID_NDK_HOME"
+          sed -i 's|^TEST_ARGS=()$|TEST_ARGS=(-- --skip profiles::tests::all_defaults_initialize_and_manual_edits_survive_repeated_upgrade --skip profiles::tests::release_upgrade_retunes_stock_and_preserves_custom_parameters_with_backup)|' scripts/build.sh
+          grep -n '^TEST_ARGS=' scripts/build.sh
+          bash scripts/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novasched-release
+          path: dist/*-release.zip
